@@ -1,0 +1,5 @@
+build/
+fused.img
+/tmp/
+docs/
+*.img
