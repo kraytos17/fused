@@ -64,10 +64,8 @@ print_cluster_map :: proc(fd: ^os.File, m: ^fs.Master_Record) {
 	for cluster_idx in 0 ..< m.cluster_map_size {
 		entry, ok := fs.read_cluster_map_entry(fd, m, fs.Cluster(cluster_idx))
 		if ok && .Allocated in entry.flags {
-			if true {
-				fmt.printf("  [%3d] flags=%-20s  stored_cluster=%d  sector_index=%d\n",
-					cluster_idx, flags_str(entry.flags), entry.stored_cluster, entry.sector_index)
-			}
+			fmt.printf("  [%3d] flags=%-20s  stored_cluster=%d  sector_index=%d\n",
+				cluster_idx, flags_str(entry.flags), entry.stored_cluster, entry.sector_index)
 			count += 1
 		}
 	}
@@ -111,6 +109,7 @@ print_root_directory :: proc(fd: ^os.File, m: ^fs.Master_Record) {
 	}
 
 	entries, ok_dir := fs.read_directory_entries(fd, m, root_cluster, fs.Sector_Offset(ce.sector_start))
+	defer delete(entries)
 	if !ok_dir {
 		fmt.eprintln("  failed to read root directory entries")
 		return
@@ -127,9 +126,7 @@ print_root_directory :: proc(fd: ^os.File, m: ^fs.Master_Record) {
 			lfn, _ := fs.resolve_lfn(fd, m, &e)
 			name = lfn
 		} else {
-			n := 0
-			for n < 16 && e.file_name[n] != 0 {n += 1}
-			name = string(e.file_name[:n])
+			name = fs.entry_short_name(&e)
 		}
 
 		kind := ""

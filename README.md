@@ -9,26 +9,12 @@ An Odin binding to the libfuse3 **high-level** (`fuse_operations`) API on
 Linux/amd64, plus a complete filesystem driver for the fused format
 (hybrid FAT-style cluster chains with two-level indirection).
 
-- **Phase 0 (complete):** The FUSE3 binding in `src/fuse3/`.  All 39
-  callback slots, 12 cross-FFI structs, and 43 callback offsets verified
-  byte-for-byte against C.
-- **Phase 1 (complete):** On-disk structs, sector-level I/O, master-record
-  validation, and a standalone image formatter (`src/disker/`).
-- **Phase 2.0 (complete):** imgdump tool + reader primitives (cluster map,
-  cluster entry table, directory entry iteration, LFN resolution).
-- **Phases 2.1–7 (pending):** Extent chain walker, R/O mount, allocator,
-  R/W mount, hardening, stretch goals.
-
-Design docs and the full phase roadmap live in `docs/`.
-
 ## On-disk format
 
 The image header at sector 0 carries a 7-byte `sig` (`"FUSED\0\0"`) and a
 `rev` field (currently `2`).  The sig identifies the filesystem family and
 never changes; `rev` carries the format version.  Future format bumps only
-need to raise the `rev` floor in `validate_master` — no sig rename, no
-migration dance.
-
+need to raise the `rev` floor in `validate_master`.
 ## Layout
 
 ```
@@ -45,18 +31,15 @@ fused/
 │   │   ├── validate.odin      # validate_master, FS_Error enum
 │   │   ├── clustermap.odin    # cluster map reader, find_cluster_entry
 │   │   └── directory.odin     # directory entry iteration, LFN resolution
-│   ├── disker/                # image formatter CLI (no FUSE dependency)
+│   ├── disker/                # image formatter CLI
 │   │   └── main.odin
 │   └── mounter/               # FUSE glue — wires fs/ into fuse3/
-│       └── main.odin          # (Phase 3 stub; validates image, prints summary)
+│       └── main.odin          # (stub for now; validates image, prints summary)
 ├── tools/
-│   └── imgdump/               # hex/structure dumper (Phase 2.0 done)
+│   └── imgdump/               # hex/structure dumper
 │       └── main.odin
-├── docs/
-│   ├── demo/hello_main.odin   # the hello-world demo, kept as reference
-│   ├── FUSE3-Binding-Plan.md
-│   ├── UniFS-Odin-Port-Plan.md
-│   └── UniFS-Odin-Impl-Plan-v2.md
+├── demo/
+│   └── hello_main.odin
 ├── tests/
 │   ├── c_assert.c             # C ground-truth sizes & offsets
 │   ├── size_check.odin        # Odin-side size dump + @test assertions
@@ -82,13 +65,12 @@ make disker && make run-disker     # → fused.img
 # Inspect the image
 make imgdump && ./build/imgdump fused.img
 
-# Build the mounter (reads from fused.img)
+# Build the mounter
 make build                         # → build/fused
 
 # Validate the image
 ./build/fused fused.img            # prints MasterRecord summary
 
-# Release binary with -o:aggressive -lto:thin -microarch:native
 make release                       # → build/fused_release
 ```
 
@@ -99,7 +81,7 @@ make release                       # → build/fused_release
 make run-disker
 # or: ./build/disker --size=4M --cluster-size=16 --output=myfs.img
 
-# 2. Mount (Phase 3+)
+# 2. Mount
 make mount MOUNTPOINT=/tmp/fused  # once the mounter has FUSE callbacks
 
 # 3. Unmount

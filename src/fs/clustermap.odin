@@ -45,7 +45,9 @@ find_cluster_entry :: proc(
 	sector_offset: Sector_Offset,
 ) -> (entry: Cluster_Entry, ok: bool) {
 	table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-	if !read_cluster_entry_table(disk, master, cluster, &table) {return {}, false}
+	if !read_cluster_entry_table(disk, master, cluster, &table) {
+		return {}, false
+	}
 	for t in table {
 		if t.sector_start == u16(sector_offset) && .Allocated in t.state {
 			return t, true

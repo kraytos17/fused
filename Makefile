@@ -12,7 +12,7 @@ COLLECTIONS   := -collection:src=$(SRC_DIR)
 
 # FUSE3 linkage: the `foreign import libfuse3 "system:fuse3"` in
 # src/fuse3/foreign.odin drives the link via pkg-config. The
-# -extra-linker-flags below is a belt-and-braces fallback in case the
+# -extra-linker-flags below is a fallback in case the
 # pkg-config integration ever drops on a toolchain update.
 FUSE_LINK_FLAGS := -extra-linker-flags:"-lfuse3 -lpthread"
 DEBUG_FLAGS   := -debug -o:none -warnings-as-errors \
@@ -41,7 +41,7 @@ ODIN_VERSION  := $(shell $(ODIN) version 2>&1 | head -1)
         verify vet vet-all vet-shadowing vet-unused vet-style vet-cast \
         check-vet check-requires check-versions clean rebuild help
 
-all: clean build
+all: clean disker build imgdump run-disker test vet
 
 build:
 	@echo "==> Building debug $(BINARY) (Odin: $(ODIN_VERSION))"
@@ -87,9 +87,9 @@ unmount:
 	@echo "==> Unmounting $(MOUNTPOINT)"
 	@fusermount3 -u $(MOUNTPOINT) 2>/dev/null || true
 
-test:
-	@echo "==> Running Odin tests"
-	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS) -define:ODIN_TEST_NAMES="tests.test_struct_sizes"
+test: run-disker
+	@echo "==> Running all tests"
+	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS)
 
 check:
 	@echo "==> C vs Odin struct size cross-check"
@@ -115,32 +115,32 @@ vet:
 		$(ODIN) check $$d $(COLLECTIONS) $(CHECK_FLAGS) $(VET_FLAGS) || exit 1; \
 	done
 
-vet-all:
+vet-all: run-disker
 	@echo "==> Comprehensive vet on $(VET_DIRS) (build + test, LLVM)"
 	@for d in $(VET_DIRS); do \
 		$(ODIN) build $$d $(COLLECTIONS) $(CHECK_FLAGS) $(VET_FLAGS) -out:/dev/null || exit 1; \
 	done
-	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS) -define:ODIN_TEST_NAMES="tests.test_struct_sizes"
+	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS)
 
 vet-shadowing:
 	@echo "==> Checking for variable shadowing"
 	$(ODIN) build $(MOUNTER_DIR) $(COLLECTIONS) $(CHECK_FLAGS) -vet-shadowing -warnings-as-errors -out:/dev/null
-	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS) -define:ODIN_TEST_NAMES="tests.test_struct_sizes"
+	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS)
 
 vet-unused:
 	@echo "==> Checking for unused declarations"
 	$(ODIN) build $(MOUNTER_DIR) $(COLLECTIONS) $(CHECK_FLAGS) -vet-unused -warnings-as-errors -out:/dev/null
-	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS) -define:ODIN_TEST_NAMES="tests.test_struct_sizes"
+	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS)
 
 vet-style:
 	@echo "==> Checking code style"
 	$(ODIN) build $(MOUNTER_DIR) $(COLLECTIONS) $(CHECK_FLAGS) -vet-style -vet-semicolon -warnings-as-errors -out:/dev/null
-	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS) -define:ODIN_TEST_NAMES="tests.test_struct_sizes"
+	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS)
 
 vet-cast:
 	@echo "==> Checking for redundant casts"
 	$(ODIN) build $(MOUNTER_DIR) $(COLLECTIONS) $(CHECK_FLAGS) -vet-cast -warnings-as-errors -out:/dev/null
-	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS) -define:ODIN_TEST_NAMES="tests.test_struct_sizes"
+	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS)
 
 check-vet:
 	@echo "==> parse + type check with comprehensive vet"
@@ -166,6 +166,7 @@ help:
 	@echo "fused — libfuse3 Odin FUSE daemon"
 	@echo ""
 	@echo "Build:"
+	@echo "  all             clean + disker + build + imgdump + run-disker + test + vet"
 	@echo "  build           debug build -> build/$(BINARY)"
 	@echo "  release         aggressive-opt build -> build/$(BINARY)_release"
 	@echo "  mount           build then run in foreground against $(MOUNTPOINT)"

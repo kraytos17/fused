@@ -13,6 +13,7 @@ CLUSTER_ENTRIES_PER_SECTOR :: 32
 DIR_ENTRIES_PER_SECTOR     :: 10
 DEFAULT_CLUSTER_SIZE       :: 16
 DEFAULT_IMAGE_SIZE         :: 1 * 1024 * 1024 // 1 MB
+FUSED_SIG :: [7]u8{'F', 'U', 'S', 'E', 'D', 0, 0}
 
 Cluster_Map_Flag :: enum u16 {
 	Allocated, // bit 0

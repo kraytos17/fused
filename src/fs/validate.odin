@@ -3,12 +3,7 @@
 package fs
 
 validate_master :: proc(master: ^Master_Record, image_size: u64) -> FS_Error {
-	// sig must be "FUSED\0\0" (7 bytes) — the rev field carries the version
-	sig_ok := master.sig[0] == 'F' && master.sig[1] == 'U' && master.sig[2] == 'S' &&
-	          master.sig[3] == 'E' && master.sig[4] == 'D' &&
-	          master.sig[5] == 0 && master.sig[6] == 0
-
-	if !sig_ok {
+	if master.sig != FUSED_SIG {
 		return .Invalid_Signature
 	}
 	if master.rev < 2 {

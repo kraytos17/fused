@@ -23,8 +23,7 @@ DIR_MODE_RO  :: posix.mode_t{.IFDIR, .IRUSR, .IRGRP, .IROTH, .IXUSR, .IXGRP, .IX
 hello_getattr :: proc "c"(path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	stbuf^ = {}
-	p := cast([^]c.char)(path)
-	is_root := p[0] == 0 || (p[0] == '/' && p[1] == 0)
+	is_root := path == "" || path == "/"
 	if is_root {
 		stbuf.st_mode = posix.mode_t(DIR_MODE_RO)
 		stbuf.st_nlink = 2
@@ -97,10 +96,11 @@ main :: proc() {
 		append(&dynamic_argv, "-f")
 	}
 
-	ops: fuse3.Operations
-	ops.getattr = hello_getattr
-	ops.readdir = hello_readdir
-	ops.read = hello_read
+	ops := fuse3.Operations{
+		getattr = hello_getattr,
+		readdir = hello_readdir,
+		read    = hello_read,
+	}
 	rc := fuse3.run(c.int(len(dynamic_argv)), raw_data(dynamic_argv), &ops, nil)
 	if rc != 0 {
 		fmt.eprintln("fuse_main returned", rc)
