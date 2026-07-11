@@ -78,10 +78,12 @@ clean:
 
 rebuild: clean build
 
+IMAGE := $(or $(IMAGE),fused.img)
+
 mount: build
-	@echo "==> Mounting $(BUILD_DIR)/$(BINARY) on $(MOUNTPOINT) (foreground, debug)"
+	@echo "==> Mounting $(BUILD_DIR)/$(BINARY) $(IMAGE) on $(MOUNTPOINT) (foreground, debug)"
 	@mkdir -p $(MOUNTPOINT)
-	@./$(BUILD_DIR)/$(BINARY) -f -d $(MOUNTPOINT)
+	@./$(BUILD_DIR)/$(BINARY) $(IMAGE) -f -d $(MOUNTPOINT)
 
 unmount:
 	@echo "==> Unmounting $(MOUNTPOINT)"
@@ -99,7 +101,7 @@ audit:
 	@echo "==> Auditing \"c\" proc callbacks for context restoration"
 	@bash $(TEST_DIR)/check_context.sh
 
-smoke: build
+smoke: build run-disker
 	@echo "==> End-to-end smoke test (mount + ls + cat + stat + write-reject + unmount)"
 	@bash $(TEST_DIR)/smoke.sh
 

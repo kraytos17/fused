@@ -6,7 +6,9 @@ import "core:os"
 
 entry_short_name :: proc "contextless" (entry: ^Directory_Entry) -> string {
 	n := 0
-	for n < 16 && entry.file_name[n] != 0 {n += 1}
+	for n < 16 && entry.file_name[n] != 0 {
+		n += 1
+	}
 	return string(entry.file_name[:n])
 }
 
@@ -15,20 +17,18 @@ read_directory_entries :: proc(
 	master: ^Master_Record,
 	cluster: Cluster,
 	sector_offset: Sector_Offset,
-	allocator := context.allocator,
-) -> (entries: [dynamic]Directory_Entry, ok: bool) {
+) -> (entries: [dynamic; DIR_ENTRIES_PER_SECTOR]Directory_Entry, ok: bool) {
 	buf: [SECTOR_SIZE]u8
 	table_sector := Sector(u64(cluster) * master.cluster_size + u64(sector_offset))
-	if !sector_read(disk, table_sector, buf[:]) {return nil, false}
+	if !sector_read(disk, table_sector, buf[:]) {
+		return {}, false
+	}
 
 	raw := (^[DIR_ENTRIES_PER_SECTOR]Directory_Entry)(raw_data(buf[:]))
-	result := make([dynamic]Directory_Entry, 0, DIR_ENTRIES_PER_SECTOR, allocator)
-	for i in 0 ..< DIR_ENTRIES_PER_SECTOR {
-		if .Exists in raw[i].flags {
-			append(&result, raw[i])
-		}
+	#unroll for i in 0 ..< DIR_ENTRIES_PER_SECTOR {
+		if .Exists in raw[i].flags {append(&entries, raw[i])}
 	}
-	return result, true
+	return entries, true
 }
 
 resolve_lfn :: proc(
@@ -42,7 +42,9 @@ resolve_lfn :: proc(
 	}
 
 	ptr := (^LFN_Pointer)(raw_data(entry.file_name[:]))
-	if ptr.cluster == 0 {return "", false}
+	if ptr.cluster == 0 {
+		return "", false
+	}
 
 	ce_buf: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 	read_cluster_entry_table(disk, master, Cluster(ptr.cluster), &ce_buf) or_return
@@ -74,17 +76,23 @@ resolve_lfn :: proc(
 		}
 
 		append(&data, ..temp)
-		if current_entry.next_cluster == 0 {break}
+		if current_entry.next_cluster == 0 {
+			break
+		}
+
 		next, found_next := find_cluster_entry(
 			disk, master,
 			Cluster(current_entry.next_cluster),
 			Sector_Offset(current_entry.next_sector_index),
 		)
-
-		if !found_next {break}
+		if !found_next {
+			break
+		}
 		current_cluster = Cluster(current_entry.next_cluster)
 		current_entry  = next
 	}
-	if len(data) > int(ptr.size) {resize(&data, int(ptr.size))}
+	if len(data) > int(ptr.size) {
+		resize(&data, int(ptr.size))
+	}
 	return string(data[:]), true
 }

@@ -1,0 +1,206 @@
+// alloc_test.odin — Property tests for the sector allocator.
+//
+// Each test copies fused.img to a temp file so they don't corrupt
+// each other when run in the same odin test invocation.
+#+build linux
+package tests
+
+import "core:os"
+import "core:testing"
+import "src:fs"
+
+open_fresh :: proc() -> (^os.File, bool) {
+	src, src_err := os.open("fused.img", {.Read})
+	if src_err != nil {return nil, false}
+
+	tmp_path := "/tmp/fused_alloc_test.img"
+	os.remove(tmp_path)
+	dst, dst_err := os.open(tmp_path, {.Create, .Write, .Trunc})
+	if dst_err != nil {os.close(src); return nil, false}
+
+	buf: [4096]u8
+	for {
+		n, read_err := os.read(src, buf[:])
+		if read_err != nil || n == 0 {break}
+		_, write_err := os.write(dst, buf[:n])
+		if write_err != nil {break}
+	}
+	os.close(dst)
+	os.close(src)
+
+	fd, open_err := os.open(tmp_path, {.Read, .Write})
+	return fd, open_err == nil
+}
+
+@test
+test_alloc_fresh :: proc(t: ^testing.T) {
+	fd, open_err := open_fresh()
+	if !open_err {return}
+	defer os.close(fd)
+
+	master, _ := fs.read_master_record(fd)
+	fc, fo, err := fs.allocate_sectors(&master, fd, 0, 0, 10, .File_Content)
+	testing.expect_value(t, err, fs.FS_Error.None)
+
+	runs, runs_ok := fs.resolve_extents(fd, &master, fc, fo)
+	testing.expect(t, runs_ok, "resolve_extents")
+
+	total: u64
+	for r in runs {total += u64(r.count)}
+
+	testing.expect_value(t, total, u64(10))
+	derr := fs.deallocate_sectors(&master, fd, fc, fo)
+	testing.expect_value(t, derr, fs.FS_Error.None)
+}
+
+@test
+test_alloc_no_overlap :: proc(t: ^testing.T) {
+	fd, open_err := open_fresh()
+	if !open_err {return}
+	defer os.close(fd)
+
+	master, _ := fs.read_master_record(fd)
+
+	Alloc_Run :: struct {c: fs.Cluster, o: fs.Sector_Offset}
+	runs: [10]Alloc_Run
+	for i in 0 ..< 10 {
+		fc, fo, err := fs.allocate_sectors(&master, fd, 0, 0, 5, .File_Content)
+		testing.expect_value(t, err, fs.FS_Error.None)
+		runs[i] = {fc, fo}
+	}
+
+	bitmap := make([]u8, 2048)
+	defer delete(bitmap)
+	for c in 0 ..< master.cluster_map_size {
+		table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
+		if !fs.read_cluster_entry_table(fd, &master, fs.Cluster(c), &table) {continue}
+		for &e in table {
+			if .Allocated not_in e.state {continue}
+			run_sector := u64(c) * master.cluster_size + u64(e.sector_start)
+			for off in 0 ..< e.allocation_size {
+				idx := run_sector + u64(off)
+				testing.expect(t, bitmap[idx / 8] & (1 << (idx % 8)) == 0, "overlap")
+				bitmap[idx / 8] |= 1 << (idx % 8)
+			}
+		}
+	}
+	for r in runs {
+		derr := fs.deallocate_sectors(&master, fd, r.c, r.o)
+		testing.expect_value(t, derr, fs.FS_Error.None)
+	}
+}
+
+@test
+test_alloc_free_reuse :: proc(t: ^testing.T) {
+	fd, open_err := open_fresh()
+	if !open_err {return}
+	defer os.close(fd)
+
+	master, _ := fs.read_master_record(fd)
+	fc, fo, err := fs.allocate_sectors(&master, fd, 0, 0, 8, .File_Content)
+	testing.expect_value(t, err, fs.FS_Error.None)
+
+	runs_before, _ := fs.resolve_extents(fd, &master, fc, fo)
+	sector_before := runs_before[0].sector
+
+	derr := fs.deallocate_sectors(&master, fd, fc, fo)
+	testing.expect_value(t, derr, fs.FS_Error.None)
+	fc2, fo2, err2 := fs.allocate_sectors(&master, fd, 0, 0, 8, .File_Content)
+	testing.expect_value(t, err2, fs.FS_Error.None)
+
+	runs_after, _ := fs.resolve_extents(fd, &master, fc2, fo2)
+	testing.expect_value(t, runs_after[0].sector, sector_before)
+	derr2 := fs.deallocate_sectors(&master, fd, fc2, fo2)
+	testing.expect_value(t, derr2, fs.FS_Error.None)
+}
+
+@test
+test_alloc_free_loop :: proc(t: ^testing.T) {
+	fd, open_err := open_fresh()
+	if !open_err {return}
+	defer os.close(fd)
+
+	master, _ := fs.read_master_record(fd)
+	for _ in 0 ..< 50 {
+		fc, fo, err := fs.allocate_sectors(&master, fd, 0, 0, 1, .File_Content)
+		testing.expect_value(t, err, fs.FS_Error.None)
+		runs, _ := fs.resolve_extents(fd, &master, fc, fo)
+		tt: u64; for r in runs {tt += u64(r.count)}
+		testing.expect_value(t, tt, u64(1))
+		derr := fs.deallocate_sectors(&master, fd, fc, fo)
+		testing.expect_value(t, derr, fs.FS_Error.None)
+	}
+}
+
+@test
+test_full_flag :: proc(t: ^testing.T) {
+	fd, open_err := open_fresh()
+	if !open_err {return}
+	defer os.close(fd)
+
+	master, _ := fs.read_master_record(fd)
+	fc, fo, err := fs.allocate_sectors(&master, fd, 0, 0, master.cluster_size, .File_Content)
+	testing.expect_value(t, err, fs.FS_Error.None)
+
+	cme, _ := fs.read_cluster_map_entry(fd, &master, fc)
+	testing.expect(t, .Full in cme.flags, "FULL flag set")
+
+	derr := fs.deallocate_sectors(&master, fd, fc, fo)
+	testing.expect_value(t, derr, fs.FS_Error.None)
+	cme2, _ := fs.read_cluster_map_entry(fd, &master, fc)
+	testing.expect(t, .Full not_in cme2.flags, "FULL flag cleared")
+}
+
+@test
+test_chain_consistency :: proc(t: ^testing.T) {
+	fd, open_err := open_fresh()
+	if !open_err {return}
+	defer os.close(fd)
+
+	master, _ := fs.read_master_record(fd)
+	fc, fo, err := fs.allocate_sectors(&master, fd, 0, 0, master.cluster_size + 4, .File_Content)
+	testing.expect_value(t, err, fs.FS_Error.None)
+
+	_, runs_ok := fs.resolve_extents(fd, &master, fc, fo)
+	testing.expect(t, runs_ok, "resolve_extents")
+
+	tt: u64
+	current_c := fc
+	current_o := fo
+	for {
+		entry, entry_ok := fs.find_cluster_entry(fd, &master, current_c, current_o)
+		testing.expect(t, entry_ok, "chain link dead")
+		tt += u64(entry.allocation_size)
+		if entry.next_cluster == 0 {break}
+
+		current_c = fs.Cluster(entry.next_cluster)
+		current_o = fs.Sector_Offset(entry.next_sector_index)
+	}
+
+	testing.expect_value(t, tt, master.cluster_size + 4)
+	derr := fs.deallocate_sectors(&master, fd, fc, fo)
+	testing.expect_value(t, derr, fs.FS_Error.None)
+}
+
+@test
+test_extension :: proc(t: ^testing.T) {
+	fd, open_err := open_fresh()
+	if !open_err {return}
+	defer os.close(fd)
+
+	master, _ := fs.read_master_record(fd)
+	fc, fo, err := fs.allocate_sectors(&master, fd, 0, 0, 5, .File_Content)
+	testing.expect_value(t, err, fs.FS_Error.None)
+	fc2, fo2, ext_err := fs.allocate_sectors(&master, fd, fc, fo, 10, .File_Content)
+	testing.expect_value(t, ext_err, fs.FS_Error.None)
+	testing.expect_value(t, fc, fc2)
+	testing.expect_value(t, fo, fo2)
+
+	runs, _ := fs.resolve_extents(fd, &master, fc, fo)
+	tt: u64
+	for r in runs {tt += u64(r.count)}
+
+	testing.expect_value(t, tt, u64(10))
+	derr := fs.deallocate_sectors(&master, fd, fc, fo)
+	testing.expect_value(t, derr, fs.FS_Error.None)
+}

@@ -8,12 +8,17 @@ Sector        :: distinct u64 // absolute sector number on disk
 Cluster       :: distinct u64 // cluster index
 Sector_Offset :: distinct u16 // sector offset within a cluster
 
-SECTOR_SIZE               :: 512
+SECTOR_SIZE                :: 512
 CLUSTER_ENTRIES_PER_SECTOR :: 32
 DIR_ENTRIES_PER_SECTOR     :: 10
 DEFAULT_CLUSTER_SIZE       :: 16
 DEFAULT_IMAGE_SIZE         :: 1 * 1024 * 1024 // 1 MB
-FUSED_SIG :: [7]u8{'F', 'U', 'S', 'E', 'D', 0, 0}
+FUSED_SIG                  :: [7]u8{'F', 'U', 'S', 'E', 'D', 0, 0}
+
+#assert(SECTOR_SIZE / size_of(Cluster_Map_Entry) == CLUSTER_ENTRIES_PER_SECTOR)
+#assert(SECTOR_SIZE / size_of(Cluster_Entry)     == CLUSTER_ENTRIES_PER_SECTOR)
+#assert(DIR_ENTRIES_PER_SECTOR * size_of(Directory_Entry) <= SECTOR_SIZE)
+#assert((DIR_ENTRIES_PER_SECTOR + 1) * size_of(Directory_Entry) >  SECTOR_SIZE)
 
 Cluster_Map_Flag :: enum u16 {
 	Allocated, // bit 0
@@ -77,7 +82,7 @@ FS_Error :: enum {
 }
 
 // MasterRecord — sector 0, 512 bytes
-Master_Record :: struct #packed {
+Master_Record :: struct #packed #all_or_none {
 	sig:                [7]u8,
 	rev:                u8,
 	reserved0:          u8,

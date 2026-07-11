@@ -7,6 +7,7 @@ package main
 
 import "base:runtime"
 import "core:fmt"
+import "core:log"
 import "core:os"
 import "core:strings"
 import "src:fs"
@@ -14,30 +15,30 @@ import "src:fs"
 main :: proc() {
 	context = runtime.default_context()
 	if len(os.args) < 2 {
-		fmt.eprintln("usage: imgdump <image-path>")
-		os.exit(1)
+		log.fatalf("usage: imgdump <image-path>")
 	}
 
 	path := os.args[1]
 	fd, open_err := os.open(path, {.Read})
 	if open_err != nil {
-		fmt.eprintln("cannot open", path, ":", open_err)
-		os.exit(1)
+		log.fatalf("cannot open %s: %v", path, open_err)
 	}
 	defer os.close(fd)
 
 	master, ok := fs.read_master_record(fd)
 	if !ok {
-		fmt.eprintln("failed to read MasterRecord")
-		os.exit(1)
+		log.fatalf("failed to read MasterRecord")
 	}
 
-	fi, _ := os.stat(path, context.temp_allocator)
-	image_size := u64(fi.size)
+	fi, stat_err := os.stat(path, context.temp_allocator)
+	image_size: u64 = 0
+	if stat_err == nil {
+		image_size = u64(fi.size)
+	}
+
 	err := fs.validate_master(&master, image_size)
 	if err != .None {
-		fmt.eprintln("validation failed:", err)
-		os.exit(1)
+		log.fatalf("validation failed: %v", err)
 	}
 
 	print_master(&master)
@@ -75,10 +76,14 @@ print_cluster_map :: proc(fd: ^os.File, m: ^fs.Master_Record) {
 	fmt.println("=== ClusterEntry tables (allocated clusters only) ===")
 	for cluster_idx in 0 ..< m.cluster_map_size {
 		cme, ok := fs.read_cluster_map_entry(fd, m, fs.Cluster(cluster_idx))
-		if !ok || .Allocated not_in cme.flags {continue}
+		if !ok || .Allocated not_in cme.flags {
+			continue
+		}
 
 		table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
-		if !fs.read_cluster_entry_table(fd, m, fs.Cluster(cluster_idx), &table) {continue}
+		if !fs.read_cluster_entry_table(fd, m, fs.Cluster(cluster_idx), &table) {
+			continue
+		}
 
 		fmt.printf("  Cluster %d (stored_cluster=%d, sector_index=%d):\n",
 			cluster_idx, cme.stored_cluster, cme.sector_index)
@@ -100,7 +105,7 @@ print_root_directory :: proc(fd: ^os.File, m: ^fs.Master_Record) {
 	root_offset  := fs.Sector_Offset(m.root_sector_index)
 	ce, found_ce := fs.find_cluster_entry(fd, m, root_cluster, root_offset)
 	if !found_ce {
-		fmt.eprintln("  root directory ClusterEntry not found")
+		log.errorf("root directory ClusterEntry not found")
 		return
 	}
 	if .Directory not_in ce.state {
@@ -109,9 +114,8 @@ print_root_directory :: proc(fd: ^os.File, m: ^fs.Master_Record) {
 	}
 
 	entries, ok_dir := fs.read_directory_entries(fd, m, root_cluster, fs.Sector_Offset(ce.sector_start))
-	defer delete(entries)
 	if !ok_dir {
-		fmt.eprintln("  failed to read root directory entries")
+		log.errorf("failed to read root directory entries")
 		return
 	}
 
@@ -123,8 +127,8 @@ print_root_directory :: proc(fd: ^os.File, m: ^fs.Master_Record) {
 	for &e, i in entries {
 		name := ""
 		if .LFN in e.flags {
-			lfn, _ := fs.resolve_lfn(fd, m, &e)
-			name = lfn
+			lfn, lfn_ok := fs.resolve_lfn(fd, m, &e)
+			name = lfn if lfn_ok else "(lfn?)"
 		} else {
 			name = fs.entry_short_name(&e)
 		}
@@ -143,7 +147,7 @@ print_root_directory :: proc(fd: ^os.File, m: ^fs.Master_Record) {
 }
 
 flags_str :: proc(f: fs.Cluster_Map_Flags) -> string {
-	parts: [dynamic]string; defer delete(parts)
+	parts: [dynamic; 8]string
 	if .Allocated in f {append(&parts, "ALLOCATED")}
 	if .Reserved  in f {append(&parts, "RESERVED")}
 	if .Full      in f {append(&parts, "FULL")}
@@ -152,7 +156,7 @@ flags_str :: proc(f: fs.Cluster_Map_Flags) -> string {
 }
 
 ce_state_str :: proc(s: fs.Cluster_Entry_State) -> string {
-	parts: [dynamic]string; defer delete(parts)
+	parts: [dynamic; 8]string
 	if .Allocated    in s {append(&parts, "ALLOCATED")}
 	if .Cluster_Map  in s {append(&parts, "CLUSTER_MAP")}
 	if .Directory    in s {append(&parts, "DIRECTORY")}
@@ -163,7 +167,7 @@ ce_state_str :: proc(s: fs.Cluster_Entry_State) -> string {
 }
 
 dir_flags_str :: proc(f: fs.Dir_Flags) -> string {
-	parts: [dynamic]string; defer delete(parts)
+	parts: [dynamic; 8]string
 	if .Allocated  in f {append(&parts, "ALLOCATED")}
 	if .LFN        in f {append(&parts, "LFN")}
 	if .Directory  in f {append(&parts, "DIRECTORY")}

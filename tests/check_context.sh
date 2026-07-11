@@ -9,7 +9,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-src=src/mounter/main.odin
+src=src/mounter/ops.odin
 echo "==> Auditing \"c\" proc callbacks in $src for context restoration"
 
 # For every `proc "c"` header, print the next 5 lines (the body start)

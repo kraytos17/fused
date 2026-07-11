@@ -63,9 +63,15 @@ hello_readdir :: proc "c"(
 	flags: c.int,
 ) -> c.int {
 	context = runtime.default_context()
-	if rc := fuse3.fill_dir(filler, buf, ".", nil); rc != 0 {return rc}
-	if rc := fuse3.fill_dir(filler, buf, "..", nil); rc != 0 {return rc}
-	if rc := fuse3.fill_dir(filler, buf, "hello.txt", nil); rc != 0 {return rc}
+	if rc := fuse3.fill_dir(filler, buf, ".", nil); rc != 0 {
+		return rc
+	}
+	if rc := fuse3.fill_dir(filler, buf, "..", nil); rc != 0 {
+		return rc
+	}
+	if rc := fuse3.fill_dir(filler, buf, "hello.txt", nil); rc != 0 {
+		return rc
+	}
 	return 0
 }
 
@@ -90,7 +96,9 @@ main :: proc() {
 		if os.args[i] == "-f" {
 			has_f = true
 		}
-		append(&dynamic_argv, strings.clone_to_cstring(os.args[i], context.temp_allocator))
+		append(
+			&dynamic_argv, strings.clone_to_cstring(os.args[i], context.temp_allocator),
+		)
 	}
 	if !has_f {
 		append(&dynamic_argv, "-f")

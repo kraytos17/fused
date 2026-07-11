@@ -1,30 +1,31 @@
 #!/usr/bin/env bash
-# smoke.sh — End-to-end smoke test for the FUSE3 binding.
+# smoke.sh — End-to-end smoke test for the fused FUSE daemon.
 #
-# Mounts, exercises ls/cat/stat, verifies the read-only nature (writes
-# must fail with EROFS), and unmounts cleanly.
+# Mounts a fused.img, exercises ls/cat/stat, verifies read-only
+# nature, and unmounts cleanly.
 #
-# Uses the Makefile's build output by default (BUILD_DIR=/bld/fused).
-# Override with BIN=/path/to/binary.
+# Usage: tests/smoke.sh [image-path] [mountpoint]
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-MOUNT=/tmp/mnt
+IMAGE="${1:-fused.img}"
+MOUNT="${2:-/tmp/mnt}"
 LOG=/tmp/fused_smoke.log
 BUILD_DIR="${BUILD_DIR:-build}"
 BIN="${BIN:-$BUILD_DIR/fused}"
 
-echo "==> Using binary: $BIN"
-[ -x "$BIN" ] || { echo "FAIL: $BIN not executable; run 'make build' first" >&2; exit 1; }
+echo "==> Using binary: $BIN, image: $IMAGE, mount: $MOUNT"
+[ -x "$BIN" ]   || { echo "FAIL: $BIN not executable; run 'make build' first"   >&2; exit 1; }
+[ -f "$IMAGE" ] || { echo "FAIL: $IMAGE not found; run 'make run-disker' first" >&2; exit 1; }
 
 echo "==> Cleaning up any stale mount"
 fusermount3 -u $MOUNT 2>/dev/null || true
 rm -rf $MOUNT
 mkdir -p $MOUNT
 
-echo "==> Starting $BIN -f -d $MOUNT"
-$BIN -f -d $MOUNT > $LOG 2>&1 &
+echo "==> Starting $BIN $IMAGE -f -d $MOUNT"
+$BIN $IMAGE -f -d $MOUNT > $LOG 2>&1 &
 PID=$!
 
 cleanup() {
@@ -48,20 +49,21 @@ fi
 echo "==> ls $MOUNT"
 listing=$(ls $MOUNT)
 echo "$listing"
-[ "$listing" = "hello.txt" ] || { echo "FAIL: expected 'hello.txt' in ls, got '$listing'" >&2; exit 1; }
+echo "$listing" | grep -q "Kernel" || { echo "FAIL: expected 'Kernel' in ls, got '$listing'" >&2; exit 1; }
 
-echo "==> cat $MOUNT/hello.txt"
-content=$(cat $MOUNT/hello.txt)
-expected='Hello from fused!'
-[ "$content" = "$expected" ] || { echo "FAIL: expected '$expected', got '$content'" >&2; exit 1; }
-size=$(stat -c '%s' $MOUNT/hello.txt)
-[ "$size" = "18" ] || { echo "FAIL: expected size 18 (including \\n), got $size" >&2; exit 1; }
-
-echo "==> stat $MOUNT/hello.txt (size & mode checks)"
-mode=$(stat -c '%a' $MOUNT/hello.txt)
-size=$(stat -c '%s' $MOUNT/hello.txt)
+echo "==> stat $MOUNT/Kernel"
+mode=$(stat -c '%a' $MOUNT/Kernel)
+size=$(stat -c '%s' $MOUNT/Kernel)
+echo "  mode=$mode size=$size"
 [ "$mode" = "444" ] || { echo "FAIL: expected mode 444, got $mode" >&2; exit 1; }
-[ "$size" = "18" ] || { echo "FAIL: expected size 18, got $size" >&2; exit 1; }
+[ "$size" = "60"  ] || { echo "FAIL: expected size 60, got $size" >&2; exit 1; }
+
+echo "==> cat $MOUNT/Kernel (first 4 bytes)"
+head -c 4 $MOUNT/Kernel | od -tx1 -An | tr -d ' \n' > /tmp/fused_smoke_hex
+expected_hex="82000d00"
+got_hex=$(cat /tmp/fused_smoke_hex)
+[ "$got_hex" = "$expected_hex" ] || { echo "FAIL: expected $expected_hex, got $got_hex" >&2; exit 1; }
+echo "  $got_hex (matches expected)"
 
 echo "==> write attempt (must fail with read-only filesystem)"
 if touch $MOUNT/newfile 2>/dev/null; then
@@ -71,10 +73,10 @@ fi
 echo "  (write correctly rejected)"
 
 echo "==> mount info"
-mount | grep -E "fused|myfs" || { echo "FAIL: fused/myfs not in mount table" >&2; exit 1; }
+mount | grep -E "fused|myfs" || { echo "FAIL: fused not in mount table" >&2; exit 1; }
 
 echo "==> libfuse debug log highlights"
-grep -E 'LOOKUP|OPEN|READ|getattr|readdir' $LOG | head -10
+grep -E 'LOOKUP|OPEN|READ|GETATTR' $LOG | head -8
 
 echo
 echo "==> All smoke tests passed."

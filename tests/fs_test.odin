@@ -45,7 +45,6 @@ test_fs_core :: proc(t: ^testing.T) {
 	testing.expect(t, .Directory in rd_ce.state, "root dir is directory")
 
 	dirs, ok_dir := fs.read_directory_entries(fd, &master, root_cluster, fs.Sector_Offset(rd_ce.sector_start))
-	defer delete(dirs)
 	testing.expect(t, ok_dir, "read_directory_entries")
 	testing.expect(t, len(dirs) >= 1, "at least one entry")
 
@@ -63,7 +62,6 @@ test_fs_core :: proc(t: ^testing.T) {
 	kernel_cluster := fs.Cluster(kernel.stored_cluster)
 	kernel_offset  := fs.Sector_Offset(kernel.sector_index)
 	runs, ok_runs := fs.resolve_extents(fd, &master, kernel_cluster, kernel_offset)
-	defer delete(runs)
 
 	testing.expect(t, ok_runs, "resolve_extents")
 	testing.expect(t, len(runs) > 0, "extents not empty")
