@@ -143,14 +143,13 @@ allocate_sectors :: proc(
 		is_fresh := .Allocated not_in cme.flags
 		if is_fresh {
 			cme.flags += {.Allocated}
-			cme.stored_cluster = u64(cluster_idx)
 			cme.sector_index   = 0
 			if !write_cluster_map_entry(disk, master, Cluster(cluster_idx), &cme) {
 				return 0, 0, .Sector_Write_Error
 			}
 
 			zero_buf: [SECTOR_SIZE]u8
-			table_sector := Sector(u64(cme.stored_cluster) * master.cluster_size + u64(cme.sector_index))
+			table_sector := Sector(cluster_idx * master.cluster_size + u64(cme.sector_index))
 			if !sector_write(disk, table_sector, zero_buf[:]) {
 				return 0, 0, .Sector_Write_Error
 			}

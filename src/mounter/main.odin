@@ -40,10 +40,17 @@ main :: proc() {
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)
 
-	context.allocator = mem.tracking_allocator(&track)
+	when ODIN_DEBUG {
+		context.allocator = mem.tracking_allocator(&track)
+	}
+	when !ODIN_DEBUG {
+		_ = track
+	}
+
 	log_file_path: string
 	log_level := log.Level.Debug
 	fuse_args: [dynamic]string
+	defer delete(fuse_args)
 	for i in 1 ..< len(os.args) {
 		arg := os.args[i]
 		switch {
@@ -163,6 +170,8 @@ main :: proc() {
 
 	lru.init(&fsys.path_cache, 128, context.allocator, context.allocator)
 	fsys.path_cache.on_remove = path_cache_on_remove
+	lru.init(&fsys.lfn_cache, 256, context.allocator, context.allocator)
+	fsys.lfn_cache.on_remove = lfn_cache_on_remove
 	rc := fuse3.run(c.int(len(dynamic_argv)), raw_data(dynamic_argv[:]), &ops, fsys)
 	if rc != 0 {
 		log.errorf("fuse_main returned %d", rc)
@@ -170,10 +179,12 @@ main :: proc() {
 	}
 
 	log.infof("unmounted")
-	if len(track.allocation_map) > 0 {
-		log.warnf("--- leaked allocations ---")
-		for _, leak in track.allocation_map {
-			log.warnf("  %v bytes at %v", leak.size, leak.location)
+	when ODIN_DEBUG {
+		if len(track.allocation_map) > 0 {
+			log.warnf("--- leaked allocations ---")
+			for _, leak in track.allocation_map {
+				log.warnf("  %v bytes at %v", leak.size, leak.location)
+			}
 		}
 	}
 }

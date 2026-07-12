@@ -64,6 +64,7 @@ resolve_lfn :: proc(
 	sector_buf: [SECTOR_SIZE]u8
 	current_cluster := Cluster(ptr.cluster)
 	current_entry  := target
+	byte_offset := u64(ptr._pad)
 	max_steps := int(master.cluster_map_size) + 1
 	for guard in 0 ..< max_steps {
 		if guard == max_steps - 1 {
@@ -77,11 +78,13 @@ resolve_lfn :: proc(
 			break
 		}
 
-		n_read := min(bytes_to_read, SECTOR_SIZE)
-		if !sector_read(disk, run_sector, sector_buf[:n_read]) {
+		n_read := min(bytes_to_read, SECTOR_SIZE - byte_offset)
+		if !sector_read(disk, run_sector, sector_buf[:]) {
 			return "", false
 		}
-		append(&data, ..sector_buf[:n_read])
+
+		append(&data, ..sector_buf[byte_offset:][:n_read])
+		byte_offset = 0 // only apply on first sector
 		if current_entry.next_cluster == 0 {
 			break
 		}

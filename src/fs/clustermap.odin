@@ -13,14 +13,14 @@ read_cluster_map_entry :: proc(
 		return {}, false
 	}
 
-	entry_sector := Sector(master.cluster_map_offset + u64(cluster) / CLUSTER_ENTRIES_PER_SECTOR)
+	entry_sector := Sector(master.cluster_map_offset + u64(cluster) / CLUSTER_MAP_ENTRIES_PER_SECTOR)
 
-	entry_index  := u64(cluster) % CLUSTER_ENTRIES_PER_SECTOR
+	entry_index  := u64(cluster) % CLUSTER_MAP_ENTRIES_PER_SECTOR
 	buf: [SECTOR_SIZE]u8
 	if !sector_read(disk, entry_sector, buf[:]) {
 		return {}, false
 	}
-	entries := (^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Map_Entry)(raw_data(buf[:]))
+	entries := (^[CLUSTER_MAP_ENTRIES_PER_SECTOR]Cluster_Map_Entry)(raw_data(buf[:]))
 	return entries[entry_index], true
 }
 
@@ -38,8 +38,7 @@ read_cluster_entry_table :: proc(
 		return false
 	}
 
-	table_sector := Sector(u64(cme.stored_cluster) * master.cluster_size + u64(cme.sector_index))
-
+	table_sector := Sector(u64(cluster) * master.cluster_size + u64(cme.sector_index))
 	buf: [SECTOR_SIZE]u8
 	if !sector_read(disk, table_sector, buf[:]) {
 		return false
@@ -84,15 +83,15 @@ write_cluster_map_entry :: proc(
 		return false
 	}
 
-	entry_sector := Sector(master.cluster_map_offset + u64(cluster) / CLUSTER_ENTRIES_PER_SECTOR)
+	entry_sector := Sector(master.cluster_map_offset + u64(cluster) / CLUSTER_MAP_ENTRIES_PER_SECTOR)
 
-	entry_index  := u64(cluster) % CLUSTER_ENTRIES_PER_SECTOR
+	entry_index  := u64(cluster) % CLUSTER_MAP_ENTRIES_PER_SECTOR
 	buf: [SECTOR_SIZE]u8
 	if !sector_read(disk, entry_sector, buf[:]) {
 		return false
 	}
 
-	entries := (^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Map_Entry)(raw_data(buf[:]))
+	entries := (^[CLUSTER_MAP_ENTRIES_PER_SECTOR]Cluster_Map_Entry)(raw_data(buf[:]))
 	entries[entry_index] = entry^
 	return sector_write(disk, entry_sector, buf[:])
 }
@@ -106,8 +105,7 @@ write_cluster_entry_table :: proc(
 		return false
 	}
 
-	table_sector := Sector(u64(cme.stored_cluster) * master.cluster_size + u64(cme.sector_index))
-
+	table_sector := Sector(u64(cluster) * master.cluster_size + u64(cme.sector_index))
 	buf: [SECTOR_SIZE]u8
 	dst := (^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry)(raw_data(buf[:]))
 	#unroll for i in 0 ..< CLUSTER_ENTRIES_PER_SECTOR {

@@ -1,7 +1,7 @@
 # fused — FUSE filesystem
 
 FUSE filesystem daemon implemented in Odin. Implements a cluster-based on-disk
-format with read-write FUSE mounting via a libfuse3 FFI binding.
+format (rev 4) with read-write FUSE mounting via a libfuse3 FFI binding.
 
 ## Quick start
 
@@ -33,13 +33,15 @@ docs/             Design document, implementation plan
 - Linux kernel with fuse module loaded (`modprobe fuse`)
 
 ```
-make all           # clean + disker + build + imgdump + run-disker + test + vet
+make all           # clean → build all binaries → format image → test → vet
 make build         # debug build → build/fused
 make release       # optimized build → build/fused_release
 make disker        # image formatter → build/disker
+make imgdump       # image dumper → build/imgdump
 make run-disker    # format 1MB image → fused.img
 make test          # unit tests
-make ci            # full pipeline: build + check + audit + test + smoke
+make disker-test   # integration tests for disker + imgdump (20)
+make ci            # full pipeline: build + check + audit + test + FUSE smoke
 ```
 
 ## Mount
@@ -85,17 +87,29 @@ logrotate or pipe-based rotation instead.
 
 | Target | Description |
 |---|---|
-| `all` | clean + disker + build + imgdump + run-disker + test + vet |
+| `all` | clean → build all binaries → format image → test |
 | `build` | Debug build → build/fused |
+| `disker` | Image formatter → build/disker |
+| `imgdump` | Image dumper → build/imgdump |
 | `release` | Optimized build → build/fused_release |
-| `test` | Unit tests |
+| `run-disker` | Format 1 MB image → fused.img |
+| `test` | Unit tests (41) |
+| `disker-test` | Integration tests for disker + imgdump (20) |
+| `smoke` | Read-only FUSE smoke test (14 checks) |
+| `smoke-rw` | Read-write FUSE smoke test (25 steps: create, write, mkdir, unlink, remount, persistence, df) |
+| `smoke-harness` | smoke via fuse_harness (isolated namespace, timed) |
+| `smoke-rw-harness` | smoke-rw via fuse_harness (isolated namespace, timed) |
 | `check` | C vs Odin struct size cross-check |
 | `audit` | Verify every `proc "c"` restores context and logger |
-| `smoke` | mount + ls + cat + stat + write + unmount |
-| `smoke-rw` | Full read-write test (create, write, mkdir, unlink, remount) |
-| `ci` | build + check + audit + test + smoke (all phases) |
+| `ci` | build + check + audit + test + smoke-harness (all phases) |
+| `ci-full` | ci + tool integration tests + smoke-rw |
 | `clean` | Remove build/ and logs/ |
 | `clean-logs` | Remove logs/ and cached test image |
+
+The compiler uses `-thread-count:4` by default (set `THREAD_COUNT=N` to tune)
+and `-no-threaded-checker` to skip the race-detector LLVM pass. Clean builds
+use `-use-single-module` for speed; incremental builds use `-use-separate-modules`.
+Set `SHOW_TIMINGS=1` to see compile-time breakdown.
 
 ## ABI compatibility
 
@@ -106,8 +120,8 @@ cross-checked against C at build time via `make check`.
 
 ## Architecture notes
 
-Mount state (disk handle, master record, bitmap cache, path cache, logger) is
-held in a single `FS` struct passed as `fuse_get_context().private_data`. No
+Mount state (disk handle, master record, LRU bitmap cache, path cache, logger)
+is held in a single `FS` struct passed as `fuse_get_context().private_data`. No
 package-level globals — the `fs/` package is fully stateless, with all
 dependencies passed as explicit parameters. This makes the concurrency model
 explicit: the `-s` (single-threaded) flag is always forced, and any future move

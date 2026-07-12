@@ -6,7 +6,7 @@ validate_master :: proc(master: ^Master_Record, image_size: u64) -> FS_Error {
 	if master.sig != FUSED_SIG {
 		return .Invalid_Signature
 	}
-	if master.rev < 2 {
+	if master.rev < 4 {
 		return .Invalid_Signature
 	}
 	if master.end_sig != 0x0BB0 {

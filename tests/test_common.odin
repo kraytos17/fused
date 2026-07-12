@@ -4,18 +4,28 @@
 package tests
 
 import "core:os"
+import "src:fs"
 
 TEST_IMG_SRC := "fused.img"
 TEST_IMG_DST := "/dev/shm/fused_test.img"
 
 // open_test_image returns a read-write copy of fused.img.
-// Reuses the cached copy if it is up to date with the source.
+// Reuses the cached copy if it is up to date with the source AND
+// has a compatible on-disk format version (rev >= 4).
 open_test_image :: proc() -> (^os.File, bool) {
 	src_stale := true
 	src_fi, src_err := os.stat(TEST_IMG_SRC, context.temp_allocator)
 	dst_fi, dst_err := os.stat(TEST_IMG_DST, context.temp_allocator)
 	if src_err == nil && dst_err == nil {
 		src_stale = src_fi.modification_time != dst_fi.modification_time
+		if !src_stale {
+			cached_fd, cached_err := os.open(TEST_IMG_DST, {.Read})
+			if cached_err == nil {
+				cached_master, cached_ok := fs.read_master_record(cached_fd)
+				os.close(cached_fd)
+				src_stale = !cached_ok || cached_master.rev < 4
+			}
+		}
 	}
 	if !src_stale {
 		fd, open_err := os.open(TEST_IMG_DST, {.Read, .Write})

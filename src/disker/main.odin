@@ -1,13 +1,17 @@
 // main.odin — fused image formatter.
 //
-// Formats a raw disk image with the MasterRecord, ClusterMap region,
-// initial ClusterEntry tables for the root directory, and an optional
-// demo file.  No FUSE dependency — can be built and run without libfuse3.
+// Formats a raw disk image by writing sequentially from sector 0:
+//   MasterRecord → ClusterMap table (sector-by-sector)
+//   → root cluster (CE table, directory, optional demo file)
+//   → zero-pad to image size.
+//
+// No seeking after initial open. No large pre-allocated buffers.
+// No FUSE dependency — builds without libfuse3.
 #+build linux
 package main
 
 import "base:runtime"
-import "core:io"
+import "core:fmt"
 import "core:log"
 import "core:os"
 import "core:strconv"
@@ -23,176 +27,278 @@ DEMO_CONTENT := [?]u8{
 	0x06, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc8, 0x00, 0x5b,
 }
 
+Flags :: struct {
+	size:         u64,
+	cluster_size: u64,
+	output:       string,
+	demo_file:    string,
+	verbose:      bool,
+	force:        bool,
+}
+
+Writer :: struct {
+	fd:  ^os.File,
+	pos: i64,
+}
+
+writer_init :: proc(w: ^Writer, fd: ^os.File) {
+	w.fd = fd
+	w.pos = 0
+}
+
+writer_write :: proc(w: ^Writer, data: []u8) -> bool {
+	_, err := os.write_at(w.fd, data, w.pos)
+	if err != nil {
+		log.errorf("write at %d failed: %v", w.pos, err)
+		return false
+	}
+	w.pos += i64(len(data))
+	return true
+}
+
+// writer_pad_to writes zeros up to the next multiple of boundary.
+writer_pad_to :: proc(w: ^Writer, boundary: i64) -> bool {
+	rem := i64(boundary) - (w.pos % i64(boundary))
+	if rem == i64(boundary) { return true }
+
+	zero_block: [512]u8
+	for rem > 0 {
+		n := min(rem, 512)
+		_, err := os.write_at(w.fd, zero_block[:n], w.pos)
+		if err != nil { return false }
+		w.pos += n
+		rem -= n
+	}
+	return true
+}
+
 main :: proc() {
 	context = runtime.default_context()
-	size         := u64(fs.DEFAULT_IMAGE_SIZE)
-	cluster_size := u64(fs.DEFAULT_CLUSTER_SIZE)
-	output_path  := "fused.img"
-	embed_demo   := true
-
-	for arg in os.args[1:] {
-		switch {
-		case strings.has_prefix(arg, "--size="):
-			s, ok := parse_size(strings.trim_prefix(arg, "--size="))
-			if !ok {
-				log.fatalf("invalid --size: %s", arg)
-			}
-			size = s
-		case strings.has_prefix(arg, "--cluster-size="):
-			rest := strings.trim_prefix(arg, "--cluster-size=")
-			v := u64(strconv.parse_int(rest) or_else 0)
-			if v == 0 || v > 65536 {
-				log.fatalf("invalid --cluster-size: %s", rest)
-			}
-			cluster_size = v
-		case strings.has_prefix(arg, "--output="):
-			output_path = strings.trim_prefix(arg, "--output=")
-		case arg == "--no-demo":
-			embed_demo = false
-		case:
-			log.errorf("unknown flag: %s", arg)
-			log.errorf("usage: disker [--size=N] [--cluster-size=N] [--output=path] [--no-demo]")
+	context.logger = log.create_console_logger(log.Level.Info)
+	flags := parse_args()
+	if flags.size < fs.SECTOR_SIZE * (flags.cluster_size + 2) {
+		log.errorf("image too small: need at least %d bytes for cluster_size=%d",
+			fs.SECTOR_SIZE * (flags.cluster_size + 2), flags.cluster_size)
+		os.exit(1)
+	}
+	if !flags.force {
+		if _, err := os.stat(flags.output, context.temp_allocator); err == nil {
+			log.errorf("%s exists; use --force to overwrite", flags.output)
 			os.exit(1)
 		}
 	}
-	if size < 512 * (cluster_size + 2) {
-		log.fatalf("image too small for the given cluster size")
-	}
 
-	log.infof("formatting %v bytes with cluster_size=%v → %s", size, cluster_size, output_path)
-
-	fd, open_err := os.open(output_path, {.Create, .Write, .Trunc})
+	fd, open_err := os.open(flags.output, {.Create, .Write, .Trunc})
 	if open_err != nil {
-		log.fatalf("cannot create %s: %v", output_path, open_err)
+		log.errorf("cannot create %s: %v", flags.output, open_err)
+		os.exit(1)
 	}
 	defer os.close(fd)
 
-	trunc_err := os.truncate(fd, i64(size))
+	trunc_err := os.truncate(fd, i64(flags.size))
 	if trunc_err != nil {
-		log.fatalf("truncate failed: %v", trunc_err)
+		log.fatalf("truncate to %d failed: %v", flags.size, trunc_err)
+	}
+	if flags.verbose {
+		log.infof("formatting %s: size=%d cluster_size=%d",
+			flags.output, flags.size, flags.cluster_size)
 	}
 
-	total_sectors  := size / fs.SECTOR_SIZE
-	total_clusters := total_sectors / cluster_size
+	demo_data: []u8
+	needs_free := false
+	if flags.demo_file != "" {
+		data, err := os.read_entire_file(flags.demo_file, context.allocator)
+		if err != nil {
+			log.warnf("cannot read demo file %s; using embedded demo", flags.demo_file)
+			demo_data = DEMO_CONTENT[:]
+		} else {
+			demo_data = data
+			needs_free = true
+		}
+	} else {
+		demo_data = DEMO_CONTENT[:]
+	}
+	defer if needs_free { delete(demo_data) }
 
-	entries_per_sector := u64(fs.CLUSTER_ENTRIES_PER_SECTOR)
-	cluster_map_sectors := (total_clusters + entries_per_sector - 1) / entries_per_sector
-	reserved_clusters := (cluster_map_sectors + 1 + cluster_size - 1) / cluster_size
+	w: Writer
+	writer_init(&w, fd)
+	total_sectors  := flags.size / fs.SECTOR_SIZE
+	total_clusters := total_sectors / flags.cluster_size
+
+	cme_per_sector := u64(fs.CLUSTER_MAP_ENTRIES_PER_SECTOR)
+	cm_sectors     := (total_clusters + cme_per_sector - 1) / cme_per_sector
+	reserved_clusters := (cm_sectors + 1 + flags.cluster_size - 1) / flags.cluster_size
 	root_cluster := reserved_clusters
 
 	master: fs.Master_Record
 	master.sig = fs.FUSED_SIG
-	master.rev = 3
+	master.rev = 4
 	master.cluster_map_offset = 1
 	master.cluster_map_size = total_clusters
-	master.cluster_size = cluster_size
-	master.root_sector_index  = 1
+	master.cluster_size = flags.cluster_size
+	master.root_sector_index = 1
 	master.root_cluster = root_cluster
 	master.end_sig = 0x0BB0
-
-	write_master(fd, &master)
-	map_count := int(total_clusters)
-	map_buf := make([]u8, map_count * size_of(fs.Cluster_Map_Entry))
-	map_table := cast([^]fs.Cluster_Map_Entry)(raw_data(map_buf))
-	for i in 0 ..< int(reserved_clusters) {
-		map_table[i] = fs.Cluster_Map_Entry{
-			flags = fs.Cluster_Map_Flags{.Reserved, .Full},
+	{
+		master_buf: [fs.SECTOR_SIZE]u8
+		(^fs.Master_Record)(raw_data(master_buf[:]))^ = master
+		if !writer_write(&w, master_buf[:]) { os.exit(1) }
+	}
+	{
+		report_interval := max(1, cm_sectors / 10)
+		for sec_idx: u64; sec_idx < cm_sectors; sec_idx += 1 {
+			sec_buf: [fs.SECTOR_SIZE]u8
+			entries := (^[fs.CLUSTER_MAP_ENTRIES_PER_SECTOR]fs.Cluster_Map_Entry)(raw_data(sec_buf[:]))
+			base := int(sec_idx) * fs.CLUSTER_MAP_ENTRIES_PER_SECTOR
+			for ei in 0 ..< fs.CLUSTER_MAP_ENTRIES_PER_SECTOR {
+				ci := base + ei
+				if u64(ci) >= total_clusters { break }
+				switch {
+				case u64(ci) < reserved_clusters:
+					entries[ei] = {flags = {.Reserved, .Full}}
+				case u64(ci) == reserved_clusters:
+					entries[ei] = {flags = {.Allocated}}
+				}
+			}
+			if !writer_write(&w, sec_buf[:]) { os.exit(1) }
+			if flags.verbose && cm_sectors > 100 && sec_idx % report_interval == 0 {
+				log.infof("  cluster map: %d/%d sectors", sec_idx + 1, cm_sectors)
+			}
 		}
 	}
-	map_table[reserved_clusters] = fs.Cluster_Map_Entry{
-		stored_cluster = root_cluster,
-		flags          = fs.Cluster_Map_Flags{.Allocated},
-	}
 
-	must_write(fd, map_buf, "ClusterMap array")
-	seek_to_sector(fd, fs.Sector(u64(root_cluster) * cluster_size))
-
-	ce_buf: [fs.SECTOR_SIZE]u8
-	ce_table := (^[fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry)(raw_data(ce_buf[:]))
-	ce_table[0] = fs.Cluster_Entry{
-		state = fs.Cluster_Entry_State{.Allocated, .Cluster_Map},
-		allocation_size = 1,
-		sector_start = 0,
-	}
-	ce_table[1] = fs.Cluster_Entry{
-		state = fs.Cluster_Entry_State{.Allocated, .Directory},
-		allocation_size = 1,
-		sector_start = 1,
-	}
-	if embed_demo {
-		demo_sectors := u16((len(DEMO_CONTENT) + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE)
-		ce_table[2] = fs.Cluster_Entry{state = fs.Cluster_Entry_State{.Allocated, .File_Content}, allocation_size = demo_sectors, sector_start = 2}
-	}
-
-	must_write(fd, ce_buf[:], "ClusterEntry table")
-	seek_to_sector(fd, fs.Sector(u64(root_cluster)*cluster_size + 1))
-	dir_sector: [fs.SECTOR_SIZE]u8
-	if embed_demo {
-		now := time.now()
-		y, mo, d := time.date(now)
-		h, m, s := time.clock(now)
-		demo_entry := fs.Directory_Entry{
-			flags = fs.Dir_Flags{.Allocated, .Exists},
-			sector_index = 2, stored_cluster = root_cluster, year = u16(y),
-			date_time = fs.Packed_Date_Time{
-				month = u32(int(mo)), date = u32(d),
-				hour = u32(h), minute = u32(m), second = u32(s),
-			},
-			atime_year = u16(y),
-			atime_date_time = fs.Packed_Date_Time{
-				month = u32(int(mo)), date = u32(d),
-				hour = u32(h), minute = u32(m), second = u32(s),
-			},
-			file_size = u64(len(DEMO_CONTENT)),
+	root_sector := i64(u64(root_cluster) * flags.cluster_size)
+	if !writer_pad_to(&w, root_sector * fs.SECTOR_SIZE) { os.exit(1) }
+	{
+		ce_buf: [fs.SECTOR_SIZE]u8
+		ce_table := (^[fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry)(raw_data(ce_buf[:]))
+		ce_table[0] = {
+			state            = {.Allocated, .Cluster_Map},
+			allocation_size  = 1,
+			sector_start     = 0,
 		}
-		copy(demo_entry.file_name[:], "Kernel")
-		(^fs.Directory_Entry)(raw_data(dir_sector[:]))^ = demo_entry
-	}
+		ce_table[1] = {
+			state            = {.Allocated, .Directory},
+			allocation_size  = 1,
+			sector_start     = 1,
+		}
+		if len(demo_data) > 0 {
+			demo_sectors := u16((len(demo_data) + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE)
+			ce_table[2] = {
+				state            = {.Allocated, .File_Content},
+				allocation_size  = demo_sectors,
+				sector_start     = 2,
+			}
+		}
+		if !writer_write(&w, ce_buf[:]) { os.exit(1) }
 
-	must_write(fd, dir_sector[:], "root directory sector")
-	if embed_demo {
-		seek_to_sector(fd, fs.Sector(u64(root_cluster)*cluster_size + 2))
-		content_buf: [fs.SECTOR_SIZE]u8
-		copy(content_buf[:], DEMO_CONTENT[:])
-		must_write(fd, content_buf[:], "demo file content")
+		dir_buf: [fs.SECTOR_SIZE]u8
+		if len(demo_data) > 0 {
+			now := time.now()
+			y, mo, d := time.date(now)
+			h, m, s := time.clock(now)
+			entry := fs.Directory_Entry{
+				flags          = {.Allocated, .Exists},
+				sector_index   = 2,
+				stored_cluster = root_cluster,
+				year           = u16(y),
+				date_time      = {month = u32(int(mo)), date = u32(d), hour = u32(h), minute = u32(m), second = u32(s)},
+				atime_year     = u16(y),
+				atime_date_time= {month = u32(int(mo)), date = u32(d), hour = u32(h), minute = u32(m), second = u32(s)},
+				file_size      = u64(len(demo_data)),
+			}
+			copy(entry.file_name[:], "Kernel")
+			(^fs.Directory_Entry)(raw_data(dir_buf[:]))^ = entry
+		}
+		if !writer_write(&w, dir_buf[:]) { os.exit(1) }
+		if len(demo_data) > 0 {
+			content_buf: [fs.SECTOR_SIZE]u8
+			copy(content_buf[:], demo_data)
+			if !writer_write(&w, content_buf[:]) { os.exit(1) }
+		}
 	}
-	log.infof("done: %s", output_path)
+	if !writer_pad_to(&w, i64(flags.size)) { os.exit(1) }
+	log.infof("done: %s  (%d clusters, %d/sector CME, %d CME sectors, %d reserved clusters)",
+		flags.output, total_clusters, fs.CLUSTER_MAP_ENTRIES_PER_SECTOR, cm_sectors, reserved_clusters)
 }
 
-write_master :: proc(fd: ^os.File, m: ^fs.Master_Record) {
-	buf: [fs.SECTOR_SIZE]u8
-	(^fs.Master_Record)(raw_data(buf[:]))^ = m^
-	seek_to_sector(fd, 0)
-	must_write(fd, buf[:], "MasterRecord")
+parse_args :: proc() -> Flags {
+	f: Flags = {
+		size         = fs.DEFAULT_IMAGE_SIZE,
+		cluster_size = fs.DEFAULT_CLUSTER_SIZE,
+		output       = "fused.img",
+	}
+
+	positional: [dynamic]string
+	defer delete(positional)
+
+	for arg in os.args[1:] {
+		switch {
+		case arg == "--help" || arg == "-h":
+			print_help(); os.exit(0)
+		case strings.has_prefix(arg, "--size="):
+			s, ok := parse_size(strings.trim_prefix(arg, "--size="))
+			if !ok { log.errorf("invalid --size: %s", arg); os.exit(1) }
+			f.size = s
+		case strings.has_prefix(arg, "--cluster-size="):
+			v := u64(strconv.parse_int(strings.trim_prefix(arg, "--cluster-size=")) or_else 0)
+			if v == 0 || v > 65536 { log.errorf("invalid --cluster-size: %s", arg); os.exit(1) }
+			f.cluster_size = v
+		case strings.has_prefix(arg, "--output="):
+			f.output = strings.trim_prefix(arg, "--output=")
+		case strings.has_prefix(arg, "--demo-file="):
+			f.demo_file = strings.trim_prefix(arg, "--demo-file=")
+		case arg == "--verbose" || arg == "-v":
+			f.verbose = true
+		case arg == "--force" || arg == "-f":
+			f.force = true
+		case strings.has_prefix(arg, "--"):
+			log.errorf("unknown flag: %s", arg)
+			print_help(); os.exit(1)
+		case:
+			append(&positional, arg)
+		}
+	}
+	if len(positional) > 0 {
+		f.output = positional[len(positional)-1]
+	}
+	return f
 }
 
-seek_to_sector :: proc(fd: ^os.File, sector: fs.Sector) {
-	_, seek_err := os.seek(fd, i64(u64(sector) * fs.SECTOR_SIZE), io.Seek_From.Start)
-	if seek_err != nil {
-		log.fatalf("seek to sector %d failed: %v", sector, seek_err)
-	}
-}
+print_help :: proc() {
+	fmt.eprintln(`Usage: disker [options] [<output-path>]
 
-must_write :: proc(fd: ^os.File, data: []u8, label: string) {
-	_, err := os.write(fd, data)
-	if err != nil {
-		log.fatalf("write %s failed: %v", label, err)
-	}
+Formats a raw disk image for the fused filesystem (rev 4).
+
+Options:
+  --size=<N>          Image size (e.g. 1M, 256M, 1G)  (default: 1M)
+  --cluster-size=<N>  Sectors per cluster (default: 16)
+  --output=<path>     Output image path (default: fused.img)
+  --demo-file=<path>  File to embed as /Kernel (default: embedded demo)
+  --verbose, -v       Show progress for large images
+  --force, -f         Overwrite existing output
+  --help, -h          Show this help
+
+Examples:
+  disker --size=256M --cluster-size=64 --output=big.img
+  disker --force fused.img
+  disker --demo-file=mykernel.bin --output=os.img`)
 }
 
 parse_size :: proc(s: string) -> (u64, bool) {
-	mult: u64 = 1
-	str := s
-	if strings.has_suffix(s, "K") || strings.has_suffix(s, "k") {
-		mult = 1024
-		str = s[:len(s)-1]
-	} else if strings.has_suffix(s, "M") || strings.has_suffix(s, "m") {
-		mult = 1024 * 1024
-		str = s[:len(s)-1]
-	} else if strings.has_suffix(s, "G") || strings.has_suffix(s, "g") {
-		mult = 1024 * 1024 * 1024
-		str = s[:len(s)-1]
+	last := s[len(s)-1]
+	switch last {
+	case 'K', 'k':
+		v, ok := strconv.parse_uint(s[:len(s)-1])
+		return u64(v) * 1024, ok
+	case 'M', 'm':
+		v, ok := strconv.parse_uint(s[:len(s)-1])
+		return u64(v) * 1024 * 1024, ok
+	case 'G', 'g':
+		v, ok := strconv.parse_uint(s[:len(s)-1])
+		return u64(v) * 1024 * 1024 * 1024, ok
+	case:
+		v, ok := strconv.parse_uint(s)
+		return u64(v), ok
 	}
-	v, ok := strconv.parse_uint(str)
-	return u64(v) * mult, ok
 }

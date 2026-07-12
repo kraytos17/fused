@@ -12,14 +12,35 @@ MOUNTPOINT    := $(or $(MOUNTPOINT),mnt)
 IMAGE         := $(or $(IMAGE),fused.img)
 COLLECTIONS   := -collection:src=$(SRC_DIR)
 
+# Parallelism — Odin's internal thread count for a single compilation.
+# Lower when running make -jN concurrently; higher for single-target builds.
+# Check CPU count: `nproc`; set half or less to avoid memory pressure.
+THREAD_COUNT  := $(or $(THREAD_COUNT),4)
+
 # FUSE3 linkage: the `foreign import libfuse3 "system:fuse3"` in
 # src/fuse3/foreign.odin drives the link via pkg-config. The
 # -extra-linker-flags below is a fallback in case the
 # pkg-config integration ever drops on a toolchain update.
 FUSE_LINK_FLAGS := -extra-linker-flags:"-lfuse3 -lpthread"
-DEBUG_FLAGS   := -debug -o:none -warnings-as-errors \
-                 -use-separate-modules
 
+# Base flags shared by all debug builds.
+# -no-threaded-checker skips the race-detector pass (compiles faster).
+# -thread-count controls Odin's internal parallelism.
+BASE_DEBUG    := -debug -o:none -warnings-as-errors \
+                 -use-separate-modules \
+                 -no-threaded-checker \
+                 -thread-count:$(THREAD_COUNT)
+
+# Debug (incremental build — separate modules cache interfaces)
+DEBUG_FLAGS   := $(BASE_DEBUG)
+
+# Full clean build — single module is faster when nothing is cached.
+FULL_BUILD    := -debug -o:none -warnings-as-errors \
+                 -use-single-module \
+                 -no-threaded-checker \
+                 -thread-count:$(THREAD_COUNT)
+
+# Release build — optimized, no debug info, single-module for speed.
 RELEASE_FLAGS := -o:aggressive \
                  -no-bounds-check \
                  -no-type-assert \
@@ -27,43 +48,60 @@ RELEASE_FLAGS := -o:aggressive \
                  -microarch:native \
                  -lto:thin \
                  -source-code-locations:none \
-                 -use-separate-modules
+                 -use-single-module \
+                 -no-threaded-checker \
+                 -thread-count:$(THREAD_COUNT)
 
-TEST_FLAGS    := -debug -o:none -warnings-as-errors \
-                 -use-separate-modules \
+# Test — single-threaded test runner to avoid shared-image corruption.
+TEST_FLAGS    := $(BASE_DEBUG) \
                  -define:ODIN_TEST_THREADS=1
 
 VET_FLAGS     := -vet -vet-shadowing -strict-style
 CHECK_FLAGS   := -warnings-as-errors
 
+# Set SHOW_TIMINGS=1 to print compile-time breakdown per target.
+SHOW_TIMINGS  := $(or $(SHOW_TIMINGS),)
+TIMING_FLAG   := $(if $(SHOW_TIMINGS),-show-timings,)
 ODIN_VERSION  := $(shell $(ODIN) version 2>&1 | head -1)
 
 .PHONY: all build release disker run-disker imgdump \
-        test check smoke smoke-harness smoke-rw smoke-rw-harness ci audit mount unmount \
+        test check smoke smoke-harness smoke-rw smoke-rw-harness ci ci-full \
+        disker-test audit mount unmount \
         verify verify-full clean clean-logs rebuild help \
         vet vet-all vet-shadowing vet-unused vet-style vet-cast \
         check-requires check-versions
 
-all: clean disker build imgdump run-disker test vet
+# Use FULL_BUILD (single-module) for the first build after clean.
+# Subsequent incremental builds use DEBUG_FLAGS (separate-modules) via the
+# individual targets.
+all: clean
+	@echo "==> Full build (single-module for speed) (Odin: $(ODIN_VERSION))"
+	@mkdir -p $(BUILD_DIR) $(LOGS_DIR)
+	$(ODIN) build $(MOUNTER_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/$(BINARY) $(FULL_BUILD) $(FUSE_LINK_FLAGS) $(TIMING_FLAG)
+	$(ODIN) build $(DISKER_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/disker $(FULL_BUILD) $(TIMING_FLAG)
+	$(ODIN) build $(IMGDUMP_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/imgdump $(FULL_BUILD) $(TIMING_FLAG)
+	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS) $(TIMING_FLAG)
+	@echo "==> Running disker (default 1 MB image → fused.img)"
+	@./$(BUILD_DIR)/disker --force --size=1M --output=fused.img
 
 build:
 	@echo "==> Building debug $(BINARY) (Odin: $(ODIN_VERSION))"
 	@mkdir -p $(BUILD_DIR) $(LOGS_DIR)
-	$(ODIN) build $(MOUNTER_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/$(BINARY) $(DEBUG_FLAGS) $(FUSE_LINK_FLAGS)
+	$(ODIN) build $(MOUNTER_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/$(BINARY) $(DEBUG_FLAGS) $(FUSE_LINK_FLAGS) $(TIMING_FLAG)
 
 disker:
 	@echo "==> Building disker (Odin: $(ODIN_VERSION))"
 	@mkdir -p $(BUILD_DIR)
-	$(ODIN) build $(DISKER_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/disker $(DEBUG_FLAGS)
+	$(ODIN) build $(DISKER_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/disker $(DEBUG_FLAGS) $(TIMING_FLAG)
 
 run-disker: disker
 	@echo "==> Running disker (default 1 MB image → fused.img)"
-	@./$(BUILD_DIR)/disker --size=1M --output=fused.img
+	@./$(BUILD_DIR)/disker --force --size=1M --output=fused.img
 
 imgdump:
 	@echo "==> Building imgdump (Odin: $(ODIN_VERSION))"
 	@mkdir -p $(BUILD_DIR)
-	$(ODIN) build $(IMGDUMP_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/imgdump $(DEBUG_FLAGS)
+	$(ODIN) build $(IMGDUMP_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/imgdump $(DEBUG_FLAGS) $(TIMING_FLAG)
 
 rebuild: clean build
 
@@ -71,7 +109,7 @@ release:
 	@echo "==> Building release $(BINARY) (Odin: $(ODIN_VERSION))"
 	@echo "    flags: $(RELEASE_FLAGS)"
 	@mkdir -p $(BUILD_DIR)
-	$(ODIN) build $(MOUNTER_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/$(BINARY)_release $(RELEASE_FLAGS) $(FUSE_LINK_FLAGS)
+	$(ODIN) build $(MOUNTER_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/$(BINARY)_release $(RELEASE_FLAGS) $(FUSE_LINK_FLAGS) $(TIMING_FLAG)
 
 clean:
 	@echo "==> Cleaning build artifacts"
@@ -92,7 +130,7 @@ unmount:
 
 test: run-disker
 	@echo "==> Running all tests"
-	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS)
+	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS) $(TIMING_FLAG)
 
 check:
 	@echo "==> C vs Odin struct size cross-check"
@@ -119,6 +157,13 @@ smoke-rw-harness: build run-disker
 ci: build run-disker
 	@bash $(TEST_DIR)/ci.sh
 
+ci-full: build run-disker
+	@bash $(TEST_DIR)/ci.sh --no-tool-tests
+
+disker-test: build disker imgdump run-disker
+	@echo "==> Running disker + imgdump integration tests"
+	@bash $(TEST_DIR)/disker_test.sh
+
 verify: check audit
 	@echo
 	@echo "==> All non-FUSE verifications passed."
@@ -138,7 +183,7 @@ vet-all: run-disker
 	@for d in $(VET_DIRS); do \
 		$(ODIN) build $$d $(COLLECTIONS) $(CHECK_FLAGS) $(VET_FLAGS) -out:/dev/null || exit 1; \
 	done
-	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS)
+	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS) $(TIMING_FLAG)
 
 vet-shadowing:
 	@echo "==> Checking for variable shadowing"
@@ -189,7 +234,8 @@ help:
 	@echo "  rebuild         clean && build"
 	@echo ""
 	@echo "Tests:"
-	@echo "  test            Odin test suite (@test)"
+	@echo "  test            Odin test suite (@test, 41 tests)"
+	@echo "  disker-test     disker + imgdump integration tests (20 tests)"
 	@echo "  check           C vs Odin struct size cross-check"
 	@echo "  audit           audit \"c\" callbacks for context + logger restoration"
 	@echo "  smoke           mount + ls + cat + stat + write + unmount"
@@ -197,6 +243,7 @@ help:
 	@echo "  smoke-rw        read-write test (create + write + mkdir + unlink + remount)"
 	@echo "  smoke-rw-harness smoke-rw via fuse_harness (isolated namespace, timed)"
 	@echo "  ci              build + check + audit + test + smoke-harness"
+	@echo "  ci-full         all the above + tool integration tests + smoke-rw"
 	@echo "  verify          check + audit (no FUSE needed)"
 	@echo ""
 	@echo "Vet:"
@@ -213,4 +260,5 @@ help:
 	@echo ""
 	@echo "Variables:"
 	@echo "  MOUNTPOINT=$(MOUNTPOINT)  BUILD_DIR=$(BUILD_DIR)  IMAGE=$(IMAGE)"
-	@echo "  LOGS_DIR=$(LOGS_DIR)  ODIN=$(ODIN)"
+	@echo "  LOGS_DIR=$(LOGS_DIR)  ODIN=$(ODIN)  THREAD_COUNT=$(THREAD_COUNT)"
+	@echo "  SHOW_TIMINGS=$(SHOW_TIMINGS)  (set to 1 for compile-time breakdown)"

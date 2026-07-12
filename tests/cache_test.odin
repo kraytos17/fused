@@ -25,10 +25,9 @@ test_cache_init_destroy :: proc(t: ^testing.T) {
 	fs.alloc_cache_init(&cache, &master)
 	defer fs.alloc_cache_destroy(&cache)
 
-	testing.expect(t, len(cache.data) > 0, "data allocated")
-	testing.expect(t, len(cache.valid) == int(master.cluster_map_size), "valid size")
-	testing.expect(t, len(cache.used) == int(master.cluster_map_size), "used size")
 	testing.expect(t, cache.bitmap_len > 0, "bitmap_len > 0")
+	_, _, bok := fs.alloc_cache_ensure(&cache, &master, fd, 0)
+	testing.expect(t, bok, "ensure cluster 0 after init")
 }
 
 // Verify that the bitmap built by alloc_cache_ensure matches a direct
@@ -128,18 +127,13 @@ test_cache_invalidate_rebuilds :: proc(t: ^testing.T) {
 	fs.alloc_cache_init(&cache, &master)
 	defer fs.alloc_cache_destroy(&cache)
 
-	_, _, bok := fs.alloc_cache_ensure(&cache, &master, fd, 0)
+	_, used_before, bok := fs.alloc_cache_ensure(&cache, &master, fd, 0)
 	testing.expect(t, bok, "ensure cluster 0")
-	testing.expect(t, cache.valid[0], "valid after build")
-
 	fs.alloc_cache_invalidate(&cache, 0)
-	testing.expect(t, !cache.valid[0], "invalid after invalidate")
 
 	_, used_after, bok2 := fs.alloc_cache_ensure(&cache, &master, fd, 0)
 	testing.expect(t, bok2, "re-ensure cluster 0")
-	testing.expect(t, cache.valid[0], "valid after rebuild")
-
-	_ = used_after
+	testing.expectf(t, used_after == used_before, "used count unchanged: before=%d after=%d", used_before, used_after)
 }
 
 // Verify that alloc_cache_count_free matches the actual on-disk free count.

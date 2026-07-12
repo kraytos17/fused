@@ -1,6 +1,8 @@
 // main.odin — fused image dumper.
 //
-// Reads a fused image and prints every struct in human-readable form.
+// Reads a fused image and prints every structure in human-readable form.
+// Single-pass cluster map scan, zero-heap-alloc flag printers, recursive
+// directory tree walk, hex dump mode, and JSON output.
 // Uses only the src/fs/ package — no FUSE dependency.
 #+build linux
 package main
@@ -12,41 +14,203 @@ import "core:os"
 import "core:strings"
 import "src:fs"
 
+Flags :: struct {
+	path:     string,
+	json:     bool,
+	hex:      bool,
+	hex_path: string,
+}
+
 main :: proc() {
 	context = runtime.default_context()
-	if len(os.args) < 2 {
-		log.fatalf("usage: imgdump <image-path>")
-	}
-
-	path := os.args[1]
-	fd, open_err := os.open(path, {.Read})
+	context.logger = log.create_console_logger(log.Level.Warning)
+	flags := parse_args()
+	fd, open_err := os.open(flags.path, {.Read})
 	if open_err != nil {
-		log.fatalf("cannot open %s: %v", path, open_err)
+		log.errorf("cannot open %s: %v", flags.path, open_err)
+		os.exit(1)
 	}
 	defer os.close(fd)
 
 	master, ok := fs.read_master_record(fd)
-	if !ok {
-		log.fatalf("failed to read MasterRecord")
-	}
+	if !ok { log.errorf("failed to read MasterRecord"); os.exit(1) }
 
-	fi, stat_err := os.stat(path, context.temp_allocator)
+	fi, stat_err := os.stat(flags.path, context.temp_allocator)
 	image_size: u64 = 0
 	if stat_err == nil {
 		image_size = u64(fi.size)
 	}
-
-	err := fs.validate_master(&master, image_size)
-	if err != .None {
-		log.fatalf("validation failed: %v", err)
+	if err := fs.validate_master(&master, image_size); err != .None {
+		log.errorf("validation failed: %v", err)
+		os.exit(1)
+	}
+	if flags.hex {
+		print_hex_by_path(fd, &master, flags.hex_path)
+		return
 	}
 
-	print_master(&master)
-	print_cluster_map(fd, &master)
-	print_root_directory(fd, &master)
+	if flags.json { fmt.print(`{`) }
+	print_master(fd, &master, flags.json)
+	if flags.json { fmt.print(`,`) }
+	print_cluster_map(fd, &master, flags.json)
+	if flags.json { fmt.print(`,`) }
+	print_directory_tree(fd, &master, flags.json)
+	if flags.json { fmt.println(`}`) }
 }
 
-print_master :: proc(m: ^fs.Master_Record) {
+parse_args :: proc() -> Flags {
+	f: Flags
+	i := 1
+	for i < len(os.args) {
+		arg := os.args[i]
+		switch {
+		case arg == "--help" || arg == "-h":
+			print_help(); os.exit(0)
+		case arg == "--json":
+			f.json = true
+		case strings.has_prefix(arg, "--hex"):
+			rest := strings.trim_prefix(arg, "--hex")
+			if rest == "" || rest[0] != '=' {
+				f.hex = true; f.hex_path = "/"
+			} else {
+				f.hex = true; f.hex_path = rest[1:]
+			}
+		case:
+			if f.path == "" {
+				f.path = arg
+			} else {
+				log.errorf("unexpected argument: %s", arg)
+				print_help(); os.exit(1)
+			}
+		}
+		i += 1
+	}
+	if f.path == "" {
+		log.errorf("missing image path")
+		print_help(); os.exit(1)
+	}
+	return f
+}
+
+print_help :: proc() {
+	fmt.eprintln(`Usage: imgdump [options] <image-path>
+
+Dumps a fused filesystem image in human-readable form.
+
+Options:
+  --json             Output as JSON (machine-readable)
+  --hex[=<path>]     Dump file contents as hex (default: /)
+  --help, -h         Show this help
+
+Examples:
+  imgdump fused.img
+  imgdump --json fused.img | jq '.clusters[] | select(.flags == "ALLOCATED")'
+  imgdump --hex=/Kernel fused.img`)
+}
+
+cme_flags_str :: proc(f: fs.Cluster_Map_Flags, buf: []byte) -> string {
+	sb := strings.builder_from_slice(buf)
+	n := 0
+	if .Allocated in f {
+		if n > 0 { strings.write_byte(&sb, '|') }; strings.write_string(&sb, "ALLOCATED"); n += 1
+	}
+	if .Reserved in f {
+		if n > 0 { strings.write_byte(&sb, '|') }; strings.write_string(&sb, "RESERVED"); n += 1
+	}
+	if .Full in f {
+		if n > 0 { strings.write_byte(&sb, '|') }; strings.write_string(&sb, "FULL"); n += 1
+	}
+	if n == 0 { return "0" }
+	return strings.to_string(sb)
+}
+
+ce_state_str :: proc(s: fs.Cluster_Entry_State, buf: []byte) -> string {
+	sb := strings.builder_from_slice(buf)
+	n := 0
+	if .Allocated in s {
+		if n > 0 { strings.write_byte(&sb, '|') }; strings.write_string(&sb, "ALLOCATED"); n += 1
+	}
+	if .Cluster_Map in s {
+		if n > 0 { strings.write_byte(&sb, '|') }; strings.write_string(&sb, "CLUSTER_MAP"); n += 1
+	}
+	if .Directory in s {
+		if n > 0 { strings.write_byte(&sb, '|') }; strings.write_string(&sb, "DIRECTORY"); n += 1
+	}
+	if .File_Content in s {
+		if n > 0 { strings.write_byte(&sb, '|') }; strings.write_string(&sb, "FILE_CONTENT"); n += 1
+	}
+	if .LFN in s {
+		if n > 0 { strings.write_byte(&sb, '|') }; strings.write_string(&sb, "LFN"); n += 1
+	}
+	if n == 0 { return "0" }
+	return strings.to_string(sb)
+}
+
+dir_flags_str :: proc(f: fs.Dir_Flags, buf: []byte) -> string {
+	sb := strings.builder_from_slice(buf)
+	n := 0
+	if .Allocated in f {
+		if n > 0 { strings.write_byte(&sb, '|') }; strings.write_string(&sb, "ALLOCATED"); n += 1
+	}
+	if .LFN in f {
+		if n > 0 { strings.write_byte(&sb, '|') }; strings.write_string(&sb, "LFN"); n += 1
+	}
+	if .Directory in f {
+		if n > 0 { strings.write_byte(&sb, '|') }; strings.write_string(&sb, "DIRECTORY"); n += 1
+	}
+	if .Read_Only in f {
+		if n > 0 { strings.write_byte(&sb, '|') }; strings.write_string(&sb, "READONLY"); n += 1
+	}
+	if .Link in f {
+		if n > 0 { strings.write_byte(&sb, '|') }; strings.write_string(&sb, "LINK"); n += 1
+	}
+	if .Exists in f {
+		if n > 0 { strings.write_byte(&sb, '|') }; strings.write_string(&sb, "EXISTS"); n += 1
+	}
+	if .No_Write in f {
+		if n > 0 { strings.write_byte(&sb, '|') }; strings.write_string(&sb, "NOWRITE"); n += 1
+	}
+	if .No_Read in f {
+		if n > 0 { strings.write_byte(&sb, '|') }; strings.write_string(&sb, "NOREAD"); n += 1
+	}
+	if .No_Execute in f {
+		if n > 0 { strings.write_byte(&sb, '|') }; strings.write_string(&sb, "NOEXEC"); n += 1
+	}
+	if n == 0 { return "0" }
+	return strings.to_string(sb)
+}
+
+print_master :: proc(fd: ^os.File, m: ^fs.Master_Record, json: bool) {
+	if json {
+		sb: strings.Builder
+		strings.builder_init(&sb, context.temp_allocator)
+		strings.write_string(&sb, `"master":{"sig":"`)
+		raw_sig := string(m.sig[:])
+		for i := 0; i < len(raw_sig); i += 1 {
+			if raw_sig[i] == 0 {
+				strings.write_string(&sb, `\u0000`)
+			} else {
+				strings.write_byte(&sb, raw_sig[i])
+			}
+		}
+
+		strings.write_string(&sb, `","rev":`)
+		fmt.sbprint(&sb, m.rev)
+		strings.write_string(&sb, `,"cluster_map_offset":`)
+		fmt.sbprint(&sb, m.cluster_map_offset)
+		strings.write_string(&sb, `,"cluster_map_size":`)
+		fmt.sbprint(&sb, m.cluster_map_size)
+		strings.write_string(&sb, `,"cluster_size":`)
+		fmt.sbprint(&sb, m.cluster_size)
+		strings.write_string(&sb, `,"root_sector_index":`)
+		fmt.sbprint(&sb, m.root_sector_index)
+		strings.write_string(&sb, `,"root_cluster":`)
+		fmt.sbprint(&sb, m.root_cluster)
+		strings.write_string(&sb, `}`)
+		fmt.print(strings.to_string(sb))
+		return
+	}
+
 	fmt.println("=== MasterRecord (sector 0) ===")
 	fmt.printf("  sig                 = \"%s\"\n", string(m.sig[:]))
 	fmt.printf("  rev                 = %d\n", m.rev)
@@ -59,124 +223,246 @@ print_master :: proc(m: ^fs.Master_Record) {
 	fmt.println()
 }
 
-print_cluster_map :: proc(fd: ^os.File, m: ^fs.Master_Record) {
-	fmt.printf("=== Cluster Map (%d entries) ===\n", m.cluster_map_size)
-	count := u64(0)
-	for cluster_idx in 0 ..< m.cluster_map_size {
-		entry, ok := fs.read_cluster_map_entry(fd, m, fs.Cluster(cluster_idx))
-		if ok && .Allocated in entry.flags {
-			fmt.printf("  [%3d] flags=%-20s  stored_cluster=%d  sector_index=%d\n",
-				cluster_idx, flags_str(entry.flags), entry.stored_cluster, entry.sector_index)
-			count += 1
-		}
+print_cluster_map :: proc(fd: ^os.File, m: ^fs.Master_Record, json: bool) {
+	cm_sectors := (m.cluster_map_size + fs.CLUSTER_MAP_ENTRIES_PER_SECTOR - 1) / fs.CLUSTER_MAP_ENTRIES_PER_SECTOR
+	allocated: u64
+	if json {
+		fmt.print(`"clusters":[`)
 	}
 
-	fmt.printf("  (%d allocated, %d total)\n", count, m.cluster_map_size)
-	fmt.println()
-	fmt.println("=== ClusterEntry tables (allocated clusters only) ===")
-	for cluster_idx in 0 ..< m.cluster_map_size {
-		cme, ok := fs.read_cluster_map_entry(fd, m, fs.Cluster(cluster_idx))
-		if !ok || .Allocated not_in cme.flags {
-			continue
+	json_first := true
+	for sec_idx: u64; sec_idx < cm_sectors; sec_idx += 1 {
+		buf: [fs.SECTOR_SIZE]u8
+		if !fs.sector_read(fd, fs.Sector(m.cluster_map_offset + sec_idx), buf[:]) {
+			break
 		}
 
-		table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
-		if !fs.read_cluster_entry_table(fd, m, fs.Cluster(cluster_idx), &table) {
-			continue
-		}
+		cmes := (^[fs.CLUSTER_MAP_ENTRIES_PER_SECTOR]fs.Cluster_Map_Entry)(raw_data(buf[:]))
+		for ei in 0 ..< fs.CLUSTER_MAP_ENTRIES_PER_SECTOR {
+			ci := int(sec_idx) * fs.CLUSTER_MAP_ENTRIES_PER_SECTOR + ei
+			if u64(ci) >= m.cluster_map_size { break }
+			cme := cmes[ei]
+			if .Allocated in cme.flags { allocated += 1 }
 
-		fmt.printf("  Cluster %d (stored_cluster=%d, sector_index=%d):\n",
-			cluster_idx, cme.stored_cluster, cme.sector_index)
-		for i in 0 ..< fs.CLUSTER_ENTRIES_PER_SECTOR {
-			e := table[i]
-			if .Allocated in e.state {
-				fmt.printf("    [%2d] state=%-22s  alloc=%d  start=%d  next=(%d,%d)\n",
-					i, ce_state_str(e.state), e.allocation_size, e.sector_start,
-					e.next_cluster, e.next_sector_index)
+			cm_buf: [64]u8
+			if json {
+				if !json_first { fmt.print(",") }
+				json_first = false
+				js := cme_flags_str(cme.flags, cm_buf[:])
+				fmt.print(`{"idx":`)
+				fmt.print(ci)
+				fmt.print(`,"flags":"`)
+				fmt.print(js)
+				fmt.print(`","sector_index":`)
+				fmt.print(cme.sector_index)
+				fmt.print(`}`)
+			} else {
+				js := cme_flags_str(cme.flags, cm_buf[:])
+				fmt.printf("  [%3d] flags=%-20s  sector_index=%d\n", ci, js, cme.sector_index)
+				if .Allocated in cme.flags {
+					table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
+					if fs.read_cluster_entry_table(fd, m, fs.Cluster(ci), &table) {
+						for i in 0 ..< fs.CLUSTER_ENTRIES_PER_SECTOR {
+							e := table[i]
+							if .Allocated in e.state {
+								ce_buf: [64]u8
+								fmt.printf("    CE[%2d] state=%-22s  alloc=%d  start=%d  next=(%d,%d)\n",
+									i, ce_state_str(e.state, ce_buf[:]), e.allocation_size, e.sector_start,
+									e.next_cluster, e.next_sector_index)
+							}
+						}
+					}
+				}
 			}
 		}
 	}
-	fmt.println()
+	if json {
+		fmt.print(`],"allocated":`)
+		fmt.print(allocated)
+		fmt.print(`,"total":`)
+		fmt.print(m.cluster_map_size)
+	} else {
+		fmt.printf("  (%d allocated, %d total)\n", allocated, m.cluster_map_size)
+		fmt.println()
+	}
 }
 
-print_root_directory :: proc(fd: ^os.File, m: ^fs.Master_Record) {
-	fmt.println("=== Root Directory (cluster, sector) ===")
-	root_cluster := fs.Cluster(m.root_cluster)
-	root_offset  := fs.Sector_Offset(m.root_sector_index)
-	ce, found_ce := fs.find_cluster_entry(fd, m, root_cluster, root_offset)
-	if !found_ce {
-		log.errorf("root directory ClusterEntry not found")
-		return
-	}
-	if .Directory not_in ce.state {
-		fmt.println("  (root directory ClusterEntry not found or not a directory)")
-		return
-	}
+print_directory_tree :: proc(fd: ^os.File, m: ^fs.Master_Record, json: bool) {
+	if json { fmt.print(`"root":`) }
+	print_directory(fd, m, fs.Cluster(m.root_cluster), fs.Sector_Offset(m.root_sector_index), "", json)
+}
 
-	entries, ok_dir := fs.read_directory_entries(fd, m, root_cluster, fs.Sector_Offset(ce.sector_start))
-	if !ok_dir {
-		log.errorf("failed to read root directory entries")
+print_directory :: proc(fd: ^os.File, m: ^fs.Master_Record, cluster: fs.Cluster, offset: fs.Sector_Offset, indent: string, json: bool) {
+	runs, rok := fs.resolve_extents(fd, m, cluster, offset)
+	if !rok {
+		if json { fmt.print(`null`) }
 		return
 	}
 
-	fmt.printf("  Directory ClusterEntry: cluster=%d sector_start=%d alloc=%d\n",
-		m.root_cluster, ce.sector_start, ce.allocation_size)
-	fmt.printf("  (%d entries present)\n", len(entries))
-	fmt.println()
+	if json { fmt.print(`{`) }
+	entry_count := 0
+	for run in runs {
+		n := int(run.count)
+		for si in 0 ..< n {
+			sec := fs.Sector(u64(run.sector) + u64(si))
+			buf: [fs.SECTOR_SIZE]u8
+			if !fs.sector_read(fd, sec, buf[:]) { break }
 
-	for &e, i in entries {
-		name := ""
-		if .LFN in e.flags {
-			lfn, lfn_ok := fs.resolve_lfn(fd, m, &e)
-			name = lfn if lfn_ok else "(lfn?)"
-		} else {
-			name = fs.entry_short_name(&e)
+			raw := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(buf[:]))
+			for i in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
+				e := raw[i]
+				if .Exists not_in e.flags { continue }
+
+				name := fs.entry_short_name(&e)
+				if .LFN in e.flags {
+					if lfn, lfn_ok := fs.resolve_lfn(fd, m, &e); lfn_ok {
+						name = lfn
+					}
+				}
+
+				kind: string
+				if .Directory in e.flags { kind = "DIR" }
+				else if .Link in e.flags { kind = "LINK" }
+				else { kind = "FILE" }
+
+				dt_buf: [32]u8
+				dt_str := fmt.bprintf(dt_buf[:], "%02d/%02d %02d:%02d:%02d",
+					e.date_time.date, e.date_time.month,
+					e.date_time.hour, e.date_time.minute, e.date_time.second)
+
+				if json {
+					if entry_count > 0 { fmt.print(",") }
+					entry_count += 1
+					fmt.print(`"`)
+					fmt.print(name)
+					fmt.print(`":{"kind":"`)
+					fmt.print(kind)
+					fmt.print(`","size":`)
+					fmt.print(e.file_size)
+					fmt.print(`,"cluster":`)
+					fmt.print(e.stored_cluster)
+					fmt.print(`,"sector":`)
+					fmt.print(e.sector_index)
+					fmt.print(`,"year":`)
+					fmt.print(e.year)
+					fmt.print(`,"dt":"`)
+					fmt.print(dt_str)
+					fmt.print(`"`)
+					if .Directory in e.flags {
+						fmt.print(`,"children":`)
+						print_directory(fd, m,
+							fs.Cluster(e.stored_cluster),
+							fs.Sector_Offset(e.sector_index),
+							"", true)
+					}
+					fmt.print(`}`)
+				} else {
+					f_buf: [64]u8
+					fs_str := dir_flags_str(e.flags, f_buf[:])
+					fmt.printf("%s[%d] \"%s\"  %-4s  flags=%s  size=%d  cluster=%d  sector=%d  year=%d  dt=%s\n",
+						indent, i, name, kind, fs_str, e.file_size,
+						e.stored_cluster, e.sector_index, e.year, dt_str)
+					if .Directory in e.flags {
+						ci_buf: [64]u8
+						child_indent := fmt.bprintf(ci_buf[:], "%s  ", indent)
+						print_directory(fd, m,
+							fs.Cluster(e.stored_cluster),
+							fs.Sector_Offset(e.sector_index),
+							child_indent, false)
+					}
+				}
+			}
 		}
-
-		kind := ""
-		if .Directory in e.flags {kind = " DIR"}
-		if .Link in e.flags {kind = " LINK"}
-		if !(.Directory in e.flags) && !(.Link in e.flags) {kind = " FILE"}
-
-		fmt.printf("  [%d] \"%s\"%s  flags=%s  size=%d  cluster=%d  sector=%d  year=%d  dt=%02d/%02d %02d:%02d:%02d\n",
-			i, name, kind, dir_flags_str(e.flags), e.file_size,
-			e.stored_cluster, e.sector_index, e.year,
-			e.date_time.date, e.date_time.month,
-			e.date_time.hour, e.date_time.minute, e.date_time.second)
 	}
+	if json { fmt.print(`}`) }
 }
 
-flags_str :: proc(f: fs.Cluster_Map_Flags) -> string {
-	parts: [dynamic; 8]string
-	if .Allocated in f {append(&parts, "ALLOCATED")}
-	if .Reserved  in f {append(&parts, "RESERVED")}
-	if .Full      in f {append(&parts, "FULL")}
-	if len(parts) == 0 {return "0"}
-	return strings.join(parts[:], "|")
+print_hex_by_path :: proc(fd: ^os.File, m: ^fs.Master_Record, path: string) {
+	entry, cluster, offset, _, ok := resolve_file(fd, m, path)
+	if !ok {
+		log.errorf("path not found: %s", path)
+		os.exit(1)
+	}
+	if .Directory in entry.flags {
+		log.errorf("%s is a directory", path)
+		os.exit(1)
+	}
+
+	runs, rok := fs.resolve_extents(fd, m, cluster, offset)
+	if !rok { log.errorf("resolve_extents failed"); os.exit(1) }
+
+	sb: strings.Builder
+	strings.builder_init(&sb, context.allocator)
+	defer strings.builder_destroy(&sb)
+
+	remaining := entry.file_size
+	file_off: u64
+	for run in runs {
+		for si: u64; si < u64(run.count); si += 1 {
+			if remaining == 0 { break }
+
+			sec := fs.Sector(u64(run.sector) + si)
+			sec_buf: [fs.SECTOR_SIZE]u8
+			if !fs.sector_read(fd, sec, sec_buf[:]) { return }
+
+			n := min(remaining, fs.SECTOR_SIZE)
+			off := file_off
+			i: u64
+			for i < n {
+				fmt.sbprintf(&sb, "%08x  ", off)
+				for j: u64; j < 16 && i+j < n; j += 1 {
+					fmt.sbprintf(&sb, "%02x ", sec_buf[i+j])
+				}
+
+				fmt.sbprintf(&sb, " ")
+				for j: u64; j < 16 && i+j < n; j += 1 {
+					b := sec_buf[i+j]
+					if b >= 32 && b < 127 { fmt.sbprintf(&sb, "%c", b) }
+					else { fmt.sbprintf(&sb, ".") }
+				}
+
+				fmt.sbprintf(&sb, "\n")
+				off += 16
+				i += 16
+			}
+			file_off += n
+			remaining -= n
+		}
+	}
+	fmt.print(strings.to_string(sb))
 }
 
-ce_state_str :: proc(s: fs.Cluster_Entry_State) -> string {
-	parts: [dynamic; 8]string
-	if .Allocated    in s {append(&parts, "ALLOCATED")}
-	if .Cluster_Map  in s {append(&parts, "CLUSTER_MAP")}
-	if .Directory    in s {append(&parts, "DIRECTORY")}
-	if .File_Content in s {append(&parts, "FILE_CONTENT")}
-	if .LFN          in s {append(&parts, "LFN")}
-	if len(parts) == 0 {return "0"}
-	return strings.join(parts[:], "|")
-}
+resolve_file :: proc(fd: ^os.File, m: ^fs.Master_Record, path: string) -> (entry: fs.Directory_Entry, cluster: fs.Cluster, offset: fs.Sector_Offset, entry_index: int, ok: bool) {
+	if path == "/" || path == "" {
+		entry = {flags = {.Allocated, .Directory, .Exists}}
+		return entry, fs.Cluster(m.root_cluster), fs.Sector_Offset(m.root_sector_index), 0, true
+	}
 
-dir_flags_str :: proc(f: fs.Dir_Flags) -> string {
-	parts: [dynamic; 8]string
-	if .Allocated  in f {append(&parts, "ALLOCATED")}
-	if .LFN        in f {append(&parts, "LFN")}
-	if .Directory  in f {append(&parts, "DIRECTORY")}
-	if .Read_Only  in f {append(&parts, "READONLY")}
-	if .Link       in f {append(&parts, "LINK")}
-	if .Exists     in f {append(&parts, "EXISTS")}
-	if .No_Write   in f {append(&parts, "NOWRITE")}
-	if .No_Read    in f {append(&parts, "NOREAD")}
-	if .No_Execute in f {append(&parts, "NOEXEC")}
-	if len(parts) == 0 {return "0"}
-	return strings.join(parts[:], "|")
+	comp_list := strings.split(path, "/")
+	current_c := fs.Cluster(m.root_cluster)
+	current_o := fs.Sector_Offset(m.root_sector_index)
+	for comp_idx in 0 ..< len(comp_list) {
+		comp := comp_list[comp_idx]
+		if comp == "" { continue }
+
+		is_last := comp_idx == len(comp_list) - 1
+		ce, ce_ok := fs.find_cluster_entry(fd, m, current_c, current_o)
+		if !ce_ok { return }
+
+		dirs, dirs_ok := fs.read_directory_entries(fd, m, current_c, fs.Sector_Offset(ce.sector_start))
+		if !dirs_ok { return }
+
+		found := false
+		for &d, didx in dirs {
+			if fs.entry_short_name(&d) != comp { continue }
+			found = true
+			if is_last { return d, current_c, current_o, didx, true }
+			if .Directory not_in d.flags { return }
+			current_c = fs.Cluster(d.stored_cluster)
+			current_o = fs.Sector_Offset(d.sector_index)
+			break
+		}
+		if !found { return }
+	}
+	return
 }

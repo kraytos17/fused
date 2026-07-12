@@ -10,12 +10,14 @@ Sector_Offset :: distinct u16 // sector offset within a cluster
 
 SECTOR_SIZE                :: 512
 CLUSTER_ENTRIES_PER_SECTOR :: 32
+CLUSTER_MAP_ENTRIES_PER_SECTOR :: 64
 DIR_ENTRIES_PER_SECTOR     :: 10
 DEFAULT_CLUSTER_SIZE       :: 16
 DEFAULT_IMAGE_SIZE         :: 1 * 1024 * 1024 // 1 MB
 FUSED_SIG                  :: [7]u8{'F', 'U', 'S', 'E', 'D', 0, 0}
 
-#assert(SECTOR_SIZE / size_of(Cluster_Map_Entry) == CLUSTER_ENTRIES_PER_SECTOR)
+#assert(size_of(Cluster_Map_Entry) == 8)
+#assert(SECTOR_SIZE / size_of(Cluster_Map_Entry) == CLUSTER_MAP_ENTRIES_PER_SECTOR)
 #assert(SECTOR_SIZE / size_of(Cluster_Entry)     == CLUSTER_ENTRIES_PER_SECTOR)
 #assert(DIR_ENTRIES_PER_SECTOR * size_of(Directory_Entry) <= SECTOR_SIZE)
 #assert((DIR_ENTRIES_PER_SECTOR + 1) * size_of(Directory_Entry) >  SECTOR_SIZE)
@@ -100,14 +102,13 @@ Master_Record :: struct #packed #all_or_none {
 }
 #assert(size_of(Master_Record) == 512)
 
-// ClusterMapEntry — 16 bytes, 32 per sector
+// ClusterMapEntry — 8 bytes, 64 per sector
 Cluster_Map_Entry :: struct #packed {
 	sector_index:   u16,
-	stored_cluster: u64,
 	flags:          Cluster_Map_Flags,
 	reserved1:      u32,
 }
-#assert(size_of(Cluster_Map_Entry) == 16)
+#assert(size_of(Cluster_Map_Entry) == 8)
 
 // ClusterEntry — 16 bytes, 32 per sector
 Cluster_Entry :: struct #packed {

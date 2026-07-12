@@ -30,10 +30,14 @@ test_fs_core :: proc(t: ^testing.T) {
 	master, ok := fs.read_master_record(fd)
 	testing.expect(t, ok, "read_master_record")
 
-	err := fs.validate_master(&master, 1024*1024)
+	fi, fi_err := os.stat("fused.img", context.temp_allocator)
+	img_size: u64 = 0
+	if fi_err == nil { img_size = u64(fi.size) }
+
+	err := fs.validate_master(&master, img_size)
 	testing.expect_value(t, err, fs.FS_Error.None)
 	testing.expect_value(t, master.sig, fs.FUSED_SIG)
-	testing.expect_value(t, master.rev, u8(3))
+	testing.expect_value(t, master.rev, u8(4))
 
 	root_cluster := fs.Cluster(master.root_cluster)
 	root_offset  := fs.Sector_Offset(master.root_sector_index)
