@@ -82,7 +82,7 @@ main :: proc() {
 
 	master: fs.Master_Record
 	master.sig = fs.FUSED_SIG
-	master.rev = 2
+	master.rev = 3
 	master.cluster_map_offset = 1
 	master.cluster_map_size = total_clusters
 	master.cluster_size = cluster_size
@@ -135,6 +135,11 @@ main :: proc() {
 			flags = fs.Dir_Flags{.Allocated, .Exists},
 			sector_index = 2, stored_cluster = root_cluster, year = u16(y),
 			date_time = fs.Packed_Date_Time{
+				month = u32(int(mo)), date = u32(d),
+				hour = u32(h), minute = u32(m), second = u32(s),
+			},
+			atime_year = u16(y),
+			atime_date_time = fs.Packed_Date_Time{
 				month = u32(int(mo)), date = u32(d),
 				hour = u32(h), minute = u32(m), second = u32(s),
 			},

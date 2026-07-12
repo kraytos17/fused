@@ -26,26 +26,50 @@ g_image_size: u64
 UTIME_NOW  :: 1073741822
 UTIME_OMIT :: 1073741823
 
-// set_entry_time_from_unix sets entry.year and entry.date_time from a unix timestamp.
+// set_entry_time_from_unix sets entry mtime and atime from a unix timestamp.
 set_entry_time_from_unix :: proc(entry: ^fs.Directory_Entry, sec: i64) {
+	_set_time_fields(&entry.year, &entry.date_time, sec)
+	_set_time_fields(&entry.atime_year, &entry.atime_date_time, sec)
+}
+
+// set_entry_time_to_now sets entry mtime and atime to the current time.
+set_entry_time_to_now :: proc(entry: ^fs.Directory_Entry) {
+	_set_time_fields_now(&entry.year, &entry.date_time)
+	_set_time_fields_now(&entry.atime_year, &entry.atime_date_time)
+}
+
+set_entry_mtime_from_unix :: proc(entry: ^fs.Directory_Entry, sec: i64) {
+	_set_time_fields(&entry.year, &entry.date_time, sec)
+}
+
+set_entry_atime_from_unix :: proc(entry: ^fs.Directory_Entry, sec: i64) {
+	_set_time_fields(&entry.atime_year, &entry.atime_date_time, sec)
+}
+
+set_entry_mtime_to_now :: proc(entry: ^fs.Directory_Entry) {
+	_set_time_fields_now(&entry.year, &entry.date_time)
+}
+
+set_entry_atime_to_now :: proc(entry: ^fs.Directory_Entry) {
+	_set_time_fields_now(&entry.atime_year, &entry.atime_date_time)
+}
+
+@private
+_set_time_fields :: proc(year: ^u16, dt: ^fs.Packed_Date_Time, sec: i64) {
 	t := time.unix(sec, 0)
 	y, mo, d := time.date(t)
 	h, m, s := time.clock(t)
-	entry.year = u16(y)
-	entry.date_time = fs.Packed_Date_Time{
-		month = u32(int(mo)), date = u32(d), hour = u32(h), minute = u32(m), second = u32(s),
-	}
+	year^ = u16(y)
+	dt^ = fs.Packed_Date_Time{month = u32(int(mo)), date = u32(d), hour = u32(h), minute = u32(m), second = u32(s)}
 }
 
-// set_entry_time_to_now sets entry.year and entry.date_time to the current time.
-set_entry_time_to_now :: proc(entry: ^fs.Directory_Entry) {
+@private
+_set_time_fields_now :: proc(year: ^u16, dt: ^fs.Packed_Date_Time) {
 	now := time.now()
 	y, mo, d := time.date(now)
 	h, m, s := time.clock(now)
-	entry.year = u16(y)
-	entry.date_time = fs.Packed_Date_Time{
-		month = u32(int(mo)), date = u32(d), hour = u32(h), minute = u32(m), second = u32(s),
-	}
+	year^ = u16(y)
+	dt^ = fs.Packed_Date_Time{month = u32(int(mo)), date = u32(d), hour = u32(h), minute = u32(m), second = u32(s)}
 }
 
 // unpack_fh extracts (parent_cluster, parent_offset, entry_index) from fi.fh.
@@ -932,12 +956,22 @@ fused_utimens :: proc "c" (path: cstring, tv: [^]posix.timespec, fi: ^fuse3.File
 	if tv == nil {
 		set_entry_time_to_now(&entry)
 	} else {
-		nsec := int(tv[1].tv_nsec)
-		if nsec == UTIME_OMIT {
-		} else if nsec == UTIME_NOW {
-			set_entry_time_to_now(&entry)
+		// mtime (tv[1])
+		nsec1 := int(tv[1].tv_nsec)
+		if nsec1 == UTIME_OMIT {
+		} else if nsec1 == UTIME_NOW {
+			set_entry_mtime_to_now(&entry)
 		} else {
-			set_entry_time_from_unix(&entry, i64(tv[1].tv_sec))
+			set_entry_mtime_from_unix(&entry, i64(tv[1].tv_sec))
+		}
+
+		// atime (tv[0])
+		nsec0 := int(tv[0].tv_nsec)
+		if nsec0 == UTIME_OMIT {
+		} else if nsec0 == UTIME_NOW {
+			set_entry_atime_to_now(&entry)
+		} else {
+			set_entry_atime_from_unix(&entry, i64(tv[0].tv_sec))
 		}
 	}
 	write_entry_back(&entry, entry_cluster, entry_offset, entry_idx)
@@ -991,8 +1025,21 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 		return 0
 	}
 	if .Directory in entry.flags {
-		log.debugf("rename: cross-directory directory rename not supported")
-		return fuse3.nix(.EXDEV)
+		// Circular reference check: new parent must not be a child of source
+		check_path := new_parent_path
+		for check_path != "/" {
+			check_entry, _, _, _, check_ok := resolve_path_cached(check_path, context.temp_allocator)
+			if !check_ok {
+				break
+			}
+			if fs.Cluster(check_entry.stored_cluster) == old_cluster && fs.Sector_Offset(check_entry.sector_index) == old_offset {
+				log.debugf("rename: %s → %s → EINVAL (circular)", oldpath, newpath)
+				return fuse3.nix(.EINVAL)
+			}
+
+			parent_of_check, _ := split_parent_name(check_path)
+			check_path = parent_of_check
+		}
 	}
 
 	dst_idx := -1

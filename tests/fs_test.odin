@@ -32,9 +32,8 @@ test_fs_core :: proc(t: ^testing.T) {
 
 	err := fs.validate_master(&master, 1024*1024)
 	testing.expect_value(t, err, fs.FS_Error.None)
-
 	testing.expect_value(t, master.sig, fs.FUSED_SIG)
-	testing.expect_value(t, master.rev, u8(2))
+	testing.expect_value(t, master.rev, u8(3))
 
 	root_cluster := fs.Cluster(master.root_cluster)
 	root_offset  := fs.Sector_Offset(master.root_sector_index)

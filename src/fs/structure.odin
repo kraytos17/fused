@@ -122,15 +122,15 @@ Cluster_Entry :: struct #packed {
 
 // DirectoryEntry — 48 bytes, 10 per sector
 Directory_Entry :: struct #packed {
-	flags:          Dir_Flags,
-	file_name:      [16]u8,
-	sector_index:   u16,
-	stored_cluster: u64,
-	year:           u16,
-	date_time:      Packed_Date_Time,
-	file_size:      u64,
-	reserved1:      u32,
-	reserved2:      u16,
+	flags:           Dir_Flags,
+	file_name:       [16]u8,
+	sector_index:    u16,
+	stored_cluster:  u64,
+	year:            u16,
+	date_time:       Packed_Date_Time,
+	file_size:    	 u64,
+	atime_date_time: Packed_Date_Time,
+	atime_year:      u16,
 }
 #assert(size_of(Directory_Entry) == 48)
 
