@@ -10,6 +10,7 @@ package fs
 
 import "core:os"
 import "core:log"
+import "core:mem"
 
 @private
 bit_mark :: #force_inline proc(bitmap: []u8, sector: u16) {
@@ -27,25 +28,30 @@ bit_clear :: #force_inline proc(bitmap: []u8, sector: u16) {
 }
 
 @private
-find_contiguous_free :: proc(bitmap: []u8, total_sectors: u64, needed: u16) -> (start: u16, ok: bool) {
+find_contiguous_free :: proc(bitmap: []u8, total_sectors: u64, needed: u16) -> (start: u16, available: u16, ok: bool) {
 	run_start: u16 = 0xFFFF
 	run_len: u16 = 0
 	for s in 0 ..< u16(total_sectors) {
 		if bit_isset(bitmap, s) {
+			if run_len > 0 && run_len >= needed {
+				return run_start, run_len, true
+			}
 			run_start = 0xFFFF
 			run_len = 0
 		} else {
 			if run_start == 0xFFFF {
 				run_start = s
 			}
-
 			run_len += 1
 			if run_len >= needed {
-				return run_start, true
+				return run_start, run_len, true
 			}
 		}
 	}
-	return 0, false
+	if run_len > 0 {
+		return run_start, run_len, true
+	}
+	return 0, 0, false
 }
 
 @private
@@ -133,9 +139,8 @@ allocate_sectors :: proc(
 
 		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 		read_cluster_entry_table(disk, master, Cluster(cluster_idx), &table) or_continue
-		for j in 0 ..< len(bitmap) {
-			bitmap[j] = 0
-		}
+		mem.zero_slice(bitmap)
+		bit_mark(bitmap, cme.sector_index)
 
 		used: u16 = 0
 		for &e in table {
@@ -147,23 +152,18 @@ allocate_sectors :: proc(
 			}
 		}
 
-		free_start, free_ok := find_contiguous_free(bitmap, master.cluster_size, u16(min(remaining, 65535)))
+		free_start, free_avail, free_ok := find_contiguous_free(bitmap, master.cluster_size, u16(min(remaining, 65535)))
 		if !free_ok {
-			// No run of `remaining` contiguous sectors — try with a smaller
-			// goal and take whatever is actually available.
-			free_start, free_ok = find_contiguous_free(bitmap, master.cluster_size, 1)
-			if !free_ok {
-				if .Full not_in cme.flags {
-					cme.flags += {.Full}
-					if !write_cluster_map_entry(disk, master, Cluster(cluster_idx), &cme) {
-						return 0, 0, .Sector_Write_Error
-					}
+			if .Full not_in cme.flags {
+				cme.flags += {.Full}
+				if !write_cluster_map_entry(disk, master, Cluster(cluster_idx), &cme) {
+					return 0, 0, .Sector_Write_Error
 				}
-				continue
 			}
+			continue
 		}
 
-		take := u16(min(u64(free_start_is_ok_len(bitmap, master.cluster_size, free_start)), remaining))
+		take := u16(min(u64(free_avail), remaining))
 		if take == 0 {
 			continue
 		}
@@ -313,19 +313,4 @@ deallocate_sectors :: proc(
 	}
 	log.debugf("deallocate: ok — cluster=%d offset=%d", start_cluster, start_offset)
 	return .None
-}
-
-// free_start_is_ok_len returns how many sectors are actually free starting at
-// free_start (the contiguous-free finder might have reported a run that was cut
-// short by the sector limit, but we need the actual length available).
-@private
-free_start_is_ok_len :: proc(bitmap: []u8, total_sectors: u64, start: u16) -> u16 {
-	count: u16 = 0
-	for s in start ..< u16(total_sectors) {
-		if bit_isset(bitmap, s) {
-			break
-		}
-		count += 1
-	}
-	return count
 }

@@ -24,12 +24,14 @@ main :: proc() {
 	defer mem.tracking_allocator_destroy(&track)
 
 	context.allocator = mem.tracking_allocator(&track)
+	context.logger = log.create_console_logger(log.Level.Debug)
+	g_logger = context.logger
 	if len(os.args) < 2 {
 		log.fatalf("usage: fused <image-path> [fuse-options...] <mountpoint>")
 	}
 
 	image_path := os.args[1]
-	fd, open_err := os.open(image_path, {.Read})
+	fd, open_err := os.open(image_path, {.Read, .Write})
 	if open_err != nil {
 		log.fatalf("cannot open %s: %v", image_path, open_err)
 	}
@@ -57,10 +59,25 @@ main :: proc() {
 		master.rev, master.cluster_size, master.cluster_map_size, master.root_cluster)
 
 	ops := fuse3.Operations{
-		getattr = fused_getattr,
-		readdir = fused_readdir,
-		open    = fused_open,
-		read    = fused_read,
+		getattr    = fused_getattr,
+		readdir    = fused_readdir,
+		open       = fused_open,
+		read       = fused_read,
+		write      = fused_write,
+		create     = fused_create,
+		mkdir      = fused_mkdir,
+		unlink     = fused_unlink,
+		rmdir      = fused_rmdir,
+		truncate   = fused_truncate,
+		rename     = fused_rename,
+		access     = fused_access,
+		utimens    = fused_utimens,
+		flush      = fused_flush,
+		release    = fused_release,
+		opendir    = fused_opendir,
+		releasedir = fused_releasedir,
+		fsync      = fused_fsync,
+		statfs     = fused_statfs,
 	}
 
 	dynamic_argv: [dynamic; 16]cstring
@@ -87,7 +104,7 @@ main :: proc() {
 		log.errorf("fuse_main returned %d", rc)
 		os.exit(1)
 	}
-	
+
 	log.infof("unmounted")
 	if len(track.allocation_map) > 0 {
 		log.warnf("--- leaked allocations ---")

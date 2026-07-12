@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <fuse3/fuse.h>
 #include <fuse3/fuse_common.h>

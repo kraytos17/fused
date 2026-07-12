@@ -14,7 +14,7 @@ read_cluster_map_entry :: proc(
 	}
 
 	entry_sector := Sector(master.cluster_map_offset + u64(cluster) / CLUSTER_ENTRIES_PER_SECTOR)
-	
+
 	entry_index  := u64(cluster) % CLUSTER_ENTRIES_PER_SECTOR
 	buf: [SECTOR_SIZE]u8
 	if !sector_read(disk, entry_sector, buf[:]) {
@@ -57,14 +57,20 @@ find_cluster_entry :: proc(
 	master: ^Master_Record,
 	cluster: Cluster,
 	sector_offset: Sector_Offset,
+	table: ^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry = nil,
+	index: ^int = nil,
 ) -> (entry: Cluster_Entry, ok: bool) {
-	table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-	if !read_cluster_entry_table(disk, master, cluster, &table) {
+	t: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
+	tp := table if table != nil else &t
+	if !read_cluster_entry_table(disk, master, cluster, tp) {
 		return {}, false
 	}
-	for t in table {
-		if t.sector_start == u16(sector_offset) && .Allocated in t.state {
-			return t, true
+	for &e, i in tp[:] {
+		if e.sector_start == u16(sector_offset) && .Allocated in e.state {
+			if index != nil {
+				index^ = i
+			}
+			return e, true
 		}
 	}
 	return {}, false
@@ -108,4 +114,16 @@ write_cluster_entry_table :: proc(
 		dst[i] = table[i]
 	}
 	return sector_write(disk, table_sector, buf[:])
+}
+
+write_cluster_entry_at :: proc(
+	disk: ^os.File, master: ^Master_Record,
+	cluster: Cluster, entry_index: int, entry: ^Cluster_Entry,
+) -> bool {
+	table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
+	if !read_cluster_entry_table(disk, master, cluster, &table) {
+		return false
+	}
+	table[entry_index] = entry^
+	return write_cluster_entry_table(disk, master, cluster, &table)
 }

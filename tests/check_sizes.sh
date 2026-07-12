@@ -7,9 +7,19 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-echo "==> Compiling C ground truth (tests/c_assert.c)"
-cc tests/c_assert.c $(pkg-config --cflags fuse3) -o /tmp/c_assert
-/tmp/c_assert > /tmp/c_sizes.txt
+C_BIN=/tmp/c_assert
+C_SRC=tests/c_assert.c
+
+cleanup() {
+    rm -f /tmp/c_sizes.txt /tmp/odin_sizes.txt /tmp/c_pairs.txt /tmp/odin_pairs.txt /tmp/size_check_bin
+}
+trap cleanup EXIT
+
+echo "==> Compiling C ground truth ($C_SRC)"
+if [ ! -x "$C_BIN" ] || [ "$C_SRC" -nt "$C_BIN" ]; then
+    cc "$C_SRC" $(pkg-config --cflags fuse3) -o "$C_BIN"
+fi
+"$C_BIN" > /tmp/c_sizes.txt
 sed -n '1,15p' /tmp/c_sizes.txt
 
 echo
@@ -20,8 +30,6 @@ cat /tmp/odin_sizes.txt
 echo
 echo "==> Cross-checking struct sizes"
 
-# Map C struct names to Odin type names.
-# (fuse3 is small enough to maintain this table by hand.)
 declare -A C_TO_ODIN=(
     [stat]="Stat"
     [fuse_file_info]="File_Info"
@@ -37,12 +45,10 @@ declare -A C_TO_ODIN=(
     [fuse_bufvec]="Bufvec"
 )
 
-# Extract C sizes: "sizeof(struct foo)            = NNN" -> "foo NNN"
 grep -E '^  sizeof\(struct ' /tmp/c_sizes.txt | \
     sed -nE 's/^  sizeof\(struct ([a-z_]+)\).* ([0-9]+)$/\1 \2/p' \
     > /tmp/c_pairs.txt
 
-# Extract Odin sizes: "  TypeName                = NNN" -> "TypeName NNN"
 grep -E '^  [A-Za-z_]+[[:space:]]+=' /tmp/odin_sizes.txt | \
     sed -nE 's/^  ([A-Za-z_]+).* ([0-9]+)$/\1 \2/p' \
     > /tmp/odin_pairs.txt

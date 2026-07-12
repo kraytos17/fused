@@ -48,19 +48,19 @@ resolve_lfn :: proc(
 
 	ce_buf: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 	read_cluster_entry_table(disk, master, Cluster(ptr.cluster), &ce_buf) or_return
-	target, target_found: Cluster_Entry
+	target: Cluster_Entry
 	for &t in ce_buf {
 		if t.sector_start == ptr.sector && .Allocated in t.state {
 			target = t
-			target_found = t
 			break
 		}
 	}
-	if target_found.allocation_size == 0 {
+	if target.allocation_size == 0 {
 		return "", false
 	}
 
 	data := make([dynamic]u8, 0, int(ptr.size), allocator)
+	sector_buf: [SECTOR_SIZE]u8
 	current_cluster := Cluster(ptr.cluster)
 	current_entry  := target
 	for {
@@ -70,12 +70,11 @@ resolve_lfn :: proc(
 			break
 		}
 
-		temp := make([]u8, int(bytes_to_read), allocator)
-		if !sector_read(disk, run_sector, temp) {
+		n_read := min(bytes_to_read, SECTOR_SIZE)
+		if !sector_read(disk, run_sector, sector_buf[:n_read]) {
 			return "", false
 		}
-
-		append(&data, ..temp)
+		append(&data, ..sector_buf[:n_read])
 		if current_entry.next_cluster == 0 {
 			break
 		}
@@ -95,4 +94,20 @@ resolve_lfn :: proc(
 		resize(&data, int(ptr.size))
 	}
 	return string(data[:]), true
+}
+
+write_directory_entry_at :: proc(
+	disk: ^os.File, master: ^Master_Record,
+	cluster: Cluster, sector_offset: Sector_Offset,
+	entry_index: int, entry: ^Directory_Entry,
+) -> bool {
+	buf: [SECTOR_SIZE]u8
+	table_sector := Sector(u64(cluster) * master.cluster_size + u64(sector_offset))
+	if !sector_read(disk, table_sector, buf[:]) {
+		return false
+	}
+
+	raw := (^[DIR_ENTRIES_PER_SECTOR]Directory_Entry)(raw_data(buf[:]))
+	raw[entry_index] = entry^
+	return sector_write(disk, table_sector, buf[:])
 }

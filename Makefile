@@ -8,6 +8,7 @@ TEST_DIR       := tests
 BUILD_DIR     := $(or $(BUILD_DIR),build)
 ODIN          := $(or $(ODIN),odin)
 MOUNTPOINT    := $(or $(MOUNTPOINT),/tmp/mnt)
+IMAGE         := $(or $(IMAGE),fused.img)
 COLLECTIONS   := -collection:src=$(SRC_DIR)
 
 # FUSE3 linkage: the `foreign import libfuse3 "system:fuse3"` in
@@ -37,8 +38,8 @@ CHECK_FLAGS   := -warnings-as-errors
 ODIN_VERSION  := $(shell $(ODIN) version 2>&1 | head -1)
 
 .PHONY: all build release disker run-disker imgdump \
-        test check smoke audit mount unmount \
-        verify vet vet-all vet-shadowing vet-unused vet-style vet-cast \
+        test check smoke smoke-harness smoke-rw smoke-rw-harness ci audit mount unmount \
+        verify verify-full vet vet-all vet-shadowing vet-unused vet-style vet-cast \
         check-vet check-requires check-versions clean rebuild help
 
 all: clean disker build imgdump run-disker test vet
@@ -73,12 +74,7 @@ release:
 clean:
 	@echo "==> Cleaning build artifacts"
 	@rm -rf $(BUILD_DIR)
-	@rm -f myfs myfs_release
 	@fusermount3 -u $(MOUNTPOINT) 2>/dev/null || true
-
-rebuild: clean build
-
-IMAGE := $(or $(IMAGE),fused.img)
 
 mount: build
 	@echo "==> Mounting $(BUILD_DIR)/$(BINARY) $(IMAGE) on $(MOUNTPOINT) (foreground, debug)"
@@ -102,12 +98,27 @@ audit:
 	@bash $(TEST_DIR)/check_context.sh
 
 smoke: build run-disker
-	@echo "==> End-to-end smoke test (mount + ls + cat + stat + write-reject + unmount)"
+	@echo "==> End-to-end smoke test (mount + ls + cat + stat + write + unmount)"
 	@bash $(TEST_DIR)/smoke.sh
 
-verify: check audit smoke
+smoke-harness: build run-disker
+	@bash $(TEST_DIR)/fuse_harness.sh --timeout=30 $(TEST_DIR)/smoke.sh
+
+smoke-rw: build run-disker
+	@echo "==> Read-write smoke test (create + write + mkdir + unlink + remount)"
+	@bash $(TEST_DIR)/smoke_rw.sh
+
+smoke-rw-harness: build run-disker
+	@bash $(TEST_DIR)/fuse_harness.sh --timeout=60 $(TEST_DIR)/smoke_rw.sh
+
+ci: build run-disker
+	@bash $(TEST_DIR)/ci.sh
+
+verify: check audit
 	@echo
-	@echo "==> All verifications passed."
+	@echo "==> All non-FUSE verifications passed."
+
+verify-full: verify smoke-harness smoke-rw-harness
 
 VET_DIRS := src/disker src/mounter
 
@@ -177,13 +188,17 @@ help:
 	@echo "  rebuild         clean && build"
 	@echo ""
 	@echo "Tests:"
-	@echo "  test            Odin test suite (struct size @test)"
+	@echo "  test            Odin test suite (@test)"
 	@echo "  check           C vs Odin struct size cross-check"
-	@echo "  audit           audit \"c\" callbacks for context restoration"
-	@echo "  smoke           mount + ls + cat + stat + write-reject + unmount"
-	@echo "  verify          check + audit + smoke (full validation)"
+	@echo "  audit           audit \"c\" callbacks for context + logger restoration"
+	@echo "  smoke           mount + ls + cat + stat + write + unmount"
+	@echo "  smoke-harness   smoke via fuse_harness (isolated namespace, timed)"
+	@echo "  smoke-rw        read-write test (create + write + mkdir + unlink + remount)"
+	@echo "  smoke-rw-harness smoke-rw via fuse_harness (isolated namespace, timed)"
+	@echo "  ci              build + check + audit + test + smoke-harness"
+	@echo "  verify          check + audit (no FUSE needed)"
 	@echo ""
-	@echo "Vet (comprehensive checks):"
+	@echo "Vet:"
 	@echo "  vet             parse + type check + vet + strict-style"
 	@echo "  vet-all         vet via build + test (LLVM)"
 	@echo "  vet-shadowing   check variable shadowing"
@@ -195,5 +210,5 @@ help:
 	@echo "  check-requires  verify $(ODIN), fusermount3, pkg-config fuse3, /dev/fuse"
 	@echo "  check-versions  print $(ODIN) + libfuse3 versions + build flags"
 	@echo ""
-	@echo "Variables (override on command line or via env):"
+	@echo "Variables:"
 	@echo "  MOUNTPOINT=$(MOUNTPOINT)  BUILD_DIR=$(BUILD_DIR)  ODIN=$(ODIN)"

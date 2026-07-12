@@ -1,7 +1,6 @@
 // alloc_test.odin — Property tests for the sector allocator.
 //
-// Each test copies fused.img to a temp file so they don't corrupt
-// each other when run in the same odin test invocation.
+// Each test opens a shared /dev/shm copy of fused.img via open_test_image.
 #+build linux
 package tests
 
@@ -9,32 +8,9 @@ import "core:os"
 import "core:testing"
 import "src:fs"
 
-open_fresh :: proc() -> (^os.File, bool) {
-	src, src_err := os.open("fused.img", {.Read})
-	if src_err != nil {return nil, false}
-
-	tmp_path := "/tmp/fused_alloc_test.img"
-	os.remove(tmp_path)
-	dst, dst_err := os.open(tmp_path, {.Create, .Write, .Trunc})
-	if dst_err != nil {os.close(src); return nil, false}
-
-	buf: [4096]u8
-	for {
-		n, read_err := os.read(src, buf[:])
-		if read_err != nil || n == 0 {break}
-		_, write_err := os.write(dst, buf[:n])
-		if write_err != nil {break}
-	}
-	os.close(dst)
-	os.close(src)
-
-	fd, open_err := os.open(tmp_path, {.Read, .Write})
-	return fd, open_err == nil
-}
-
 @test
 test_alloc_fresh :: proc(t: ^testing.T) {
-	fd, open_err := open_fresh()
+	fd, open_err := open_test_image()
 	if !open_err {return}
 	defer os.close(fd)
 
@@ -55,7 +31,7 @@ test_alloc_fresh :: proc(t: ^testing.T) {
 
 @test
 test_alloc_no_overlap :: proc(t: ^testing.T) {
-	fd, open_err := open_fresh()
+	fd, open_err := open_test_image()
 	if !open_err {return}
 	defer os.close(fd)
 
@@ -92,7 +68,7 @@ test_alloc_no_overlap :: proc(t: ^testing.T) {
 
 @test
 test_alloc_free_reuse :: proc(t: ^testing.T) {
-	fd, open_err := open_fresh()
+	fd, open_err := open_test_image()
 	if !open_err {return}
 	defer os.close(fd)
 
@@ -116,7 +92,7 @@ test_alloc_free_reuse :: proc(t: ^testing.T) {
 
 @test
 test_alloc_free_loop :: proc(t: ^testing.T) {
-	fd, open_err := open_fresh()
+	fd, open_err := open_test_image()
 	if !open_err {return}
 	defer os.close(fd)
 
@@ -134,7 +110,7 @@ test_alloc_free_loop :: proc(t: ^testing.T) {
 
 @test
 test_full_flag :: proc(t: ^testing.T) {
-	fd, open_err := open_fresh()
+	fd, open_err := open_test_image()
 	if !open_err {return}
 	defer os.close(fd)
 
@@ -153,7 +129,7 @@ test_full_flag :: proc(t: ^testing.T) {
 
 @test
 test_chain_consistency :: proc(t: ^testing.T) {
-	fd, open_err := open_fresh()
+	fd, open_err := open_test_image()
 	if !open_err {return}
 	defer os.close(fd)
 
@@ -184,7 +160,7 @@ test_chain_consistency :: proc(t: ^testing.T) {
 
 @test
 test_extension :: proc(t: ^testing.T) {
-	fd, open_err := open_fresh()
+	fd, open_err := open_test_image()
 	if !open_err {return}
 	defer os.close(fd)
 
