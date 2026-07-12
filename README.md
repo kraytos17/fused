@@ -8,8 +8,8 @@ format with read-write FUSE mounting via a libfuse3 FFI binding.
 ```
 make all
 make mount
-ls /tmp/mnt              # Kernel
-cat /tmp/mnt/Kernel | head -c4 | od -tx1
+ls mnt                   # Kernel
+cat mnt/Kernel | head -c4 | od -tx1
 make unmount
 ```
 
@@ -38,7 +38,8 @@ make build         # debug build → build/fused
 make release       # optimized build → build/fused_release
 make disker        # image formatter → build/disker
 make run-disker    # format 1MB image → fused.img
-make test          # unit tests (17 tests, ~3ms)
+make test          # unit tests
+make ci            # full pipeline: build + check + audit + test + smoke
 ```
 
 ## Mount
@@ -87,13 +88,14 @@ logrotate or pipe-based rotation instead.
 | `all` | clean + disker + build + imgdump + run-disker + test + vet |
 | `build` | Debug build → build/fused |
 | `release` | Optimized build → build/fused_release |
-| `test` | Unit tests (17 tests) |
+| `test` | Unit tests |
 | `check` | C vs Odin struct size cross-check |
 | `audit` | Verify every `proc "c"` restores context and logger |
 | `smoke` | mount + ls + cat + stat + write + unmount |
 | `smoke-rw` | Full read-write test (create, write, mkdir, unlink, remount) |
 | `ci` | build + check + audit + test + smoke (all phases) |
 | `clean` | Remove build/ and logs/ |
+| `clean-logs` | Remove logs/ and cached test image |
 
 ## ABI compatibility
 

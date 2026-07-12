@@ -3,6 +3,7 @@
 package fs
 
 import "core:os"
+import "core:log"
 
 entry_short_name :: proc "contextless" (entry: ^Directory_Entry) -> string {
 	n := 0
@@ -63,7 +64,13 @@ resolve_lfn :: proc(
 	sector_buf: [SECTOR_SIZE]u8
 	current_cluster := Cluster(ptr.cluster)
 	current_entry  := target
-	for {
+	max_steps := int(master.cluster_map_size) + 1
+	for guard in 0 ..< max_steps {
+		if guard == max_steps - 1 {
+			log.errorf("resolve_lfn: chain too long (corrupted)")
+			return "", false
+		}
+
 		run_sector := Sector(u64(current_cluster) * master.cluster_size + u64(current_entry.sector_start))
 		bytes_to_read := min(u64(current_entry.allocation_size) * SECTOR_SIZE, u64(ptr.size) - u64(len(data)))
 		if bytes_to_read == 0 {

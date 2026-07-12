@@ -4,17 +4,19 @@
 // FUSE callbacks from ops.odin, and calls fuse3.run.
 //
 // Usage: fused [--log-file=<path>] [--log-level=<level>] <image-path> [fuse-options...] <mountpoint>
-// Example: fused --log-file=/tmp/fused.log --log-level=warn fused.img -f /tmp/mnt
+// Example: fused --log-file=fused.log --log-level=warn fused.img -f mnt
 // Levels: debug, info, warn, error (default: debug)
 #+build linux
 package main
 
 import "base:runtime"
 import "core:c"
+import "core:container/lru"
 import "core:log"
 import "core:mem"
 import "core:os"
 import "core:strings"
+import "core:sys/posix"
 import "src:fs"
 import "src:fuse3"
 
@@ -74,6 +76,18 @@ main :: proc() {
 	defer os.close(fd)
 
 	g_disk = fd
+	{
+		File_Impl_Layout :: struct {
+			file: rawptr,
+			name: string,
+			cname: cstring,
+			fd: posix.FD,
+		}
+
+		impl := (^struct{impl: ^File_Impl_Layout})(fd)
+		g_fd = impl.impl.fd
+	}
+
 	master, master_ok := fs.read_master_record(fd)
 	if !master_ok {
 		log.errorf("failed to read MasterRecord")
@@ -93,6 +107,10 @@ main :: proc() {
 	}
 
 	g_master = master
+	g_image_size = image_size
+	fs.alloc_cache_init(&fs.g_alloc_cache, &master)
+	defer fs.alloc_cache_destroy(&fs.g_alloc_cache)
+
 	log.infof("mounted: rev=%d cluster_size=%d clusters=%d root=%d",
 		master.rev, master.cluster_size, master.cluster_map_size, master.root_cluster)
 
@@ -125,16 +143,24 @@ main :: proc() {
 	}
 
 	has_f := false
+	has_s := false
 	for a in dynamic_argv {
 		if a == "-f" {
 			has_f = true
-			break
+		}
+		if a == "-s" {
+			has_s = true
 		}
 	}
 	if !has_f {
 		append(&dynamic_argv, "-f")
 	}
+	if !has_s {
+		append(&dynamic_argv, "-s")
+	}
 
+	lru.init(&g_path_cache, 128, context.allocator, context.allocator)
+	g_path_cache.on_remove = path_cache_on_remove
 	rc := fuse3.run(c.int(len(dynamic_argv)), raw_data(dynamic_argv[:]), &ops, nil)
 	if rc != 0 {
 		log.errorf("fuse_main returned %d", rc)

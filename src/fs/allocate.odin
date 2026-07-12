@@ -4,13 +4,16 @@
 // ClusterEntry runs, chains them, and writes everything back to disk.
 // deallocate_sectors walks a chain and frees every entry.
 //
-// All state lives in stack-local buffers.  No global mutable state.
+// Uses an in-memory bitmap cache (g_alloc_cache) to avoid re-reading
+// cluster entry tables from disk on every scan.
 #+build linux
 package fs
 
+import "core:mem"
 import "core:os"
 import "core:log"
-import "core:mem"
+
+g_alloc_cache: Cluster_Bitmap_Cache
 
 @private
 bit_mark :: #force_inline proc(bitmap: []u8, sector: u16) {
@@ -111,11 +114,12 @@ allocate_sectors :: proc(
 	prev_entry:   Cluster_Entry
 	prev_has_prev := false
 
-	bitmap_bytes := max(1, int((master.cluster_size + 7) / 8))
-	bitmap := make([]u8, bitmap_bytes)
-	defer delete(bitmap)
+	cache_init := len(g_alloc_cache.bitmaps) > 0
+	start_hint := g_alloc_cache.hint if cache_init else 0
+	for iter in 0 ..< master.cluster_map_size {
+		cluster_idx := (start_hint + iter) %
+		master.cluster_map_size if cache_init else iter
 
-	for cluster_idx in 0 ..< master.cluster_map_size {
 		cme := read_cluster_map_entry(disk, master, Cluster(cluster_idx)) or_continue
 		if .Reserved in cme.flags || .Full in cme.flags {
 			continue
@@ -135,19 +139,42 @@ allocate_sectors :: proc(
 			if !sector_write(disk, table_sector, zero_buf[:]) {
 				return 0, 0, .Sector_Write_Error
 			}
+			if cache_init {
+				alloc_cache_invalidate(&g_alloc_cache, cluster_idx)
+			}
 		}
 
-		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-		read_cluster_entry_table(disk, master, Cluster(cluster_idx), &table) or_continue
-		mem.zero_slice(bitmap)
-		bit_mark(bitmap, cme.sector_index)
+		bitmap: []u8
+		if cache_init {
+			bitmap = alloc_cache_get(&g_alloc_cache, master, disk, cluster_idx)
+			if len(bitmap) == 0 {
+				continue
+			}
+		} else {
+			local_bitmap: [DEFAULT_CLUSTER_SIZE]u8
+			bitmap_len := max(1, int((master.cluster_size + 7) / 8))
+			bitmap = local_bitmap[:bitmap_len]
+			mem.zero_slice(bitmap)
+
+			bit_mark(bitmap, cme.sector_index)
+			table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
+			if read_cluster_entry_table(disk, master, Cluster(cluster_idx), &table) {
+				for &e in table {
+					if .Allocated in e.state {
+						for off in 0 ..< e.allocation_size {
+							bit_mark(bitmap, e.sector_start + off)
+						}
+					}
+				}
+			}
+		}
 
 		used: u16 = 0
-		for &e in table {
-			if .Allocated in e.state {
-				used += e.allocation_size
-				for off in 0 ..< e.allocation_size {
-					bit_mark(bitmap, e.sector_start + off)
+		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
+		if read_cluster_entry_table(disk, master, Cluster(cluster_idx), &table) {
+			for &e in table {
+				if .Allocated in e.state {
+					used += e.allocation_size
 				}
 			}
 		}
@@ -190,6 +217,8 @@ allocate_sectors :: proc(
 		if !write_cluster_entry_table(disk, master, Cluster(cluster_idx), &table) {
 			return 0, 0, .Sector_Write_Error
 		}
+
+		alloc_cache_invalidate(&g_alloc_cache, cluster_idx)
 		if is_first {
 			first_cluster = Cluster(cluster_idx)
 			first_offset  = Sector_Offset(free_start)
@@ -208,6 +237,7 @@ allocate_sectors :: proc(
 				if !write_cluster_entry_table(disk, master, prev_cluster, &prev_table) {
 					return 0, 0, .Sector_Write_Error
 				}
+				alloc_cache_invalidate(&g_alloc_cache, u64(prev_cluster))
 			}
 		}
 
@@ -235,7 +265,12 @@ allocate_sectors :: proc(
 	if start_cluster != 0 && !is_first {
 		tail_cluster := start_cluster
 		tail_offset  := start_offset
-		for {
+		for guard in 0 ..< int(master.cluster_map_size) + 1 {
+			if guard == int(master.cluster_map_size) {
+				log.errorf("allocate: tail chain too long (corrupted)")
+				return 0, 0, .Entry_Not_Found
+			}
+
 			tail, tail_ok := find_cluster_entry(disk, master, tail_cluster, tail_offset)
 			if !tail_ok {
 				break
@@ -260,9 +295,17 @@ allocate_sectors :: proc(
 			tail_cluster = Cluster(tail.next_cluster)
 			tail_offset  = Sector_Offset(tail.next_sector_index)
 		}
+		// Update hint to start scanning past this cluster next time
+		if len(g_alloc_cache.bitmaps) > 0 {
+			g_alloc_cache.hint = (u64(first_cluster) + 1) % master.cluster_map_size
+		}
 		return start_cluster, start_offset, .None
 	}
+
 	log.debugf("allocate: ok — %d sectors across %d clusters", sectors_needed, first_cluster)
+	if len(g_alloc_cache.bitmaps) > 0 {
+		g_alloc_cache.hint = (u64(first_cluster) + 1) % master.cluster_map_size
+	}
 	return first_cluster, first_offset, .None
 }
 
@@ -278,7 +321,12 @@ deallocate_sectors :: proc(
 
 	current_cluster := start_cluster
 	current_offset  := start_offset
-	for {
+	for guard in 0 ..< int(master.cluster_map_size) + 1 {
+		if guard == int(master.cluster_map_size) {
+			log.errorf("deallocate: chain too long (corrupted)")
+			return .Entry_Not_Found
+		}
+
 		entry, ok := find_cluster_entry(disk, master, current_cluster, current_offset)
 		if !ok {
 			return .Entry_Not_Found
@@ -304,6 +352,9 @@ deallocate_sectors :: proc(
 		}
 		if !write_cluster_entry_table(disk, master, current_cluster, &table) {
 			return .Sector_Write_Error
+		}
+		if len(g_alloc_cache.bitmaps) > 0 {
+			alloc_cache_invalidate(&g_alloc_cache, u64(current_cluster))
 		}
 		if entry.next_cluster == 0 {
 			break

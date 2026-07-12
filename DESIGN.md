@@ -24,6 +24,7 @@ The project is split into two independent halves that meet at `src/mounter/`:
   verified against C ground truth.
 - **`src/fs/`** — Filesystem logic operating on raw disk images through
   `sector_read`/`sector_write`. No FUSE dependency.
+  - `alloc_cache.odin` — in-memory bitmap cache for the sector allocator
 - **`src/mounter/`** — FUSE callbacks that delegate to `src/fs/`. Translates
   `FS_Error` to negated errno values.
 - **`src/disker/`** — Standalone image formatter. Produces valid disk images
@@ -156,6 +157,13 @@ build.
 **Stack-local scratch buffers.** All procedures use stack-local `[32]T` arrays
 instead of file-scope globals. Trivially reentrant, zero runtime allocation.
 
+**In-memory caches.** The mounter maintains two caches: a per-cluster bitmap
+cache (`src/fs/alloc_cache.odin`) that eliminates redundant cluster-entry table
+reads from the allocator hot path, and an LRU path-resolution cache
+(`core:container/lru` in `src/mounter/ops.odin`) that avoids tree walks on
+repeated `getattr`/`open`/`readdir` calls. Both are invalidated on mutations
+(allocations, creates, unlinks, renames) and transparent to callers.
+
 ### Memory management
 
 Functions producing variable-length results (`read_directory_entries`,
@@ -184,7 +192,21 @@ boundary, `FS_Error` is translated to negated errno via `fuse3.nix(.ENOENT)`.
 | FFI struct layout | Compile-time `#assert(size_of)` + C cross-check |
 | On-disk struct layout | Compile-time `#assert(size_of)` |
 | FUSE binding | mount + ls + cat + stat + write + unmount |
+| Read-write FUSE | create, write, append, cp, dd, truncate, mkdir, unlink, rmdir, remount |
 | FS core integration | Open golden image, walk FS tree, byte-for-byte content assert |
 | Context safety | Audit every `proc "c"` for context + logger restoration |
-| Allocator | Property tests: fresh alloc, no-overlap, free-reuse, chain consistency |
-| Write path | Direct allocator I/O tests without FUSE (allocate → write → read → verify) |
+| Allocator | Fresh alloc, no-overlap, free-reuse, chain consistency, multi-cluster chain, extension |
+| Write path | Allocate → write → read → verify, grow-shrink cycle, extend from non-zero |
+| Directory entries | Create, delete, recreate, timestamp persistence, growth beyond 10 entries |
+| Rename | Overwrite simulation (free old entries, update parent) |
+| Image cache | Shared `/dev/shm` image with mtime-based cache invalidation |
+| FUSE smoke | Isolated mount namespace via `unshare -rUm`, harness with timeout |
+| CI pipeline | Build + struct check + context audit + unit tests + FUSE smoke (all phases) |
+
+### Test count
+
+- 26 unit tests in `tests/`
+- 23-step read-write FUSE smoke test in `tests/smoke_rw.sh`
+- Read-only FUSE smoke test in `tests/smoke.sh`
+- Struct size cross-check: 12 structs, 43 callback offsets
+- Context audit: 19 callbacks checked
