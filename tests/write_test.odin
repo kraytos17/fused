@@ -23,7 +23,7 @@ test_write_fresh :: proc(t: ^testing.T) {
 	master, mok := fs.read_master_record(fd)
 	testing.expect(t, mok, "read_master_record")
 
-	fc, fo, aerr := fs.allocate_sectors(&master, fd, 0, 0, 1, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
 	runs, runs_ok := fs.resolve_extents(fd, &master, fc, fo)
@@ -41,7 +41,7 @@ test_write_fresh :: proc(t: ^testing.T) {
 		testing.expect(t, read_buf[i] == HELLO[i], "byte match")
 	}
 
-	derr := fs.deallocate_sectors(&master, fd, fc, fo)
+	derr := fs.deallocate_sectors(&master, fd, nil, fc, fo)
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
@@ -54,7 +54,7 @@ test_write_append :: proc(t: ^testing.T) {
 	master, mok := fs.read_master_record(fd)
 	testing.expect(t, mok, "read_master_record")
 
-	fc, fo, aerr := fs.allocate_sectors(&master, fd, 0, 0, 1, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
 	runs, _ := fs.resolve_extents(fd, &master, fc, fo)
@@ -64,7 +64,7 @@ test_write_append :: proc(t: ^testing.T) {
 	copy(sector_buf[:], HELLO[:])
 	testing.expect(t, fs.sector_write(fd, abs_sector, sector_buf[:]), "first write")
 
-	fc2, fo2, aerr2 := fs.allocate_sectors(&master, fd, fc, fo, 2, .File_Content)
+	fc2, fo2, aerr2 := fs.allocate_sectors(&master, fd, nil, fc, fo, 2, .File_Content)
 	testing.expect_value(t, aerr2, fs.FS_Error.None)
 	testing.expect_value(t, fc, fc2)
 	testing.expect_value(t, fo, fo2)
@@ -92,7 +92,7 @@ test_write_append :: proc(t: ^testing.T) {
 		testing.expect(t, read2[i] == WORLD[i], "sector1 content")
 	}
 
-	derr := fs.deallocate_sectors(&master, fd, fc, fo)
+	derr := fs.deallocate_sectors(&master, fd, nil, fc, fo)
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
@@ -108,7 +108,7 @@ test_directory_entry_persistence :: proc(t: ^testing.T) {
 	root_cluster := fs.Cluster(master.root_cluster)
 	root_offset  := fs.Sector_Offset(master.root_sector_index)
 
-	fc, fo, aerr := fs.allocate_sectors(&master, fd, 0, 0, 1, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
 	rd_ce, ok_ce := fs.find_cluster_entry(fd, &master, root_cluster, root_offset)
@@ -160,7 +160,7 @@ test_directory_entry_persistence :: proc(t: ^testing.T) {
 
 	re.flags -= {.Exists, .Allocated}
 	fs.write_directory_entry_at(fd, &master, root_cluster, fs.Sector_Offset(dir_sector), free_idx, &re)
-	derr := fs.deallocate_sectors(&master, fd, fc, fo)
+	derr := fs.deallocate_sectors(&master, fd, nil, fc, fo)
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
@@ -173,7 +173,7 @@ test_write_read_cycle :: proc(t: ^testing.T) {
 	master, mok := fs.read_master_record(fd)
 	testing.expect(t, mok, "read_master_record")
 
-	fc, fo, aerr := fs.allocate_sectors(&master, fd, 0, 0, 3, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, 3, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
 	runs, runs_ok := fs.resolve_extents(fd, &master, fc, fo)
@@ -212,7 +212,7 @@ test_write_read_cycle :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, sector_idx, 3)
 
-	derr := fs.deallocate_sectors(&master, fd, fc, fo)
+	derr := fs.deallocate_sectors(&master, fd, nil, fc, fo)
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
@@ -225,9 +225,9 @@ test_sector_integrity :: proc(t: ^testing.T) {
 	master, mok := fs.read_master_record(fd)
 	testing.expect(t, mok, "read_master_record")
 
-	fc, fo, aerr := fs.allocate_sectors(&master, fd, 0, 0, 1, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
-	defer fs.deallocate_sectors(&master, fd, fc, fo)
+	defer fs.deallocate_sectors(&master, fd, nil, fc, fo)
 
 	runs, _ := fs.resolve_extents(fd, &master, fc, fo)
 	sector := runs[0].sector
@@ -259,9 +259,9 @@ test_write_zero_bytes :: proc(t: ^testing.T) {
 	master, mok := fs.read_master_record(fd)
 	testing.expect(t, mok, "read_master_record")
 
-	fc, fo, aerr := fs.allocate_sectors(&master, fd, 0, 0, 1, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
-	defer fs.deallocate_sectors(&master, fd, fc, fo)
+	defer fs.deallocate_sectors(&master, fd, nil, fc, fo)
 
 	runs, _ := fs.resolve_extents(fd, &master, fc, fo)
 	sector := runs[0].sector
@@ -291,7 +291,7 @@ test_write_overwrite :: proc(t: ^testing.T) {
 	master, mok := fs.read_master_record(fd)
 	testing.expect(t, mok, "read_master_record")
 
-	fc, fo, aerr := fs.allocate_sectors(&master, fd, 0, 0, 1, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
 	runs, _ := fs.resolve_extents(fd, &master, fc, fo)
@@ -313,7 +313,7 @@ test_write_overwrite :: proc(t: ^testing.T) {
 	fs.sector_read(fd, sector, read_buf[:])
 	for i in 0 ..< 10 {testing.expect(t, read_buf[i] == 0xBB, "overwritten byte")}
 	for i in 10 ..< fs.SECTOR_SIZE {testing.expect(t, read_buf[i] == 0xAA, "preserved byte")}
-	fs.deallocate_sectors(&master, fd, fc, fo)
+	fs.deallocate_sectors(&master, fd, nil, fc, fo)
 }
 
 @test
@@ -326,9 +326,9 @@ test_full_cluster_alloc :: proc(t: ^testing.T) {
 	testing.expect(t, mok, "read_master_record")
 
 	// Allocate all sectors in one cluster.
-	fc, fo, aerr := fs.allocate_sectors(&master, fd, 0, 0, master.cluster_size, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, master.cluster_size, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
-	defer fs.deallocate_sectors(&master, fd, fc, fo)
+	defer fs.deallocate_sectors(&master, fd, nil, fc, fo)
 
 	runs, runs_ok := fs.resolve_extents(fd, &master, fc, fo)
 	testing.expect(t, runs_ok, "resolve_extents after full cluster alloc")
@@ -435,7 +435,7 @@ test_directory_growth :: proc(t: ^testing.T) {
 			existing_total: u64
 			for r in existing_runs {existing_total += u64(r.count)}
 
-			_, _, ext_err := fs.allocate_sectors(&master, fd, root_cluster, root_offset, existing_total + 1, .Directory)
+			_, _, ext_err := fs.allocate_sectors(&master, fd, nil, root_cluster, root_offset, existing_total + 1, .Directory)
 			testing.expect_value(t, ext_err, fs.FS_Error.None)
 			dir_runs, dr_ok = fs.resolve_extents(fd, &master, root_cluster, root_offset)
 
@@ -516,9 +516,9 @@ test_entry_timestamp :: proc(t: ^testing.T) {
 	master, mok := fs.read_master_record(fd)
 	testing.expect(t, mok, "read_master_record")
 
-	dir_cluster, dir_offset, derr := fs.allocate_sectors(&master, fd, 0, 0, 1, .Directory)
+	dir_cluster, dir_offset, derr := fs.allocate_sectors(&master, fd, nil, 0, 0, 1, .Directory)
 	testing.expect_value(t, derr, fs.FS_Error.None)
-	defer fs.deallocate_sectors(&master, fd, dir_cluster, dir_offset)
+	defer fs.deallocate_sectors(&master, fd, nil, dir_cluster, dir_offset)
 
 	dir_runs, _ := fs.resolve_extents(fd, &master, dir_cluster, dir_offset)
 	zero_sector: [fs.SECTOR_SIZE]u8
@@ -577,7 +577,7 @@ test_grow_shrink_cycle :: proc(t: ^testing.T) {
 	master, mok := fs.read_master_record(fd)
 	testing.expect(t, mok, "read_master_record")
 
-	fc, fo, aerr := fs.allocate_sectors(&master, fd, 0, 0, 10, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, 10, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
 	runs, _ := fs.resolve_extents(fd, &master, fc, fo)
@@ -594,10 +594,10 @@ test_grow_shrink_cycle :: proc(t: ^testing.T) {
 	}
 
 	testing.expect_value(t, si, 10)
-	derr := fs.deallocate_sectors(&master, fd, fc, fo)
+	derr := fs.deallocate_sectors(&master, fd, nil, fc, fo)
 	testing.expect_value(t, derr, fs.FS_Error.None)
 
-	fc2, fo2, aerr2 := fs.allocate_sectors(&master, fd, 0, 0, 10, .File_Content)
+	fc2, fo2, aerr2 := fs.allocate_sectors(&master, fd, nil, 0, 0, 10, .File_Content)
 	testing.expect_value(t, aerr2, fs.FS_Error.None)
 
 	runs2, _ := fs.resolve_extents(fd, &master, fc2, fo2)
@@ -610,7 +610,7 @@ test_grow_shrink_cycle :: proc(t: ^testing.T) {
 		}
 	}
 	testing.expect_value(t, si2, 10)
-	fs.deallocate_sectors(&master, fd, fc2, fo2)
+	fs.deallocate_sectors(&master, fd, nil, fc2, fo2)
 }
 
 @test
@@ -623,7 +623,7 @@ test_multi_cluster_chain :: proc(t: ^testing.T) {
 	testing.expect(t, mok, "read_master_record")
 
 	needed := master.cluster_size + 4
-	fc, fo, aerr := fs.allocate_sectors(&master, fd, 0, 0, needed, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, needed, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
 	runs, runs_ok := fs.resolve_extents(fd, &master, fc, fo)
@@ -655,7 +655,7 @@ test_multi_cluster_chain :: proc(t: ^testing.T) {
 			si += 1
 		}
 	}
-	fs.deallocate_sectors(&master, fd, fc, fo)
+	fs.deallocate_sectors(&master, fd, nil, fc, fo)
 }
 
 @test
@@ -667,10 +667,10 @@ test_chain_extension_from_nonzero :: proc(t: ^testing.T) {
 	master, mok := fs.read_master_record(fd)
 	testing.expect(t, mok, "read_master_record")
 
-	fc, fo, aerr := fs.allocate_sectors(&master, fd, 0, 0, 5, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, 5, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
-	fc2, fo2, aerr2 := fs.allocate_sectors(&master, fd, fc, fo, 10, .File_Content)
+	fc2, fo2, aerr2 := fs.allocate_sectors(&master, fd, nil, fc, fo, 10, .File_Content)
 	testing.expect_value(t, aerr2, fs.FS_Error.None)
 	testing.expect_value(t, fc, fc2)
 	testing.expect_value(t, fo, fo2)
@@ -680,7 +680,7 @@ test_chain_extension_from_nonzero :: proc(t: ^testing.T) {
 	for r in runs {total += u64(r.count)}
 
 	testing.expect_value(t, total, u64(10))
-	fc3, fo3, aerr3 := fs.allocate_sectors(&master, fd, fc, fo, master.cluster_size, .File_Content)
+	fc3, fo3, aerr3 := fs.allocate_sectors(&master, fd, nil, fc, fo, master.cluster_size, .File_Content)
 
 	testing.expect_value(t, aerr3, fs.FS_Error.None)
 	testing.expect_value(t, fc, fc3)
@@ -690,7 +690,7 @@ test_chain_extension_from_nonzero :: proc(t: ^testing.T) {
 	total2: u64
 	for r in runs2 {total2 += u64(r.count)}
 	testing.expect_value(t, total2, master.cluster_size)
-	fs.deallocate_sectors(&master, fd, fc, fo)
+	fs.deallocate_sectors(&master, fd, nil, fc, fo)
 }
 
 @test
@@ -702,10 +702,10 @@ test_chain_extension_multi_cluster :: proc(t: ^testing.T) {
 	master, mok := fs.read_master_record(fd)
 	testing.expect(t, mok, "read_master_record")
 
-	fc, fo, aerr := fs.allocate_sectors(&master, fd, 0, 0, 5, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, 5, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
-	fc2, fo2, aerr2 := fs.allocate_sectors(&master, fd, fc, fo, 30, .File_Content)
+	fc2, fo2, aerr2 := fs.allocate_sectors(&master, fd, nil, fc, fo, 30, .File_Content)
 	testing.expect_value(t, aerr2, fs.FS_Error.None)
 	testing.expect_value(t, fc, fc2)
 	testing.expect_value(t, fo, fo2)
@@ -737,7 +737,7 @@ test_chain_extension_multi_cluster :: proc(t: ^testing.T) {
 		}
 	}
 
-	fs.deallocate_sectors(&master, fd, fc, fo)
+	fs.deallocate_sectors(&master, fd, nil, fc, fo)
 }
 
 @test
@@ -808,7 +808,7 @@ test_write_read_persistence :: proc(t: ^testing.T) {
 	master, mok := fs.read_master_record(fd)
 	testing.expect(t, mok, "read_master_record")
 
-	fc, fo, aerr := fs.allocate_sectors(&master, fd, 0, 0, 2, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, 2, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 	runs, _ := fs.resolve_extents(fd, &master, fc, fo)
 	s0 := runs[0].sector
@@ -828,7 +828,7 @@ test_write_read_persistence :: proc(t: ^testing.T) {
 	testing.expect(t, string(rbuf[:5]) == "HELLO", "verify HELLO")
 	testing.expect(t, fs.sector_read(fd, s1, rbuf[:]), "read 1")
 	testing.expect(t, string(rbuf[:5]) == "WORLD", "verify WORLD")
-	fs.deallocate_sectors(&master, fd, fc, fo)
+	fs.deallocate_sectors(&master, fd, nil, fc, fo)
 }
 
 @test
@@ -859,9 +859,9 @@ test_rename_overwrite_simulation :: proc(t: ^testing.T) {
 	}
 
 	testing.expect(t, ia >= 0 && ib >= 0, "two free slots")
-	ac, ao, aer := fs.allocate_sectors(&master, fd, 0, 0, 1, .File_Content)
+	ac, ao, aer := fs.allocate_sectors(&master, fd, nil, 0, 0, 1, .File_Content)
 	testing.expect_value(t, aer, fs.FS_Error.None)
-	bc, bo, ber := fs.allocate_sectors(&master, fd, 0, 0, 1, .File_Content)
+	bc, bo, ber := fs.allocate_sectors(&master, fd, nil, 0, 0, 1, .File_Content)
 	testing.expect_value(t, ber, fs.FS_Error.None)
 
 	ea := fs.Directory_Entry{flags = fs.Dir_Flags{.Allocated, .Exists}, stored_cluster = u64(ac), sector_index = u16(ao)}
@@ -872,7 +872,7 @@ test_rename_overwrite_simulation :: proc(t: ^testing.T) {
 	copy(eb.file_name[:], "DST_B")
 	fs.write_directory_entry_at(fd, &master, root_c, fs.Sector_Offset(ce.sector_start), ib, &eb)
 
-	fs.deallocate_sectors(&master, fd, bc, bo)
+	fs.deallocate_sectors(&master, fd, nil, bc, bo)
 	eb.flags -= {.Exists, .Allocated}
 	fs.write_directory_entry_at(fd, &master, root_c, fs.Sector_Offset(ce.sector_start), ib, &eb)
 
@@ -889,7 +889,7 @@ test_rename_overwrite_simulation :: proc(t: ^testing.T) {
 
 	raw[ia].flags -= {.Exists, .Allocated}
 	fs.write_directory_entry_at(fd, &master, root_c, fs.Sector_Offset(ce.sector_start), ia, &raw[ia])
-	fs.deallocate_sectors(&master, fd, ac, ao)
+	fs.deallocate_sectors(&master, fd, nil, ac, ao)
 }
 
 @test
@@ -921,7 +921,7 @@ test_cross_dir_rename_simulation :: proc(t: ^testing.T) {
 	testing.expect(t, root_idx_a >= 0 && root_idx_b >= 0, "root slots")
 
 	// Create dirA
-	ac, ao, derr_a := fs.allocate_sectors(&master, fd, 0, 0, 1, .Directory)
+	ac, ao, derr_a := fs.allocate_sectors(&master, fd, nil, 0, 0, 1, .Directory)
 	testing.expect_value(t, derr_a, fs.FS_Error.None)
 	druns_a, _ := fs.resolve_extents(fd, &master, ac, ao)
 	zero_buf_a: [fs.SECTOR_SIZE]u8
@@ -931,7 +931,7 @@ test_cross_dir_rename_simulation :: proc(t: ^testing.T) {
 	fs.write_directory_entry_at(fd, &master, root_c, fs.Sector_Offset(rce.sector_start), root_idx_a, &ea)
 
 	// Create dirB
-	bc, bo, derr_b := fs.allocate_sectors(&master, fd, 0, 0, 1, .Directory)
+	bc, bo, derr_b := fs.allocate_sectors(&master, fd, nil, 0, 0, 1, .Directory)
 	testing.expect_value(t, derr_b, fs.FS_Error.None)
 	druns_b, _ := fs.resolve_extents(fd, &master, bc, bo)
 	zero_buf_b: [fs.SECTOR_SIZE]u8
@@ -953,7 +953,7 @@ test_cross_dir_rename_simulation :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, aidx >= 0, "slot in dirA")
 
-	fc, fo, ferr := fs.allocate_sectors(&master, fd, 0, 0, 1, .File_Content)
+	fc, fo, ferr := fs.allocate_sectors(&master, fd, nil, 0, 0, 1, .File_Content)
 	testing.expect_value(t, ferr, fs.FS_Error.None)
 
 	fe := fs.Directory_Entry{flags = fs.Dir_Flags{.Allocated, .Exists}, stored_cluster = u64(fc), sector_index = u16(fo)}
@@ -989,13 +989,13 @@ test_cross_dir_rename_simulation :: proc(t: ^testing.T) {
 	// Cleanup
 	braw[bidx].flags -= {.Exists, .Allocated}
 	fs.write_directory_entry_at(fd, &master, bc, fs.Sector_Offset(bce.sector_start), bidx, &braw[bidx])
-	fs.deallocate_sectors(&master, fd, fc, fo)
+	fs.deallocate_sectors(&master, fd, nil, fc, fo)
 	rraw[root_idx_a].flags -= {.Exists, .Allocated}
 	fs.write_directory_entry_at(fd, &master, root_c, fs.Sector_Offset(rce.sector_start), root_idx_a, &rraw[root_idx_a])
 	rraw[root_idx_b].flags -= {.Exists, .Allocated}
 	fs.write_directory_entry_at(fd, &master, root_c, fs.Sector_Offset(rce.sector_start), root_idx_b, &rraw[root_idx_b])
-	fs.deallocate_sectors(&master, fd, ac, ao)
-	fs.deallocate_sectors(&master, fd, bc, bo)
+	fs.deallocate_sectors(&master, fd, nil, ac, ao)
+	fs.deallocate_sectors(&master, fd, nil, bc, bo)
 }
 
 @test
@@ -1008,9 +1008,9 @@ test_atime_fields :: proc(t: ^testing.T) {
 	testing.expect(t, mok, "read_master_record")
 
 	// Create a fresh directory and write an entry with known timestamps
-	dc, d_o, derr := fs.allocate_sectors(&master, fd, 0, 0, 1, .Directory)
+	dc, d_o, derr := fs.allocate_sectors(&master, fd, nil, 0, 0, 1, .Directory)
 	testing.expect_value(t, derr, fs.FS_Error.None)
-	defer fs.deallocate_sectors(&master, fd, dc, d_o)
+	defer fs.deallocate_sectors(&master, fd, nil, dc, d_o)
 
 	druns, _ := fs.resolve_extents(fd, &master, dc, d_o)
 	zero: [fs.SECTOR_SIZE]u8

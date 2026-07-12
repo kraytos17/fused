@@ -18,7 +18,7 @@ lines = text.splitlines()
 
 proc_re = re.compile(r'proc "c"\s*\(')
 ctx_re = re.compile(r'context\s*=\s*runtime\.default_context')
-log_re = re.compile(r'context\.logger\s*=\s*g_logger')
+log_re = re.compile(r'context\.logger\s*=\s*fsys\.logger')
 fail = 0
 checked = 0
 i = 0

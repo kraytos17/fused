@@ -20,6 +20,20 @@ import "core:sys/posix"
 import "src:fs"
 import "src:fuse3"
 
+// extract_raw_fd reaches into os.File's internal layout to get the raw fd.
+// This depends on core:os's struct layout — check on Odin version upgrades.
+@(private)
+extract_raw_fd :: proc(f: ^os.File) -> posix.FD {
+	File_Impl_Layout :: struct {
+		file: rawptr,
+		name: string,
+		cname: cstring,
+		fd: posix.FD,
+	}
+	impl := (^struct{impl: ^File_Impl_Layout})(f)
+	return impl.impl.fd
+}
+
 main :: proc() {
 	context = runtime.default_context()
 	track: mem.Tracking_Allocator
@@ -27,11 +41,9 @@ main :: proc() {
 	defer mem.tracking_allocator_destroy(&track)
 
 	context.allocator = mem.tracking_allocator(&track)
-
 	log_file_path: string
 	log_level := log.Level.Debug
 	fuse_args: [dynamic]string
-
 	for i in 1 ..< len(os.args) {
 		arg := os.args[i]
 		switch {
@@ -52,16 +64,17 @@ main :: proc() {
 		}
 	}
 
+	fsys := new(FS)
 	if log_file_path != "" {
 		log_fd, log_open_err := os.open(log_file_path, {.Create, .Write, .Append})
 		if log_open_err != nil {
 			log.fatalf("cannot open log file %s: %v", log_file_path, log_open_err)
 		}
 		context.logger = log.create_file_logger(log_fd, log_level)
-		g_logger = context.logger
+		fsys.logger = context.logger
 	} else {
 		context.logger = log.create_console_logger(log_level)
-		g_logger = context.logger
+		fsys.logger = context.logger
 	}
 
 	if len(fuse_args) < 1 {
@@ -75,19 +88,8 @@ main :: proc() {
 	}
 	defer os.close(fd)
 
-	g_disk = fd
-	{
-		File_Impl_Layout :: struct {
-			file: rawptr,
-			name: string,
-			cname: cstring,
-			fd: posix.FD,
-		}
-
-		impl := (^struct{impl: ^File_Impl_Layout})(fd)
-		g_fd = impl.impl.fd
-	}
-
+	fsys.disk = fd
+	fsys.fd = extract_raw_fd(fd)
 	master, master_ok := fs.read_master_record(fd)
 	if !master_ok {
 		log.errorf("failed to read MasterRecord")
@@ -106,10 +108,10 @@ main :: proc() {
 		os.exit(1)
 	}
 
-	g_master = master
-	g_image_size = image_size
-	fs.alloc_cache_init(&fs.g_alloc_cache, &master)
-	defer fs.alloc_cache_destroy(&fs.g_alloc_cache)
+	fsys.master = master
+	fsys.image_size = image_size
+	fs.alloc_cache_init(&fsys.alloc_cache, &master)
+	defer fs.alloc_cache_destroy(&fsys.alloc_cache)
 
 	log.infof("mounted: rev=%d cluster_size=%d clusters=%d root=%d",
 		master.rev, master.cluster_size, master.cluster_map_size, master.root_cluster)
@@ -159,9 +161,9 @@ main :: proc() {
 		append(&dynamic_argv, "-s")
 	}
 
-	lru.init(&g_path_cache, 128, context.allocator, context.allocator)
-	g_path_cache.on_remove = path_cache_on_remove
-	rc := fuse3.run(c.int(len(dynamic_argv)), raw_data(dynamic_argv[:]), &ops, nil)
+	lru.init(&fsys.path_cache, 128, context.allocator, context.allocator)
+	fsys.path_cache.on_remove = path_cache_on_remove
+	rc := fuse3.run(c.int(len(dynamic_argv)), raw_data(dynamic_argv[:]), &ops, fsys)
 	if rc != 0 {
 		log.errorf("fuse_main returned %d", rc)
 		os.exit(1)

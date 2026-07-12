@@ -15,7 +15,7 @@ test_alloc_fresh :: proc(t: ^testing.T) {
 	defer os.close(fd)
 
 	master, _ := fs.read_master_record(fd)
-	fc, fo, err := fs.allocate_sectors(&master, fd, 0, 0, 10, .File_Content)
+	fc, fo, err := fs.allocate_sectors(&master, fd, nil, 0, 0, 10, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
 
 	runs, runs_ok := fs.resolve_extents(fd, &master, fc, fo)
@@ -25,7 +25,7 @@ test_alloc_fresh :: proc(t: ^testing.T) {
 	for r in runs {total += u64(r.count)}
 
 	testing.expect_value(t, total, u64(10))
-	derr := fs.deallocate_sectors(&master, fd, fc, fo)
+	derr := fs.deallocate_sectors(&master, fd, nil, fc, fo)
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
@@ -40,7 +40,7 @@ test_alloc_no_overlap :: proc(t: ^testing.T) {
 	Alloc_Run :: struct {c: fs.Cluster, o: fs.Sector_Offset}
 	runs: [10]Alloc_Run
 	for i in 0 ..< 10 {
-		fc, fo, err := fs.allocate_sectors(&master, fd, 0, 0, 5, .File_Content)
+		fc, fo, err := fs.allocate_sectors(&master, fd, nil, 0, 0, 5, .File_Content)
 		testing.expect_value(t, err, fs.FS_Error.None)
 		runs[i] = {fc, fo}
 	}
@@ -61,7 +61,7 @@ test_alloc_no_overlap :: proc(t: ^testing.T) {
 		}
 	}
 	for r in runs {
-		derr := fs.deallocate_sectors(&master, fd, r.c, r.o)
+		derr := fs.deallocate_sectors(&master, fd, nil, r.c, r.o)
 		testing.expect_value(t, derr, fs.FS_Error.None)
 	}
 }
@@ -73,20 +73,20 @@ test_alloc_free_reuse :: proc(t: ^testing.T) {
 	defer os.close(fd)
 
 	master, _ := fs.read_master_record(fd)
-	fc, fo, err := fs.allocate_sectors(&master, fd, 0, 0, 8, .File_Content)
+	fc, fo, err := fs.allocate_sectors(&master, fd, nil, 0, 0, 8, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
 
 	runs_before, _ := fs.resolve_extents(fd, &master, fc, fo)
 	sector_before := runs_before[0].sector
 
-	derr := fs.deallocate_sectors(&master, fd, fc, fo)
+	derr := fs.deallocate_sectors(&master, fd, nil, fc, fo)
 	testing.expect_value(t, derr, fs.FS_Error.None)
-	fc2, fo2, err2 := fs.allocate_sectors(&master, fd, 0, 0, 8, .File_Content)
+	fc2, fo2, err2 := fs.allocate_sectors(&master, fd, nil, 0, 0, 8, .File_Content)
 	testing.expect_value(t, err2, fs.FS_Error.None)
 
 	runs_after, _ := fs.resolve_extents(fd, &master, fc2, fo2)
 	testing.expect_value(t, runs_after[0].sector, sector_before)
-	derr2 := fs.deallocate_sectors(&master, fd, fc2, fo2)
+	derr2 := fs.deallocate_sectors(&master, fd, nil, fc2, fo2)
 	testing.expect_value(t, derr2, fs.FS_Error.None)
 }
 
@@ -98,12 +98,12 @@ test_alloc_free_loop :: proc(t: ^testing.T) {
 
 	master, _ := fs.read_master_record(fd)
 	for _ in 0 ..< 50 {
-		fc, fo, err := fs.allocate_sectors(&master, fd, 0, 0, 1, .File_Content)
+		fc, fo, err := fs.allocate_sectors(&master, fd, nil, 0, 0, 1, .File_Content)
 		testing.expect_value(t, err, fs.FS_Error.None)
 		runs, _ := fs.resolve_extents(fd, &master, fc, fo)
 		tt: u64; for r in runs {tt += u64(r.count)}
 		testing.expect_value(t, tt, u64(1))
-		derr := fs.deallocate_sectors(&master, fd, fc, fo)
+		derr := fs.deallocate_sectors(&master, fd, nil, fc, fo)
 		testing.expect_value(t, derr, fs.FS_Error.None)
 	}
 }
@@ -115,13 +115,13 @@ test_full_flag :: proc(t: ^testing.T) {
 	defer os.close(fd)
 
 	master, _ := fs.read_master_record(fd)
-	fc, fo, err := fs.allocate_sectors(&master, fd, 0, 0, master.cluster_size, .File_Content)
+	fc, fo, err := fs.allocate_sectors(&master, fd, nil, 0, 0, master.cluster_size, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
 
 	cme, _ := fs.read_cluster_map_entry(fd, &master, fc)
 	testing.expect(t, .Full in cme.flags, "FULL flag set")
 
-	derr := fs.deallocate_sectors(&master, fd, fc, fo)
+	derr := fs.deallocate_sectors(&master, fd, nil, fc, fo)
 	testing.expect_value(t, derr, fs.FS_Error.None)
 	cme2, _ := fs.read_cluster_map_entry(fd, &master, fc)
 	testing.expect(t, .Full not_in cme2.flags, "FULL flag cleared")
@@ -134,7 +134,7 @@ test_chain_consistency :: proc(t: ^testing.T) {
 	defer os.close(fd)
 
 	master, _ := fs.read_master_record(fd)
-	fc, fo, err := fs.allocate_sectors(&master, fd, 0, 0, master.cluster_size + 4, .File_Content)
+	fc, fo, err := fs.allocate_sectors(&master, fd, nil, 0, 0, master.cluster_size + 4, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
 
 	_, runs_ok := fs.resolve_extents(fd, &master, fc, fo)
@@ -154,7 +154,7 @@ test_chain_consistency :: proc(t: ^testing.T) {
 	}
 
 	testing.expect_value(t, tt, master.cluster_size + 4)
-	derr := fs.deallocate_sectors(&master, fd, fc, fo)
+	derr := fs.deallocate_sectors(&master, fd, nil, fc, fo)
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
@@ -165,9 +165,9 @@ test_extension :: proc(t: ^testing.T) {
 	defer os.close(fd)
 
 	master, _ := fs.read_master_record(fd)
-	fc, fo, err := fs.allocate_sectors(&master, fd, 0, 0, 5, .File_Content)
+	fc, fo, err := fs.allocate_sectors(&master, fd, nil, 0, 0, 5, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
-	fc2, fo2, ext_err := fs.allocate_sectors(&master, fd, fc, fo, 10, .File_Content)
+	fc2, fo2, ext_err := fs.allocate_sectors(&master, fd, nil, fc, fo, 10, .File_Content)
 	testing.expect_value(t, ext_err, fs.FS_Error.None)
 	testing.expect_value(t, fc, fc2)
 	testing.expect_value(t, fo, fo2)
@@ -177,6 +177,6 @@ test_extension :: proc(t: ^testing.T) {
 	for r in runs {tt += u64(r.count)}
 
 	testing.expect_value(t, tt, u64(10))
-	derr := fs.deallocate_sectors(&master, fd, fc, fo)
+	derr := fs.deallocate_sectors(&master, fd, nil, fc, fo)
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }

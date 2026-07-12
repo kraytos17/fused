@@ -39,7 +39,7 @@ The project is split into two independent halves that meet at `src/mounter/`:
 | Offset | Field | Type | Description |
 |---|---|---|---|
 | 0 | `sig` | `[7]u8` | Filesystem identifier: `"FUSED\0\0"` |
-| 7 | `rev` | `u8` | Format version (currently 2) |
+| 7 | `rev` | `u8` | Format version (currently 3) |
 | 8–14 | reserved | — | Zero |
 | 15 | `cluster_map_offset` | `u64` | Sector index of the first ClusterMapEntry (always 1) |
 | 23 | `cluster_map_size` | `u64` | Number of ClusterMapEntry records |
@@ -86,7 +86,8 @@ Describes a contiguous allocation run within a cluster. Runs are chained via
 | 28 | `year` | `u16` | Year (e.g. 2026) |
 | 30 | `date_time` | `bit_field u32` | Month(4), Date(5), Hour(5), Minute(6), Second(6), Reserved(6) |
 | 34 | `file_size` | `u64` | File size in bytes |
-| 42–47 | reserved | — | Zero |
+| 42 | `atime_date_time` | `bit_field u32` | atime: Month(4), Date(5), Hour(5), Minute(6), Second(6), Reserved(6) |
+| 46 | `atime_year` | `u16` | atime year (e.g. 2026) |
 
 ### LFN_Pointer (16 bytes, packed into file_name[16])
 
@@ -135,7 +136,7 @@ src/mounter ──▶ src/fs ──▶ core:os
 
 ### Design decisions
 
-**Format versioning.** On-disk format version 2. `validate_master` checks the
+**Format versioning.** On-disk format version 3. `validate_master` checks the
 revision field and rejects images with an incompatible version.
 
 **`bit_set` for flag fields.** `ClusterMapEntry.flags`, `ClusterEntry.state`,
@@ -154,8 +155,18 @@ callbacks). Low-level `fuse_lowlevel_ops` (inode-based) is deferred.
 compile-time size checks. A field reordering that changes layout fails the
 build.
 
+**Explicit state via FS struct.** All mount state (disk handle, master record,
+bitmap cache, path cache, logger) lives in a single `FS` struct allocated in
+`main.odin` and threaded through callbacks via `fuse_get_context().private_data`.
+No package-level globals: the `fs` package is fully stateless, and the mounter
+owns exactly one mutable `FS` instance per mount. This eliminates a class of
+concurrency races and makes the test surface explicit — every `fs` function
+takes its dependencies as parameters.
+
 **Stack-local scratch buffers.** All procedures use stack-local `[32]T` arrays
-instead of file-scope globals. Trivially reentrant, zero runtime allocation.
+and fixed-capacity inline arrays (`[dynamic; 32]Extent_Run`) instead of
+heap-backed dynamic arrays. Trivially reentrant, zero runtime allocation in the
+common case.
 
 **In-memory caches.** The mounter maintains two caches: a per-cluster bitmap
 cache (`src/fs/alloc_cache.odin`) that eliminates redundant cluster-entry table
@@ -163,6 +174,15 @@ reads from the allocator hot path, and an LRU path-resolution cache
 (`core:container/lru` in `src/mounter/ops.odin`) that avoids tree walks on
 repeated `getattr`/`open`/`readdir` calls. Both are invalidated on mutations
 (allocations, creates, unlinks, renames) and transparent to callers.
+
+The bitmap cache uses a flat `[]u8` allocation (one contiguous buffer instead of
+per-cluster slices) and caches a per-cluster `used` sector count computed during
+bitmap build, eliminating a redundant table read on every allocation scan.
+
+The path cache uses `core:container/lru` with a fixed capacity of 128 entries.
+Invalidation clears the entire cache via a stack-allocated key array (no heap
+allocation per mutation). On structural mutations (create, mkdir, unlink, rmdir,
+rename), the cache is fully invalidated rather than scanning for prefix matches.
 
 ### Memory management
 
@@ -197,7 +217,9 @@ boundary, `FS_Error` is translated to negated errno via `fuse3.nix(.ENOENT)`.
 | Context safety | Audit every `proc "c"` for context + logger restoration |
 | Allocator | Fresh alloc, no-overlap, free-reuse, chain consistency, multi-cluster chain, extension |
 | Write path | Allocate → write → read → verify, grow-shrink cycle, extend from non-zero |
+| Bitmap cache | Init/destroy, bitmap matches disk, used count matches disk, invalidation rebuilds, count free, alloc with cache, hint advance, multi-cluster stress, chain extension, many small cycles |
 | Directory entries | Create, delete, recreate, timestamp persistence, growth beyond 10 entries |
+| Directory extents | Many entries across sectors, free-slot reuse in extended sector, cross-directory rename to extended target |
 | Rename | Overwrite simulation (free old entries, update parent) |
 | Image cache | Shared `/dev/shm` image with mtime-based cache invalidation |
 | FUSE smoke | Isolated mount namespace via `unshare -rUm`, harness with timeout |
@@ -205,7 +227,7 @@ boundary, `FS_Error` is translated to negated errno via `fuse3.nix(.ENOENT)`.
 
 ### Test count
 
-- 26 unit tests in `tests/`
+- 41 unit tests in `tests/`
 - 23-step read-write FUSE smoke test in `tests/smoke_rw.sh`
 - Read-only FUSE smoke test in `tests/smoke.sh`
 - Struct size cross-check: 12 structs, 43 callback offsets

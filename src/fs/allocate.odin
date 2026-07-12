@@ -4,16 +4,15 @@
 // ClusterEntry runs, chains them, and writes everything back to disk.
 // deallocate_sectors walks a chain and frees every entry.
 //
-// Uses an in-memory bitmap cache (g_alloc_cache) to avoid re-reading
-// cluster entry tables from disk on every scan.
+// Uses an explicit Cluster_Bitmap_Cache to avoid re-reading cluster
+// entry tables from disk on every scan. Pass nil to use a stack-local
+// fallback (no caching).
 #+build linux
 package fs
 
 import "core:mem"
 import "core:os"
 import "core:log"
-
-g_alloc_cache: Cluster_Bitmap_Cache
 
 @private
 bit_mark :: #force_inline proc(bitmap: []u8, sector: u16) {
@@ -78,9 +77,26 @@ cluster_entry_state_for :: proc(kind: Allocation_Kind) -> Cluster_Entry_State {
 	return {}
 }
 
+@private
+get_bitmap_fallback :: proc(bitmap: []u8, master: ^Master_Record, disk: ^os.File, cluster: Cluster, cme: ^Cluster_Map_Entry) {
+	mem.zero_slice(bitmap)
+	bit_mark(bitmap, cme.sector_index)
+	table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
+	if read_cluster_entry_table(disk, master, cluster, &table) {
+		for &e in table {
+			if .Allocated in e.state {
+				for off in 0 ..< e.allocation_size {
+					bit_mark(bitmap, e.sector_start + off)
+				}
+			}
+		}
+	}
+}
+
 allocate_sectors :: proc(
 	master:         ^Master_Record,
 	disk:           ^os.File,
+	cache:          ^Cluster_Bitmap_Cache,
 	start_cluster:  Cluster,
 	start_offset:   Sector_Offset,
 	sectors_needed: u64,
@@ -114,12 +130,11 @@ allocate_sectors :: proc(
 	prev_entry:   Cluster_Entry
 	prev_has_prev := false
 
-	cache_init := len(g_alloc_cache.bitmaps) > 0
-	start_hint := g_alloc_cache.hint if cache_init else 0
+	cache_init := cache != nil
+	start_hint := cache.hint if cache_init else 0
 	for iter in 0 ..< master.cluster_map_size {
 		cluster_idx := (start_hint + iter) %
 		master.cluster_map_size if cache_init else iter
-
 		cme := read_cluster_map_entry(disk, master, Cluster(cluster_idx)) or_continue
 		if .Reserved in cme.flags || .Full in cme.flags {
 			continue
@@ -140,43 +155,24 @@ allocate_sectors :: proc(
 				return 0, 0, .Sector_Write_Error
 			}
 			if cache_init {
-				alloc_cache_invalidate(&g_alloc_cache, cluster_idx)
+				alloc_cache_invalidate(cache, cluster_idx)
 			}
 		}
 
 		bitmap: []u8
+		used: u16 = 0
 		if cache_init {
-			bitmap = alloc_cache_get(&g_alloc_cache, master, disk, cluster_idx)
-			if len(bitmap) == 0 {
+			var_bitmap, var_used, var_ok := alloc_cache_ensure(cache, master, disk, cluster_idx)
+			if !var_ok {
 				continue
 			}
+			bitmap = var_bitmap
+			used = var_used
 		} else {
 			local_bitmap: [DEFAULT_CLUSTER_SIZE]u8
 			bitmap_len := max(1, int((master.cluster_size + 7) / 8))
 			bitmap = local_bitmap[:bitmap_len]
-			mem.zero_slice(bitmap)
-
-			bit_mark(bitmap, cme.sector_index)
-			table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-			if read_cluster_entry_table(disk, master, Cluster(cluster_idx), &table) {
-				for &e in table {
-					if .Allocated in e.state {
-						for off in 0 ..< e.allocation_size {
-							bit_mark(bitmap, e.sector_start + off)
-						}
-					}
-				}
-			}
-		}
-
-		used: u16 = 0
-		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-		if read_cluster_entry_table(disk, master, Cluster(cluster_idx), &table) {
-			for &e in table {
-				if .Allocated in e.state {
-					used += e.allocation_size
-				}
-			}
+			get_bitmap_fallback(bitmap, master, disk, Cluster(cluster_idx), &cme)
 		}
 
 		free_start, free_avail, free_ok := find_contiguous_free(bitmap, master.cluster_size, u16(min(remaining, 65535)))
@@ -193,6 +189,20 @@ allocate_sectors :: proc(
 		take := u16(min(u64(free_avail), remaining))
 		if take == 0 {
 			continue
+		}
+
+		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
+		if !read_cluster_entry_table(disk, master, Cluster(cluster_idx), &table) {
+			continue
+		}
+
+		if !cache_init {
+			used = 0
+			for &e in table {
+				if .Allocated in e.state {
+					used += e.allocation_size
+				}
+			}
 		}
 
 		free_idx := -1
@@ -217,8 +227,9 @@ allocate_sectors :: proc(
 		if !write_cluster_entry_table(disk, master, Cluster(cluster_idx), &table) {
 			return 0, 0, .Sector_Write_Error
 		}
-
-		alloc_cache_invalidate(&g_alloc_cache, cluster_idx)
+		if cache_init {
+			alloc_cache_invalidate(cache, cluster_idx)
+		}
 		if is_first {
 			first_cluster = Cluster(cluster_idx)
 			first_offset  = Sector_Offset(free_start)
@@ -237,15 +248,17 @@ allocate_sectors :: proc(
 				if !write_cluster_entry_table(disk, master, prev_cluster, &prev_table) {
 					return 0, 0, .Sector_Write_Error
 				}
-				alloc_cache_invalidate(&g_alloc_cache, u64(prev_cluster))
+				if cache_init {
+					alloc_cache_invalidate(cache, u64(prev_cluster))
+				}
 			}
 		}
 
 		prev_cluster = Cluster(cluster_idx)
-		prev_offset  = Sector_Offset(free_start)
-		prev_entry   = new_entry
+		prev_offset = Sector_Offset(free_start)
+		prev_entry = new_entry
 		prev_has_prev = true
-		remaining   -= u64(take)
+		remaining -= u64(take)
 		if used + take >= u16(master.cluster_size) {
 			if .Full not_in cme.flags {
 				cme.flags += {.Full}
@@ -295,16 +308,15 @@ allocate_sectors :: proc(
 			tail_cluster = Cluster(tail.next_cluster)
 			tail_offset  = Sector_Offset(tail.next_sector_index)
 		}
-		// Update hint to start scanning past this cluster next time
-		if len(g_alloc_cache.bitmaps) > 0 {
-			g_alloc_cache.hint = (u64(first_cluster) + 1) % master.cluster_map_size
+		if cache_init {
+			cache.hint = (u64(first_cluster) + 1) % master.cluster_map_size
 		}
 		return start_cluster, start_offset, .None
 	}
 
 	log.debugf("allocate: ok — %d sectors across %d clusters", sectors_needed, first_cluster)
-	if len(g_alloc_cache.bitmaps) > 0 {
-		g_alloc_cache.hint = (u64(first_cluster) + 1) % master.cluster_map_size
+	if cache_init {
+		cache.hint = (u64(first_cluster) + 1) % master.cluster_map_size
 	}
 	return first_cluster, first_offset, .None
 }
@@ -312,6 +324,7 @@ allocate_sectors :: proc(
 deallocate_sectors :: proc(
 	master:        ^Master_Record,
 	disk:          ^os.File,
+	cache:         ^Cluster_Bitmap_Cache,
 	start_cluster: Cluster,
 	start_offset:  Sector_Offset,
 ) -> FS_Error {
@@ -353,8 +366,8 @@ deallocate_sectors :: proc(
 		if !write_cluster_entry_table(disk, master, current_cluster, &table) {
 			return .Sector_Write_Error
 		}
-		if len(g_alloc_cache.bitmaps) > 0 {
-			alloc_cache_invalidate(&g_alloc_cache, u64(current_cluster))
+		if cache != nil {
+			alloc_cache_invalidate(cache, u64(current_cluster))
 		}
 		if entry.next_cluster == 0 {
 			break

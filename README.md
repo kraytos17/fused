@@ -103,3 +103,13 @@ Every cross-FFI struct in `src/fuse3/types.odin` and every on-disk struct in
 `src/fs/structure.odin` carries a compile-time `#assert(size_of(T) == N)`.
 All 12 FUSE struct sizes and all 43 `fuse_operations` field offsets are
 cross-checked against C at build time via `make check`.
+
+## Architecture notes
+
+Mount state (disk handle, master record, bitmap cache, path cache, logger) is
+held in a single `FS` struct passed as `fuse_get_context().private_data`. No
+package-level globals — the `fs/` package is fully stateless, with all
+dependencies passed as explicit parameters. This makes the concurrency model
+explicit: the `-s` (single-threaded) flag is always forced, and any future move
+to multi-threaded dispatch would add a mutex to `FS` rather than discovering
+races in ambient globals.
