@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # smoke.sh — End-to-end smoke test for the fused FUSE daemon.
 #
-# Mounts a fused.img, exercises ls/cat/stat, verifies read-only
-# nature, and unmounts cleanly.
+# Mounts a fused.img, exercises ls/cat/stat, verifies read+write,
+# and unmounts cleanly.  Uses lazy unmount (-uz) to clear stale state.
 #
 # Usage: tests/smoke.sh [image-path] [mountpoint]
 set -euo pipefail
@@ -10,47 +10,42 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 IMAGE="${1:-fused.img}"
-MOUNT="${2:-/tmp/mnt}"
-LOG=/tmp/fused_smoke.log
-FUSE_OUT=/tmp/fused_fuse.log
+MOUNT="${2:-mnt}"
+LOG=logs/fused_smoke.log
+FUSE_OUT=logs/fused_fuse.log
 BUILD_DIR="${BUILD_DIR:-build}"
 BIN="${BIN:-$BUILD_DIR/fused}"
 
 FUSE_PID=
-
-cleanup() {
-    rm -f /tmp/fused_smoke_hex
-    if [ -n "$FUSE_PID" ] && kill -0 "$FUSE_PID" 2>/dev/null; then
-        pgid=$(ps -o pgid= -p "$FUSE_PID" 2>/dev/null | tr -d ' ')
-        if [ -n "$pgid" ] && [ "$pgid" -gt 1 ]; then
-            kill -9 -- -"$pgid" 2>/dev/null || true
-        else
-            kill -9 "$FUSE_PID" 2>/dev/null || true
-        fi
-    fi
-    fusermount3 -u "$MOUNT" 2>/dev/null || true
-    fuser -k "$MOUNT" 2>/dev/null || true
-}
-
+fusermount3 -uz "$MOUNT" 2>/dev/null || true
 trap cleanup EXIT
 trap 'exit 1' INT TERM
+
+cleanup() {
+    rm -f logs/fused_smoke_hex
+    if [ -n "$FUSE_PID" ] && kill -0 "$FUSE_PID" 2>/dev/null; then
+        kill -9 "$FUSE_PID" 2>/dev/null || true
+    fi
+    fusermount3 -uz "$MOUNT" 2>/dev/null || true
+}
+
 echo "==> Using binary: $BIN, image: $IMAGE, mount: $MOUNT"
 [ -x "$BIN" ]   || { echo "FAIL: $BIN not executable; run 'make build' first"   >&2; exit 1; }
 [ -f "$IMAGE" ] || { echo "FAIL: $IMAGE not found; run 'make run-disker' first" >&2; exit 1; }
 
 echo "==> Cleaning up any stale mount"
-fuser -k "$MOUNT" 2>/dev/null || true
-fusermount3 -u "$MOUNT" 2>/dev/null || true
+fusermount3 -uz "$MOUNT" 2>/dev/null || true
 rm -rf "$MOUNT"
-mkdir -p "$MOUNT"
+mkdir -p "$MOUNT" logs
 
 echo "==> Starting $BIN $IMAGE -f -d $MOUNT"
-if command -v setsid &>/dev/null; then
-    setsid "$BIN" "$IMAGE" -f -d "$MOUNT" >"$FUSE_OUT" 2>&1 &
-else
-    "$BIN" "$IMAGE" -f -d "$MOUNT" >"$FUSE_OUT" 2>&1 &
-fi
+"$BIN" "$IMAGE" -f -d "$MOUNT" >"$FUSE_OUT" 2>&1 &
+# stdout=Odin logs, stderr=FUSE -d debug — both go to same file via 2>&1
 FUSE_PID=$!
+sleep 0.3
+
+REAL_PID=$(pgrep -f "fused.*-d $MOUNT" 2>/dev/null | head -1) || true
+if [ -n "$REAL_PID" ]; then FUSE_PID="$REAL_PID"; fi
 
 for i in $(seq 1 50); do
     if mountpoint -q "$MOUNT" 2>/dev/null; then break; fi
@@ -76,9 +71,9 @@ echo "  mode=$mode size=$size"
 [ "$size" = "60"  ] || { echo "FAIL: expected size 60, got $size" >&2; exit 1; }
 
 echo "==> cat $MOUNT/Kernel (first 4 bytes)"
-head -c 4 "$MOUNT/Kernel" | od -tx1 -An | tr -d ' \n' > /tmp/fused_smoke_hex
+head -c 4 "$MOUNT/Kernel" | od -tx1 -An | tr -d ' \n' > logs/fused_smoke_hex
 expected_hex="82000d00"
-got_hex=$(cat /tmp/fused_smoke_hex)
+got_hex=$(cat logs/fused_smoke_hex)
 [ "$got_hex" = "$expected_hex" ] || { echo "FAIL: expected $expected_hex, got $got_hex" >&2; exit 1; }
 echo "  $got_hex (matches expected)"
 

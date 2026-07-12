@@ -1,6 +1,8 @@
 build/
 fused.img
-/tmp/
+tmp/
 docs/
+mnt/
+logs/
 *.img
 *.bin

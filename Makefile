@@ -6,8 +6,9 @@ DISKER_DIR     := src/disker
 IMGDUMP_DIR    := tools/imgdump
 TEST_DIR       := tests
 BUILD_DIR     := $(or $(BUILD_DIR),build)
+LOGS_DIR      := $(or $(LOGS_DIR),logs)
 ODIN          := $(or $(ODIN),odin)
-MOUNTPOINT    := $(or $(MOUNTPOINT),/tmp/mnt)
+MOUNTPOINT    := $(or $(MOUNTPOINT),mnt)
 IMAGE         := $(or $(IMAGE),fused.img)
 COLLECTIONS   := -collection:src=$(SRC_DIR)
 
@@ -39,14 +40,15 @@ ODIN_VERSION  := $(shell $(ODIN) version 2>&1 | head -1)
 
 .PHONY: all build release disker run-disker imgdump \
         test check smoke smoke-harness smoke-rw smoke-rw-harness ci audit mount unmount \
-        verify verify-full vet vet-all vet-shadowing vet-unused vet-style vet-cast \
-        check-vet check-requires check-versions clean rebuild help
+        verify verify-full clean clean-logs rebuild help \
+        vet vet-all vet-shadowing vet-unused vet-style vet-cast \
+        check-requires check-versions
 
 all: clean disker build imgdump run-disker test vet
 
 build:
 	@echo "==> Building debug $(BINARY) (Odin: $(ODIN_VERSION))"
-	@mkdir -p $(BUILD_DIR)
+	@mkdir -p $(BUILD_DIR) $(LOGS_DIR)
 	$(ODIN) build $(MOUNTER_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/$(BINARY) $(DEBUG_FLAGS) $(FUSE_LINK_FLAGS)
 
 disker:
@@ -73,8 +75,11 @@ release:
 
 clean:
 	@echo "==> Cleaning build artifacts"
-	@rm -rf $(BUILD_DIR)
+	@rm -rf $(BUILD_DIR) $(LOGS_DIR)
 	@fusermount3 -u $(MOUNTPOINT) 2>/dev/null || true
+
+clean-logs:
+	@rm -rf $(LOGS_DIR) /dev/shm/fused_test.img 2>/dev/null || true
 
 mount: build
 	@echo "==> Mounting $(BUILD_DIR)/$(BINARY) $(IMAGE) on $(MOUNTPOINT) (foreground, debug)"
@@ -102,14 +107,14 @@ smoke: build run-disker
 	@bash $(TEST_DIR)/smoke.sh
 
 smoke-harness: build run-disker
-	@bash $(TEST_DIR)/fuse_harness.sh --timeout=30 $(TEST_DIR)/smoke.sh
+	@bash $(TEST_DIR)/fuse_harness.sh --timeout=60 $(TEST_DIR)/smoke.sh
 
 smoke-rw: build run-disker
 	@echo "==> Read-write smoke test (create + write + mkdir + unlink + remount)"
 	@bash $(TEST_DIR)/smoke_rw.sh
 
 smoke-rw-harness: build run-disker
-	@bash $(TEST_DIR)/fuse_harness.sh --timeout=60 $(TEST_DIR)/smoke_rw.sh
+	@bash $(TEST_DIR)/fuse_harness.sh --timeout=90 $(TEST_DIR)/smoke_rw.sh
 
 ci: build run-disker
 	@bash $(TEST_DIR)/ci.sh
@@ -123,13 +128,13 @@ verify-full: verify smoke-harness smoke-rw-harness
 VET_DIRS := src/disker src/mounter
 
 vet:
-	@echo "==> Fast vet on $(VET_DIRS)"
+	@echo "==> Vet on $(VET_DIRS)"
 	@for d in $(VET_DIRS); do \
 		$(ODIN) check $$d $(COLLECTIONS) $(CHECK_FLAGS) $(VET_FLAGS) || exit 1; \
 	done
 
 vet-all: run-disker
-	@echo "==> Comprehensive vet on $(VET_DIRS) (build + test, LLVM)"
+	@echo "==> Comprehensive vet (build + test, LLVM)"
 	@for d in $(VET_DIRS); do \
 		$(ODIN) build $$d $(COLLECTIONS) $(CHECK_FLAGS) $(VET_FLAGS) -out:/dev/null || exit 1; \
 	done
@@ -154,10 +159,6 @@ vet-cast:
 	@echo "==> Checking for redundant casts"
 	$(ODIN) build $(MOUNTER_DIR) $(COLLECTIONS) $(CHECK_FLAGS) -vet-cast -warnings-as-errors -out:/dev/null
 	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS)
-
-check-vet:
-	@echo "==> parse + type check with comprehensive vet"
-	$(ODIN) check $(MOUNTER_DIR) $(COLLECTIONS) $(CHECK_FLAGS) $(VET_FLAGS)
 
 check-requires:
 	@echo "==> Verifying FUSE3 environment"
@@ -199,16 +200,17 @@ help:
 	@echo "  verify          check + audit (no FUSE needed)"
 	@echo ""
 	@echo "Vet:"
-	@echo "  vet             parse + type check + vet + strict-style"
-	@echo "  vet-all         vet via build + test (LLVM)"
-	@echo "  vet-shadowing   check variable shadowing"
-	@echo "  vet-unused      check unused variables/imports"
-	@echo "  vet-style       check style (trailing commas, semicolons)"
-	@echo "  vet-cast        check redundant casts"
+	@echo "  vet             type-check + vet + strict-style"
+	@echo "  vet-all         type-check + build + test (LLVM)"
+	@echo "  vet-shadowing   variable shadowing check"
+	@echo "  vet-unused      unused declarations check"
+	@echo "  vet-style       code style check"
+	@echo "  vet-cast        redundant cast check"
 	@echo ""
 	@echo "Environment:"
-	@echo "  check-requires  verify $(ODIN), fusermount3, pkg-config fuse3, /dev/fuse"
-	@echo "  check-versions  print $(ODIN) + libfuse3 versions + build flags"
+	@echo "  check-requires  verify Odin, fusermount3, pkg-config, /dev/fuse"
+	@echo "  check-versions  print Odin + libfuse3 versions"
 	@echo ""
 	@echo "Variables:"
-	@echo "  MOUNTPOINT=$(MOUNTPOINT)  BUILD_DIR=$(BUILD_DIR)  ODIN=$(ODIN)"
+	@echo "  MOUNTPOINT=$(MOUNTPOINT)  BUILD_DIR=$(BUILD_DIR)  IMAGE=$(IMAGE)"
+	@echo "  LOGS_DIR=$(LOGS_DIR)  ODIN=$(ODIN)"

@@ -30,7 +30,7 @@ echo "--- audit (context + logger restoration) ---"
 make audit 2>&1 | tail -1 | sed 's/^/  /'
 
 echo "--- test (non-FUSE unit tests) ---"
-make test 2>&1 | grep -E 'Finished|failed' | sed 's/^/  /'
+make test 2>&1 | grep -E 'Finished|test.*failed' | sed 's/^/  /'
 
 echo
 echo "== Phase 1: passed =="

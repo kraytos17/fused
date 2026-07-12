@@ -11,7 +11,7 @@ import "src:fs"
 @test
 test_alloc_fresh :: proc(t: ^testing.T) {
 	fd, open_err := open_test_image()
-	if !open_err {return}
+	if !open_err {testing.fail(t); return}
 	defer os.close(fd)
 
 	master, _ := fs.read_master_record(fd)
@@ -32,7 +32,7 @@ test_alloc_fresh :: proc(t: ^testing.T) {
 @test
 test_alloc_no_overlap :: proc(t: ^testing.T) {
 	fd, open_err := open_test_image()
-	if !open_err {return}
+	if !open_err {testing.fail(t); return}
 	defer os.close(fd)
 
 	master, _ := fs.read_master_record(fd)
@@ -69,7 +69,7 @@ test_alloc_no_overlap :: proc(t: ^testing.T) {
 @test
 test_alloc_free_reuse :: proc(t: ^testing.T) {
 	fd, open_err := open_test_image()
-	if !open_err {return}
+	if !open_err {testing.fail(t); return}
 	defer os.close(fd)
 
 	master, _ := fs.read_master_record(fd)
@@ -93,7 +93,7 @@ test_alloc_free_reuse :: proc(t: ^testing.T) {
 @test
 test_alloc_free_loop :: proc(t: ^testing.T) {
 	fd, open_err := open_test_image()
-	if !open_err {return}
+	if !open_err {testing.fail(t); return}
 	defer os.close(fd)
 
 	master, _ := fs.read_master_record(fd)
@@ -111,7 +111,7 @@ test_alloc_free_loop :: proc(t: ^testing.T) {
 @test
 test_full_flag :: proc(t: ^testing.T) {
 	fd, open_err := open_test_image()
-	if !open_err {return}
+	if !open_err {testing.fail(t); return}
 	defer os.close(fd)
 
 	master, _ := fs.read_master_record(fd)
@@ -130,7 +130,7 @@ test_full_flag :: proc(t: ^testing.T) {
 @test
 test_chain_consistency :: proc(t: ^testing.T) {
 	fd, open_err := open_test_image()
-	if !open_err {return}
+	if !open_err {testing.fail(t); return}
 	defer os.close(fd)
 
 	master, _ := fs.read_master_record(fd)
@@ -161,7 +161,7 @@ test_chain_consistency :: proc(t: ^testing.T) {
 @test
 test_extension :: proc(t: ^testing.T) {
 	fd, open_err := open_test_image()
-	if !open_err {return}
+	if !open_err {testing.fail(t); return}
 	defer os.close(fd)
 
 	master, _ := fs.read_master_record(fd)

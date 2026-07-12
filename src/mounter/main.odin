@@ -3,8 +3,9 @@
 // Opens a fused disk image, validates the MasterRecord, wires the
 // FUSE callbacks from ops.odin, and calls fuse3.run.
 //
-// Usage: fused <image-path> [fuse-options...] <mountpoint>
-// Example: fused fused.img -f -d /tmp/mnt
+// Usage: fused [--log-file=<path>] [--log-level=<level>] <image-path> [fuse-options...] <mountpoint>
+// Example: fused --log-file=/tmp/fused.log --log-level=warn fused.img -f /tmp/mnt
+// Levels: debug, info, warn, error (default: debug)
 #+build linux
 package main
 
@@ -24,13 +25,48 @@ main :: proc() {
 	defer mem.tracking_allocator_destroy(&track)
 
 	context.allocator = mem.tracking_allocator(&track)
-	context.logger = log.create_console_logger(log.Level.Debug)
-	g_logger = context.logger
-	if len(os.args) < 2 {
-		log.fatalf("usage: fused <image-path> [fuse-options...] <mountpoint>")
+
+	log_file_path: string
+	log_level := log.Level.Debug
+	fuse_args: [dynamic]string
+
+	for i in 1 ..< len(os.args) {
+		arg := os.args[i]
+		switch {
+		case strings.has_prefix(arg, "--log-file="):
+			log_file_path = strings.trim_prefix(arg, "--log-file=")
+		case strings.has_prefix(arg, "--log-level="):
+			level_str := strings.trim_prefix(arg, "--log-level=")
+			switch level_str {
+			case "debug": log_level = log.Level.Debug
+			case "info":  log_level = log.Level.Info
+			case "warn":  log_level = log.Level.Warning
+			case "error": log_level = log.Level.Error
+			case:
+				log.errorf("unknown log level: %s (use debug|info|warn|error)", level_str)
+			}
+		case:
+			append(&fuse_args, arg)
+		}
 	}
 
-	image_path := os.args[1]
+	if log_file_path != "" {
+		log_fd, log_open_err := os.open(log_file_path, {.Create, .Write, .Append})
+		if log_open_err != nil {
+			log.fatalf("cannot open log file %s: %v", log_file_path, log_open_err)
+		}
+		context.logger = log.create_file_logger(log_fd, log_level)
+		g_logger = context.logger
+	} else {
+		context.logger = log.create_console_logger(log_level)
+		g_logger = context.logger
+	}
+
+	if len(fuse_args) < 1 {
+		log.fatalf("usage: fused [--log-file=<path>] [--log-level=<level>] <image-path> [fuse-options...] <mountpoint>")
+	}
+
+	image_path := fuse_args[0]
 	fd, open_err := os.open(image_path, {.Read, .Write})
 	if open_err != nil {
 		log.fatalf("cannot open %s: %v", image_path, open_err)
@@ -40,7 +76,8 @@ main :: proc() {
 	g_disk = fd
 	master, master_ok := fs.read_master_record(fd)
 	if !master_ok {
-		log.fatalf("failed to read MasterRecord")
+		log.errorf("failed to read MasterRecord")
+		os.exit(1)
 	}
 
 	fi, stat_err := os.stat(image_path, context.temp_allocator)
@@ -51,7 +88,8 @@ main :: proc() {
 
 	err := fs.validate_master(&master, image_size)
 	if err != .None {
-		log.fatalf("validation failed: %v", err)
+		log.errorf("validation failed: %v", err)
+		os.exit(1)
 	}
 
 	g_master = master
@@ -82,10 +120,8 @@ main :: proc() {
 
 	dynamic_argv: [dynamic; 16]cstring
 	append(&dynamic_argv, "fused")
-	for i in 2 ..< len(os.args) {
-		append(
-			&dynamic_argv, strings.clone_to_cstring(os.args[i], context.temp_allocator),
-		)
+	for i in 1 ..< len(fuse_args) {
+		append(&dynamic_argv, strings.clone_to_cstring(fuse_args[i], context.temp_allocator))
 	}
 
 	has_f := false

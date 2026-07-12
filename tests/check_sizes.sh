@@ -7,25 +7,27 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-C_BIN=/tmp/c_assert
+C_BIN=logs/c_assert
 C_SRC=tests/c_assert.c
 
 cleanup() {
-    rm -f /tmp/c_sizes.txt /tmp/odin_sizes.txt /tmp/c_pairs.txt /tmp/odin_pairs.txt /tmp/size_check_bin
+    rm -f logs/c_sizes.txt logs/odin_sizes.txt logs/c_pairs.txt logs/odin_pairs.txt logs/size_check_bin
 }
 trap cleanup EXIT
+
+mkdir -p logs
 
 echo "==> Compiling C ground truth ($C_SRC)"
 if [ ! -x "$C_BIN" ] || [ "$C_SRC" -nt "$C_BIN" ]; then
     cc "$C_SRC" $(pkg-config --cflags fuse3) -o "$C_BIN"
 fi
-"$C_BIN" > /tmp/c_sizes.txt
-sed -n '1,15p' /tmp/c_sizes.txt
+"$C_BIN" > logs/c_sizes.txt
+sed -n '1,15p' logs/c_sizes.txt
 
 echo
 echo "==> Running Odin size check (tests/size_check.odin)"
-odin run tests/size_check.odin -file -collection:src=src -out:/tmp/size_check_bin > /tmp/odin_sizes.txt
-cat /tmp/odin_sizes.txt
+odin run tests/size_check.odin -file -collection:src=src -out:logs/size_check_bin > logs/odin_sizes.txt
+cat logs/odin_sizes.txt
 
 echo
 echo "==> Cross-checking struct sizes"
@@ -45,13 +47,13 @@ declare -A C_TO_ODIN=(
     [fuse_bufvec]="Bufvec"
 )
 
-grep -E '^  sizeof\(struct ' /tmp/c_sizes.txt | \
+grep -E '^  sizeof\(struct ' logs/c_sizes.txt | \
     sed -nE 's/^  sizeof\(struct ([a-z_]+)\).* ([0-9]+)$/\1 \2/p' \
-    > /tmp/c_pairs.txt
+    > logs/c_pairs.txt
 
-grep -E '^  [A-Za-z_]+[[:space:]]+=' /tmp/odin_sizes.txt | \
+grep -E '^  [A-Za-z_]+[[:space:]]+=' logs/odin_sizes.txt | \
     sed -nE 's/^  ([A-Za-z_]+).* ([0-9]+)$/\1 \2/p' \
-    > /tmp/odin_pairs.txt
+    > logs/odin_pairs.txt
 
 fail=0
 checked=0
@@ -61,7 +63,7 @@ while read -r c_name c_val; do
         printf "  SKIP %-22s  (no Odin mapping for struct %s)\n" "$c_name" "$c_name"
         continue
     fi
-    o_val=$(awk -v n="$odin_name" '$1 == n {print $2; exit}' /tmp/odin_pairs.txt)
+    o_val=$(awk -v n="$odin_name" '$1 == n {print $2; exit}' logs/odin_pairs.txt)
     if [ -z "$o_val" ]; then
         printf "  SKIP %-22s  (Odin struct %s not present in output)\n" "$c_name" "$odin_name"
         continue
@@ -73,7 +75,7 @@ while read -r c_name c_val; do
         printf "  FAIL %-12s <-> %-18s  C=%s  Odin=%s\n" "$c_name" "$odin_name" "$c_val" "$o_val"
         fail=1
     fi
-done < /tmp/c_pairs.txt
+done < logs/c_pairs.txt
 
 echo
 printf "==> %d struct(s) checked.\n" "$checked"

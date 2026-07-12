@@ -34,27 +34,31 @@ command -v fusermount3 &>/dev/null || { echo "FAIL: fusermount3 not found" >&2; 
 [ -e /dev/fuse ] || { echo "WARN: /dev/fuse missing; 'sudo modprobe fuse' first" >&2; }
 lsmod 2>/dev/null | grep -q '^fuse ' || { echo "WARN: fuse module not loaded; 'sudo modprobe fuse' first" >&2; }
 
-for mp in /tmp/rw /tmp/mnt; do
-    if mountpoint -q "$mp" 2>/dev/null; then
-        echo "  warning: stale mount at $mp — cleaning up"
-        fuser -k "$mp" 2>/dev/null || true
-        fusermount3 -u "$mp" 2>/dev/null || true
-    fi
+# Lazy-unmount any stale mounts before proceeding
+for mp in mnt /tmp/rw /tmp/mnt; do
+    fusermount3 -uz "$mp" 2>/dev/null || true
 done
 
+exit_code=0
 if command -v unshare &>/dev/null; then
     echo "  using unshare -rUm (isolated mount namespace)"
-    timeout "$HARNESS_TIMEOUT" unshare -rUm bash "$TEST_SCRIPT" "$@"
-    exit_code=$?
+    if timeout -k 5 "$HARNESS_TIMEOUT" unshare -rUm bash "$TEST_SCRIPT" "$@"; then
+        exit_code=0
+    else
+        exit_code=$?
+    fi
 else
     echo "  unshare not available — using direct execution"
-    timeout "$HARNESS_TIMEOUT" bash "$TEST_SCRIPT" "$@"
-    exit_code=$?
+    if timeout -k 5 "$HARNESS_TIMEOUT" bash "$TEST_SCRIPT" "$@"; then
+        exit_code=0
+    else
+        exit_code=$?
+    fi
 fi
 
-if [ $exit_code -eq 124 ]; then
+if [ "$exit_code" -eq 124 ]; then
     echo "FAIL: harness timed out after ${HARNESS_TIMEOUT}s" >&2
     exit 124
 fi
 
-exit $exit_code
+exit "$exit_code"

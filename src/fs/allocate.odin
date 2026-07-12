@@ -229,7 +229,7 @@ allocate_sectors :: proc(
 		}
 	}
 	if remaining > 0 {
-		log.debugf("allocate: No_Space — needed %d, %d remaining", sectors_needed, remaining)
+		log.errorf("allocate: No_Space — needed %d, %d remaining", sectors_needed, remaining)
 		return 0, 0, .No_Space
 	}
 	if start_cluster != 0 && !is_first {

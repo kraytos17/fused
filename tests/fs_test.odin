@@ -21,7 +21,10 @@ EXPECTED_DEMO := [?]u8{
 @test
 test_fs_core :: proc(t: ^testing.T) {
 	fd, open_err := os.open("fused.img", {.Read})
-	if open_err != nil {return}
+	if open_err != nil {
+		testing.fail(t)
+		return
+	}
 	defer os.close(fd)
 
 	master, ok := fs.read_master_record(fd)

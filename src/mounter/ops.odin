@@ -162,7 +162,7 @@ fused_readdir :: proc "c"(
 ) -> c.int {
 	context = runtime.default_context()
 	context.logger = g_logger
-	entry, cluster, offset, _, ok := resolve_path(string(path), context.temp_allocator)
+	entry, _, _, _, ok := resolve_path(string(path), context.temp_allocator)
 	if !ok || .Directory not_in entry.flags {
 		log.debugf("readdir: %s → ENOENT/not-dir", path)
 		return fuse3.nix(.ENOENT)
@@ -174,12 +174,14 @@ fused_readdir :: proc "c"(
 		return rc
 	}
 
-	dir_ce, dir_ok := fs.find_cluster_entry(g_disk, &g_master, cluster, offset)
+	dir_cluster := fs.Cluster(entry.stored_cluster)
+	dir_offset  := fs.Sector_Offset(entry.sector_index)
+	dir_ce, dir_ok := fs.find_cluster_entry(g_disk, &g_master, dir_cluster, dir_offset)
 	if !dir_ok {
 		return fuse3.nix(.ENOENT)
 	}
 
-	dirs, dirs_ok := fs.read_directory_entries(g_disk, &g_master, cluster, fs.Sector_Offset(dir_ce.sector_start))
+	dirs, dirs_ok := fs.read_directory_entries(g_disk, &g_master, dir_cluster, fs.Sector_Offset(dir_ce.sector_start))
 	if !dirs_ok {
 		return fuse3.nix(.ENOENT)
 	}
@@ -357,7 +359,7 @@ fused_write :: proc "c"(
 			data_cluster, data_offset,
 			total_sectors, .File_Content)
 		if aerr != .None {
-			log.debugf("write: %s → ENOSPC", path)
+			log.errorf("write: %s → ENOSPC", path)
 			return fuse3.nix(.ENOSPC)
 		}
 		if data_cluster == 0 {
@@ -369,9 +371,10 @@ fused_write :: proc "c"(
 		runs, runs_ok = fs.resolve_extents(g_disk, &g_master, data_cluster, data_offset)
 	}
 	if !runs_ok {
-		log.debugf("write: %s → extents failed", path)
+		log.errorf("write: %s → extents failed", path)
 		return fuse3.nix(.ENOENT)
 	}
+	log.debugf("write: %s → enter write loop (runs=%d)", path, len(runs))
 
 	pos_in_file: u64 = 0
 	bytes_written: u64 = 0
@@ -390,8 +393,6 @@ fused_write :: proc "c"(
 		start_sec := u64(run.sector) + skip / fs.SECTOR_SIZE
 		byte_off  := skip % fs.SECTOR_SIZE
 		remaining_in_run := u64(run.sector) + u64(run.count) - start_sec
-
-		// Handle partial first sector (RMW)
 		if byte_off > 0 && remaining_in_run > 0 && remaining > 0 {
 			if !fs.sector_read(g_disk, fs.Sector(start_sec), sector_rw[:]) {break}
 
@@ -408,7 +409,6 @@ fused_write :: proc "c"(
 			byte_off = 0
 			if remaining == 0 {break}
 		}
-		// Bulk write full aligned sectors
 		if remaining_in_run > 0 && remaining > 0 {
 			full_sectors := remaining / fs.SECTOR_SIZE
 			if full_sectors > remaining_in_run {full_sectors = remaining_in_run}
@@ -424,7 +424,6 @@ fused_write :: proc "c"(
 				if remaining == 0 {break}
 			}
 		}
-		// Handle last partial sector (RMW)
 		if remaining_in_run > 0 && remaining > 0 {
 			if !fs.sector_read(g_disk, fs.Sector(start_sec), sector_rw[:]) {break}
 			mem.copy(raw_data(sector_rw[:]), rawptr(buf[bytes_written:]), int(remaining))
@@ -449,9 +448,7 @@ fused_write :: proc "c"(
 
 		entry.file_size = new_size
 		write_entry_back(&entry, entry_cluster, entry_offset, entry_idx)
-		_ = fuse3.invalidate(path)
 	}
-	log.debugf("write: %s off=%d size=%d → %d bytes", path, off, size, bytes_written)
 	return c.int(bytes_written)
 }
 
@@ -459,19 +456,21 @@ fused_create :: proc "c"(path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Info
 	context = runtime.default_context()
 	context.logger = g_logger
 	parent, name := split_parent_name(string(path))
-	_, parent_cluster, parent_offset, _, ok := resolve_path(parent, context.temp_allocator)
+	parent_entry, _, _, _, ok := resolve_path(parent, context.temp_allocator)
 	if !ok {
 		log.debugf("create: %s → parent ENOENT", path)
 		return fuse3.nix(.ENOENT)
 	}
 
-	dir_ce, dir_ce_ok := fs.find_cluster_entry(g_disk, &g_master, parent_cluster, parent_offset)
+	dir_cluster := fs.Cluster(parent_entry.stored_cluster)
+	dir_offset  := fs.Sector_Offset(parent_entry.sector_index)
+	dir_ce, dir_ce_ok := fs.find_cluster_entry(g_disk, &g_master, dir_cluster, dir_offset)
 	if !dir_ce_ok {
 		return fuse3.nix(.ENOENT)
 	}
 
 	dir_buf: [fs.SECTOR_SIZE]u8
-	dir_sector := fs.Sector(u64(parent_cluster) * g_master.cluster_size + u64(dir_ce.sector_start))
+	dir_sector := fs.Sector(u64(dir_cluster) * g_master.cluster_size + u64(dir_ce.sector_start))
 	if !fs.sector_read(g_disk, dir_sector, dir_buf[:]) {
 		return fuse3.nix(.EIO)
 	}
@@ -492,7 +491,7 @@ fused_create :: proc "c"(path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Info
 		}
 	}
 	if didx < 0 {
-		log.debugf("create: %s → ENOSPC (dir full)", path)
+		log.errorf("create: %s → ENOSPC (dir full)", path)
 		return fuse3.nix(.ENOSPC)
 	}
 
@@ -530,8 +529,8 @@ fused_create :: proc "c"(path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Info
 		copy(new_entry.file_name[:], name)
 	}
 
-	fs.write_directory_entry_at(g_disk, &g_master, parent_cluster, dsec, didx, &new_entry)
-	fi.fh = (u64(parent_cluster) << 16) | u64(didx)
+	fs.write_directory_entry_at(g_disk, &g_master, dir_cluster, dsec, didx, &new_entry)
+	fi.fh = (u64(dir_cluster) << 16) | u64(didx)
 	log.debugf("create: %s → ok", path)
 	return 0
 }
@@ -540,18 +539,20 @@ fused_mkdir :: proc "c"(path: cstring, mode: posix.mode_t) -> c.int {
 	context = runtime.default_context()
 	context.logger = g_logger
 	parent, name := split_parent_name(string(path))
-	_, parent_cluster, parent_offset, _, ok := resolve_path(parent, context.temp_allocator)
+	parent_entry, _, _, _, ok := resolve_path(parent, context.temp_allocator)
 	if !ok {
 		return fuse3.nix(.ENOENT)
 	}
 
-	dir_ce, dir_ce_ok := fs.find_cluster_entry(g_disk, &g_master, parent_cluster, parent_offset)
+	dir_cluster := fs.Cluster(parent_entry.stored_cluster)
+	dir_offset  := fs.Sector_Offset(parent_entry.sector_index)
+	dir_ce, dir_ce_ok := fs.find_cluster_entry(g_disk, &g_master, dir_cluster, dir_offset)
 	if !dir_ce_ok {
 		return fuse3.nix(.ENOENT)
 	}
 
 	dir_buf: [fs.SECTOR_SIZE]u8
-	dir_sector := fs.Sector(u64(parent_cluster) * g_master.cluster_size + u64(dir_ce.sector_start))
+	dir_sector := fs.Sector(u64(dir_cluster) * g_master.cluster_size + u64(dir_ce.sector_start))
 	if !fs.sector_read(g_disk, dir_sector, dir_buf[:]) {
 		return fuse3.nix(.EIO)
 	}
@@ -575,12 +576,12 @@ fused_mkdir :: proc "c"(path: cstring, mode: posix.mode_t) -> c.int {
 		return fuse3.nix(.ENOSPC)
 	}
 
-	dir_cluster, dir_offset, derr := fs.allocate_sectors(&g_master, g_disk, 0, 0, 1, .Directory)
+	new_cluster, new_offset, derr := fs.allocate_sectors(&g_master, g_disk, 0, 0, 1, .Directory)
 	if derr != .None {
 		return fuse3.nix(.ENOSPC)
 	}
 
-	dir_runs, _ := fs.resolve_extents(g_disk, &g_master, dir_cluster, dir_offset)
+	dir_runs, _ := fs.resolve_extents(g_disk, &g_master, new_cluster, new_offset)
 	zero: [fs.SECTOR_SIZE]u8
 	fs.sector_write(g_disk, dir_runs[0].sector, zero[:])
 
@@ -589,15 +590,15 @@ fused_mkdir :: proc "c"(path: cstring, mode: posix.mode_t) -> c.int {
 
 	new_entry: fs.Directory_Entry
 	new_entry.flags = fs.Dir_Flags{.Allocated, .Directory, .Exists}
-	new_entry.sector_index = u16(dir_offset)
-	new_entry.stored_cluster = u64(dir_cluster)
+	new_entry.sector_index = u16(new_offset)
+	new_entry.stored_cluster = u64(new_cluster)
 	new_entry.year = u16(y)
 	new_entry.date_time = fs.Packed_Date_Time{
 		month=u32(int(mo)), date=u32(d), hour=u32(h), minute=u32(m), second=u32(s),
 	}
 
 	copy(new_entry.file_name[:], name)
-	fs.write_directory_entry_at(g_disk, &g_master, parent_cluster, dsec, didx, &new_entry)
+	fs.write_directory_entry_at(g_disk, &g_master, dir_cluster, dsec, didx, &new_entry)
 	log.debugf("mkdir: %s → ok", path)
 	return 0
 }
@@ -607,11 +608,14 @@ fused_unlink :: proc "c"(path: cstring) -> c.int {
 	context.logger = g_logger
 	entry, cluster, offset, idx, ok := resolve_path(string(path), context.temp_allocator)
 	if !ok {
+		log.debugf("unlink: %s → ENOENT", path)
 		return fuse3.nix(.ENOENT)
 	}
 	if .Directory in entry.flags {
+		log.debugf("unlink: %s → EISDIR", path)
 		return fuse3.nix(.EISDIR)
 	}
+
 	if entry.stored_cluster != 0 {
 		fs.deallocate_sectors(&g_master, g_disk, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index))
 	}
@@ -630,12 +634,14 @@ fused_rmdir :: proc "c"(path: cstring) -> c.int {
 		return fuse3.nix(.ENOENT)
 	}
 	if .Directory not_in entry.flags {
+		log.debugf("rmdir: %s → ENOTDIR", path)
 		return fuse3.nix(.ENOTDIR)
 	}
 
 	dirs, _ := fs.read_directory_entries(g_disk, &g_master, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index))
 	for &d in dirs {
 		if .Exists in d.flags {
+			log.debugf("rmdir: %s → ENOTEMPTY", path)
 			return fuse3.nix(.ENOTEMPTY)
 		}
 	}
@@ -654,9 +660,11 @@ fused_truncate :: proc "c"(path: cstring, size: posix.off_t, fi: ^fuse3.File_Inf
 	context.logger = g_logger
 	entry, cluster, offset, idx, ok := resolve_path(string(path), context.temp_allocator)
 	if !ok {
+		log.debugf("truncate: %s → ENOENT", path)
 		return fuse3.nix(.ENOENT)
 	}
 	if .Directory in entry.flags {
+		log.debugf("truncate: %s → EISDIR", path)
 		return fuse3.nix(.EISDIR)
 	}
 
@@ -711,7 +719,6 @@ fused_truncate :: proc "c"(path: cstring, size: posix.off_t, fi: ^fuse3.File_Inf
 	entry.file_size = u64(size)
 
 	write_entry_back(&entry, cluster, offset, idx)
-	_ = fuse3.invalidate(path)
 	log.debugf("truncate: %s → %d", path, size)
 	return 0
 }
@@ -738,28 +745,34 @@ fused_rename :: proc "c"(oldpath: cstring, newpath: cstring, flags: c.uint) -> c
 	context = runtime.default_context()
 	context.logger = g_logger
 	if u32(flags) & u32(fuse3.RENAME_NOREPLACE) != 0 {
+		log.debugf("rename: RENAME_NOREPLACE not supported")
 		return fuse3.nix(.ENOSYS)
 	}
 	if u32(flags) & u32(fuse3.RENAME_EXCHANGE)  != 0 {
+		log.debugf("rename: RENAME_EXCHANGE not supported")
 		return fuse3.nix(.ENOSYS)
 	}
 
 	entry, old_cluster, old_offset, old_idx, ok := resolve_path(string(oldpath), context.temp_allocator)
 	if !ok {
+		log.debugf("rename: %s → ENOENT", oldpath)
 		return fuse3.nix(.ENOENT)
 	}
 
 	new_parent_path, new_name := split_parent_name(string(newpath))
 	_, new_parent_c, new_parent_o, _, np_ok := resolve_path(new_parent_path, context.temp_allocator)
 	if !np_ok {
+		log.debugf("rename: %s → parent ENOENT", newpath)
 		return fuse3.nix(.ENOENT)
 	}
 	if old_cluster == new_parent_c && old_offset == new_parent_o {
 		copy(entry.file_name[:], new_name)
 		entry.file_name[min(15, len(new_name))] = 0
 		write_entry_back(&entry, old_cluster, old_offset, old_idx)
+		log.debugf("rename: %s → %s ok", oldpath, newpath)
 		return 0
 	}
+	log.debugf("rename: %s → %s → EXDEV (cross-directory)", oldpath, newpath)
 	return fuse3.nix(.EXDEV)
 }
 
@@ -798,6 +811,7 @@ fused_releasedir :: proc "c"(path: cstring, fi: ^fuse3.File_Info) -> c.int {
 fused_fsync :: proc "c"(path: cstring, datasync: c.int, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	context.logger = g_logger
+	// TODO: fsync the backing image file.  Requires extracting fd from os.File.
 	return 0
 }
 
