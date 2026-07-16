@@ -1,8 +1,21 @@
+// demo/hello_main.odin — Minimal FUSE demo.
+//
+// Mounts a read-only filesystem with a single "hello.txt" file.
+// Demonstrates the libfuse3 binding: callbacks, file handles,
+// user_data, tracking allocator, and logging.
+//
+// Build:  odin build demo/ -collection:src=src
+// Run:    ./demo/fused -f mnt   (mountpoint=mnt)
+// Verify: cat mnt/hello.txt
+//
+// This file intentionally avoids importing src:fs — it proves
+// the binding works standalone.
 package main
 
 import "base:runtime"
 import "core:c"
 import "core:fmt"
+import "core:log"
 import "core:mem"
 import "core:os"
 import "core:strings"
@@ -20,8 +33,22 @@ HELLO_CONTENT := [?]u8{
 FILE_MODE_RO :: posix.mode_t{.IFREG, .IRUSR, .IRGRP, .IROTH}
 DIR_MODE_RO  :: posix.mode_t{.IFDIR, .IRUSR, .IRGRP, .IROTH, .IXUSR, .IXGRP, .IXOTH}
 
+FS :: struct {
+	counter: u64,
+}
+
+get_fs :: #force_inline proc "contextless" () -> ^FS {
+	return (^FS)(fuse3.fuse_get_context().private_data)
+}
+
+// Every FUSE "c" proc must restore the Odin context at the top,
+// otherwise memory allocation and defer will use a stale thread
+// context. This is required even in single-threaded mode.
 hello_getattr :: proc "c"(path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
+	fsys := get_fs()
+	context.logger = log.Logger{}
+	fsys.counter += 1
 	stbuf^ = {}
 	is_root := path == "" || path == "/"
 	if is_root {
@@ -32,6 +59,14 @@ hello_getattr :: proc "c"(path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Info
 		stbuf.st_nlink = 1
 		stbuf.st_size = posix.off_t(len(HELLO_CONTENT))
 	}
+	return 0
+}
+
+// Even a no-op open callback is important — without it the kernel
+// falls back to read-only access patterns. Setting fi.fh here would
+// allow read/release to skip path resolution (see src/mounter/).
+hello_open :: proc "c"(path: cstring, fi: ^fuse3.File_Info) -> c.int {
+	context = runtime.default_context()
 	return 0
 }
 
@@ -75,6 +110,11 @@ hello_readdir :: proc "c"(
 	return 0
 }
 
+hello_release :: proc "c"(path: cstring, fi: ^fuse3.File_Info) -> c.int {
+	context = runtime.default_context()
+	return 0
+}
+
 main :: proc() {
 	context = runtime.default_context()
 	when ODIN_DEBUG {
@@ -87,6 +127,12 @@ main :: proc() {
 	fmt.printf("libfuse3 runtime version: %d.%d (built for %d.%d)\n",
 		maj, min, fuse3.FUSE_USE_VERSION_MAJOR, fuse3.FUSE_USE_VERSION_MINOR)
 	fmt.printf("libfuse3 package version: %s\n", fuse3.pkgversion())
+
+	// Allocate per-mount state and pass it as user_data to fuse3.run.
+	// Callbacks retrieve it via fuse_get_context().private_data.
+	fsys := new(FS)
+	fsys.counter = 0
+
 	dynamic_argv: [dynamic]cstring
 	defer delete(dynamic_argv)
 
@@ -107,14 +153,20 @@ main :: proc() {
 	ops := fuse3.Operations{
 		getattr = hello_getattr,
 		readdir = hello_readdir,
+		open    = hello_open,
 		read    = hello_read,
+		release = hello_release,
 	}
-	rc := fuse3.run(c.int(len(dynamic_argv)), raw_data(dynamic_argv), &ops, nil)
+	
+	rc := fuse3.run(c.int(len(dynamic_argv)), raw_data(dynamic_argv), &ops, fsys)
 	if rc != 0 {
 		fmt.eprintln("fuse_main returned", rc)
 		os.exit(1)
 	}
 
+	// When ODIN_DEBUG is set, the tracking allocator reports any
+	// memory that was not freed before process exit. This catch
+	// leaks in the binding or in user code.
 	when ODIN_DEBUG {
 		if len(TRACK.allocation_map) > 0 {
 			fmt.eprintln("--- leaked allocations (tracking allocator) ---")

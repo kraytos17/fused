@@ -2,8 +2,8 @@
 #+build linux
 package fs
 
-import "core:os"
 import "core:log"
+import "core:os"
 
 entry_short_name :: proc "contextless" (entry: ^Directory_Entry) -> string {
 	n := 0
@@ -18,16 +18,26 @@ read_directory_entries :: proc(
 	master: ^Master_Record,
 	cluster: Cluster,
 	sector_offset: Sector_Offset,
-) -> (entries: [dynamic; DIR_ENTRIES_PER_SECTOR]Directory_Entry, ok: bool) {
-	buf: [SECTOR_SIZE]u8
-	table_sector := Sector(u64(cluster) * master.cluster_size + u64(sector_offset))
-	if !sector_read(disk, table_sector, buf[:]) {
+) -> (entries: [dynamic]Directory_Entry, ok: bool) {
+	runs, runs_ok := resolve_extents(disk, master, cluster, sector_offset)
+	if !runs_ok {
 		return {}, false
 	}
 
-	raw := (^[DIR_ENTRIES_PER_SECTOR]Directory_Entry)(raw_data(buf[:]))
-	#unroll for i in 0 ..< DIR_ENTRIES_PER_SECTOR {
-		if .Exists in raw[i].flags {append(&entries, raw[i])}
+	sector_buf: [SECTOR_SIZE]u8
+	for run in runs {
+		n := int(run.count)
+		for si in 0 ..< n {
+			sec := Sector(u64(run.sector) + u64(si))
+			if !sector_read(disk, sec, sector_buf[:]) {
+				return entries, false
+			}
+
+			raw := (^[DIR_ENTRIES_PER_SECTOR]Directory_Entry)(raw_data(sector_buf[:]))
+			for i in 0 ..< DIR_ENTRIES_PER_SECTOR {
+				if .Exists in raw[i].flags {append(&entries, raw[i])}
+			}
+		}
 	}
 	return entries, true
 }
@@ -61,6 +71,8 @@ resolve_lfn :: proc(
 	}
 
 	data := make([dynamic]u8, 0, int(ptr.size), allocator)
+	defer delete(data)
+
 	sector_buf: [SECTOR_SIZE]u8
 	current_cluster := Cluster(ptr.cluster)
 	current_entry  := target

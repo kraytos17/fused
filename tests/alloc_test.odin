@@ -180,3 +180,43 @@ test_extension :: proc(t: ^testing.T) {
 	derr := fs.deallocate_sectors(&master, fd, nil, fc, fo)
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
+
+@test
+test_alloc_cache_stress :: proc(t: ^testing.T) {
+	fd, open_err := open_test_image()
+	if !open_err {testing.fail(t); return}
+	defer os.close(fd)
+
+	master, mok := fs.read_master_record(fd)
+	testing.expect(t, mok, "read_master_record")
+
+	cache: fs.Cluster_Bitmap_Cache
+	fs.alloc_cache_init(&cache, &master)
+	defer fs.alloc_cache_destroy(&cache)
+
+	baseline_used: u16 = 0
+	{
+		_, used, ok := fs.alloc_cache_ensure(&cache, &master, fd, 1)
+		if ok {baseline_used = used}
+	}
+
+	ITERATIONS :: 100
+	for i in 0 ..< ITERATIONS {
+		fc, fo, aerr := fs.allocate_sectors(&master, fd, &cache, 0, 0, 1, .File_Content)
+		testing.expectf(t, aerr == .None, "alloc iteration %d: %v", i, aerr)
+		if aerr != .None {return}
+
+		runs, rok := fs.resolve_extents(fd, &master, fc, fo)
+		testing.expectf(t, rok, "resolve extents iteration %d", i)
+		if !rok {return}
+		tt: u64; for r in runs {tt += u64(r.count)}
+		testing.expectf(t, tt == 1, "iteration %d: expected 1 sector, got %d", i, tt)
+
+		derr := fs.deallocate_sectors(&master, fd, &cache, fc, fo)
+		testing.expectf(t, derr == .None, "dealloc iteration %d: %v", i, derr)
+		if derr != .None {return}
+
+		_, rok2 := fs.resolve_extents(fd, &master, fc, fo)
+		testing.expectf(t, !rok2, "iteration %d: extents should be empty after dealloc", i)
+	}
+}

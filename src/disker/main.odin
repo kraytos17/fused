@@ -2,10 +2,7 @@
 //
 // Formats a raw disk image by writing sequentially from sector 0:
 //   MasterRecord → ClusterMap table (sector-by-sector)
-//   → root cluster (CE table, directory, optional demo file)
-//   → zero-pad to image size.
-//
-// No seeking after initial open. No large pre-allocated buffers.
+//   → root cluster (CE table, directory, optional demo file).
 // No FUSE dependency — builds without libfuse3.
 #+build linux
 package main
@@ -32,6 +29,7 @@ Flags :: struct {
 	cluster_size: u64,
 	output:       string,
 	demo_file:    string,
+	no_demo:      bool,
 	verbose:      bool,
 	force:        bool,
 }
@@ -53,22 +51,6 @@ writer_write :: proc(w: ^Writer, data: []u8) -> bool {
 		return false
 	}
 	w.pos += i64(len(data))
-	return true
-}
-
-// writer_pad_to writes zeros up to the next multiple of boundary.
-writer_pad_to :: proc(w: ^Writer, boundary: i64) -> bool {
-	rem := i64(boundary) - (w.pos % i64(boundary))
-	if rem == i64(boundary) { return true }
-
-	zero_block: [512]u8
-	for rem > 0 {
-		n := min(rem, 512)
-		_, err := os.write_at(w.fd, zero_block[:n], w.pos)
-		if err != nil { return false }
-		w.pos += n
-		rem -= n
-	}
 	return true
 }
 
@@ -106,7 +88,9 @@ main :: proc() {
 
 	demo_data: []u8
 	needs_free := false
-	if flags.demo_file != "" {
+	if flags.no_demo {
+		demo_data = {}
+	} else if flags.demo_file != "" {
 		data, err := os.read_entire_file(flags.demo_file, context.allocator)
 		if err != nil {
 			log.warnf("cannot read demo file %s; using embedded demo", flags.demo_file)
@@ -136,7 +120,8 @@ main :: proc() {
 	master.cluster_map_offset = 1
 	master.cluster_map_size = total_clusters
 	master.cluster_size = flags.cluster_size
-	master.root_sector_index = 1
+	ce_sectors := u64(1)
+	master.root_sector_index = u16(ce_sectors)
 	master.root_cluster = root_cluster
 	master.end_sig = 0x0BB0
 	{
@@ -168,7 +153,7 @@ main :: proc() {
 	}
 
 	root_sector := i64(u64(root_cluster) * flags.cluster_size)
-	if !writer_pad_to(&w, root_sector * fs.SECTOR_SIZE) { os.exit(1) }
+	w.pos = root_sector * fs.SECTOR_SIZE
 	{
 		ce_buf: [fs.SECTOR_SIZE]u8
 		ce_table := (^[fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry)(raw_data(ce_buf[:]))
@@ -190,7 +175,9 @@ main :: proc() {
 				sector_start     = 2,
 			}
 		}
-		if !writer_write(&w, ce_buf[:]) { os.exit(1) }
+		if !writer_write(&w, ce_buf[:]) {
+			os.exit(1)
+		}
 
 		dir_buf: [fs.SECTOR_SIZE]u8
 		if len(demo_data) > 0 {
@@ -210,16 +197,20 @@ main :: proc() {
 			copy(entry.file_name[:], "Kernel")
 			(^fs.Directory_Entry)(raw_data(dir_buf[:]))^ = entry
 		}
-		if !writer_write(&w, dir_buf[:]) { os.exit(1) }
+		if !writer_write(&w, dir_buf[:]) {
+			os.exit(1)
+		}
 		if len(demo_data) > 0 {
 			content_buf: [fs.SECTOR_SIZE]u8
 			copy(content_buf[:], demo_data)
 			if !writer_write(&w, content_buf[:]) { os.exit(1) }
 		}
 	}
-	if !writer_pad_to(&w, i64(flags.size)) { os.exit(1) }
-	log.infof("done: %s  (%d clusters, %d/sector CME, %d CME sectors, %d reserved clusters)",
-		flags.output, total_clusters, fs.CLUSTER_MAP_ENTRIES_PER_SECTOR, cm_sectors, reserved_clusters)
+	if flags.verbose {
+		image_mb := f64(flags.size) / (1024.0 * 1024.0)
+		log.infof("done: %s  (%.1f MB, %d clusters  %d/sector CME  %d CME sectors  %d reserved)",
+			flags.output, image_mb, total_clusters, fs.CLUSTER_MAP_ENTRIES_PER_SECTOR, cm_sectors, reserved_clusters)
+	}
 }
 
 parse_args :: proc() -> Flags {
@@ -248,6 +239,8 @@ parse_args :: proc() -> Flags {
 			f.output = strings.trim_prefix(arg, "--output=")
 		case strings.has_prefix(arg, "--demo-file="):
 			f.demo_file = strings.trim_prefix(arg, "--demo-file=")
+		case arg == "--no-demo":
+			f.no_demo = true
 		case arg == "--verbose" || arg == "-v":
 			f.verbose = true
 		case arg == "--force" || arg == "-f":
@@ -275,6 +268,7 @@ Options:
   --cluster-size=<N>  Sectors per cluster (default: 16)
   --output=<path>     Output image path (default: fused.img)
   --demo-file=<path>  File to embed as /Kernel (default: embedded demo)
+  --no-demo           Do not embed a demo file
   --verbose, -v       Show progress for large images
   --force, -f         Overwrite existing output
   --help, -h          Show this help
@@ -282,7 +276,8 @@ Options:
 Examples:
   disker --size=256M --cluster-size=64 --output=big.img
   disker --force fused.img
-  disker --demo-file=mykernel.bin --output=os.img`)
+  disker --demo-file=mykernel.bin --output=os.img
+  disker --no-demo fused.img`)
 }
 
 parse_size :: proc(s: string) -> (u64, bool) {

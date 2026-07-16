@@ -19,7 +19,12 @@ resolve_extents :: proc(
 	current_cluster := start_cluster
 	current_offset := start_offset
 	cluster_size := u64(master.cluster_size)
-	for {
+	max_steps := int(master.cluster_map_size) + 1
+	for guard in 0 ..< max_steps {
+		if guard == max_steps - 1 {
+			return runs, false
+		}
+
 		entry, found := find_cluster_entry(disk, master, current_cluster, current_offset)
 		if !found {
 			return runs, false

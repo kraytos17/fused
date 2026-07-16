@@ -39,7 +39,7 @@ MP="$MOUNT"
 
 echo; echo "== basic read =="
 ls "$MP" | grep -q "Kernel" && pass "ls" || fail "ls"
-[ "$(stat -c '%a' "$MP/Kernel")" = "444" ] && pass "mode 444" || fail "mode 444"
+[ "$(stat -c '%a' "$MP/Kernel")" = "644" ] && pass "mode 644" || fail "mode 644"
 [ "$(stat -c '%s' "$MP/Kernel")" = "60"  ] && pass "size 60"  || fail "size 60"
 head -c4 "$MP/Kernel" | od -tx1 -An | tr -d ' \n' | grep -q "82000d00" && pass "header" || fail "header"
 

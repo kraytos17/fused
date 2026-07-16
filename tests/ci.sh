@@ -94,6 +94,14 @@ else
 		rc=$?
 		[ $rc -eq 124 ] && echo "  TIMEOUT (rw smoke)" || echo "  WARN: smoke-rw rc=$rc (some persistence tests may be expected to fail)"
 	fi
+
+	echo "--- smoke-mt (multi-threaded stress test) ---"
+	if timeout 120 unshare -rUm bash tests/smoke_mt.sh 2>&1; then
+		phase_pass
+	else
+		rc=$?
+		[ $rc -eq 124 ] && phase_fail "smoke-mt (timeout)" || phase_fail "smoke-mt (rc=$rc)"
+	fi
 fi
 
 echo

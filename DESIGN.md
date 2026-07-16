@@ -25,7 +25,9 @@ The project is split into two independent halves that meet at `src/mounter/`:
 - **`src/fs/`** — Filesystem logic operating on raw disk images through
   `sector_read`/`sector_write`. No FUSE dependency.
   - `alloc_cache.odin` — in-memory bitmap cache for the sector allocator
-- **`src/mounter/`** — FUSE callbacks that delegate to `src/fs/`. Translates
+  - `validate.odin` — Mount-time MasterRecord validation
+  - `display.odin` — Human-readable flag/struct string formatters
+- **`src/mounter/`** — FUSE callbacks (21 implemented) that delegate to `src/fs/`. Translates
   `FS_Error` to negated errno values.
 - **`src/disker/`** — Standalone image formatter. Produces valid disk images
   without libfuse3.
@@ -179,10 +181,19 @@ owns exactly one mutable `FS` instance per mount. This eliminates a class of
 concurrency races and makes the test surface explicit — every `fs` function
 takes its dependencies as parameters.
 
+**Thread safety.** The `FS` struct carries a `sync.Mutex` field. Cache-mutating
+FUSE callbacks (getattr, readdir, open, write, create, mkdir, unlink, rmdir,
+truncate, utimens, rename, access) acquire the mutex at the top of the callback
+and release it on return via `defer`. Read-only callbacks (read, statfs) and
+no-op callbacks (flush, release, opendir, releasedir, fsync) run lock-free.
+The `-s` (single-threaded) flag is available but not forced — multi-threaded
+dispatch is the default.
+
 **Stack-local scratch buffers.** All procedures use stack-local `[32]T` arrays
 and fixed-capacity inline arrays (`[dynamic; 32]Extent_Run`) instead of
 heap-backed dynamic arrays. Trivially reentrant, zero runtime allocation in the
-common case.
+common case. `read_directory_entries` uses a plain `[dynamic]Directory_Entry`
+(no explicit capacity) to allow growth beyond the initial 10-entry sector.
 
 **In-memory caches.** The mounter maintains two caches:
 
@@ -244,14 +255,15 @@ boundary, `FS_Error` is translated to negated errno via `fuse3.nix(.ENOENT)`.
 | Disk er tool | 8 integration tests (size, cluster-size, output, help, force-guard, size validation, imgdump readability) |
 | Imgdump tool | 12 integration tests (master, clusters, Kernel, JSON validation, hex dump, hex-on-dir error, help, missing/invalid path) |
 | FUSE smoke | Isolated mount namespace via `unshare -rUm`, harness with timeout |
-| CI pipeline | Build + struct check + context audit + unit tests + tool integration + FUSE smoke (4 phases) |
+| CI pipeline | Build + struct check + context audit + vet + unit tests + tool integration + smoke + smoke-rw + smoke-mt (9 phases) |
 
 ### Test count
 
-- 41 unit tests in `tests/`
+- 47 unit tests in `tests/`
 - 8 disker integration tests + 12 imgdump integration tests in `tests/disker_test.sh`
 - 14-check FUSE smoke test in `tests/smoke.sh` (read-only, multi-sector, subdir, df/statvfs)
 - 25-step read-write FUSE smoke test in `tests/smoke_rw.sh` (create, write, append, cp, dd, mkdir, unlink, rmdir, remount, persistence, statvfs)
+- Multi-threaded stress test in `tests/smoke_mt.sh` (concurrent reader/writer/dir/io workers, 15s)
 - Struct size cross-check: 12 structs, 43 callback offsets
-- Context audit: 19 callbacks checked
-- CI pipeline: 8 phases — build, struct check, context audit, vet, unit tests, tool integration, smoke, smoke-rw
+- Context audit: 21 callbacks checked
+- CI pipeline: 9 phases — build, struct check, context audit, vet, unit tests, tool integration, smoke, smoke-rw, smoke-mt

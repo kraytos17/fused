@@ -33,8 +33,9 @@ bit_clear :: #force_inline proc(bitmap: []u8, sector: u16) {
 find_contiguous_free :: proc(bitmap: []u8, total_sectors: u64, needed: u16) -> (start: u16, available: u16, ok: bool) {
 	run_start: u16 = 0xFFFF
 	run_len: u16 = 0
-	for s in 0 ..< u16(total_sectors) {
-		if bit_isset(bitmap, s) {
+	max_s := u64(min(total_sectors, 65535))
+	for s: u64 = 0; s < max_s; s += 1 {
+		if bit_isset(bitmap, u16(s)) {
 			if run_len > 0 && run_len >= needed {
 				return run_start, run_len, true
 			}
@@ -42,8 +43,9 @@ find_contiguous_free :: proc(bitmap: []u8, total_sectors: u64, needed: u16) -> (
 			run_len = 0
 		} else {
 			if run_start == 0xFFFF {
-				run_start = s
+				run_start = u16(s)
 			}
+
 			run_len += 1
 			if run_len >= needed {
 				return run_start, run_len, true
@@ -58,8 +60,9 @@ find_contiguous_free :: proc(bitmap: []u8, total_sectors: u64, needed: u16) -> (
 
 @private
 is_cluster_full :: proc(bitmap: []u8, total_sectors: u64) -> bool {
-	for s in 0 ..< u16(total_sectors) {
-		if !bit_isset(bitmap, s) {
+	max_s := u64(min(total_sectors, 65535))
+	for s: u64 = 0; s < max_s; s += 1 {
+		if !bit_isset(bitmap, u16(s)) {
 			return false
 		}
 	}
@@ -168,9 +171,8 @@ allocate_sectors :: proc(
 			bitmap = var_bitmap
 			used = var_used
 		} else {
-			local_bitmap: [DEFAULT_CLUSTER_SIZE]u8
 			bitmap_len := max(1, int((master.cluster_size + 7) / 8))
-			bitmap = local_bitmap[:bitmap_len]
+			bitmap = make([]u8, bitmap_len, context.temp_allocator)
 			get_bitmap_fallback(bitmap, master, disk, Cluster(cluster_idx), &cme)
 		}
 

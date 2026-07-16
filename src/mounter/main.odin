@@ -124,6 +124,8 @@ main :: proc() {
 		master.rev, master.cluster_size, master.cluster_map_size, master.root_cluster)
 
 	ops := fuse3.Operations{
+		init       = fused_init,
+		destroy    = fused_destroy,
 		getattr    = fused_getattr,
 		readdir    = fused_readdir,
 		open       = fused_open,
@@ -152,20 +154,13 @@ main :: proc() {
 	}
 
 	has_f := false
-	has_s := false
 	for a in dynamic_argv {
 		if a == "-f" {
 			has_f = true
 		}
-		if a == "-s" {
-			has_s = true
-		}
 	}
 	if !has_f {
 		append(&dynamic_argv, "-f")
-	}
-	if !has_s {
-		append(&dynamic_argv, "-s")
 	}
 
 	lru.init(&fsys.path_cache, 128, context.allocator, context.allocator)

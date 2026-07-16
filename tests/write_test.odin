@@ -582,18 +582,17 @@ test_grow_shrink_cycle :: proc(t: ^testing.T) {
 
 	runs, _ := fs.resolve_extents(fd, &master, fc, fo)
 	pattern := byte(0xAB)
-	si := 0
+	se_idx := 0
 	for run in runs {
-		for _ in 0 ..< int(run.count) {
+		for si in 0 ..< int(run.count) {
 			buf: [fs.SECTOR_SIZE]u8
-			for j in 0 ..< fs.SECTOR_SIZE {buf[j] = pattern + byte(si)}
-
+			for j in 0 ..< fs.SECTOR_SIZE {buf[j] = pattern + byte(se_idx)}
 			testing.expect(t, fs.sector_write(fd, fs.Sector(u64(run.sector) + u64(si)), buf[:]), "write")
-			si += 1
+			se_idx += 1
 		}
 	}
 
-	testing.expect_value(t, si, 10)
+	testing.expect_value(t, se_idx, 10)
 	derr := fs.deallocate_sectors(&master, fd, nil, fc, fo)
 	testing.expect_value(t, derr, fs.FS_Error.None)
 
@@ -632,27 +631,27 @@ test_multi_cluster_chain :: proc(t: ^testing.T) {
 	for r in runs {total += u64(r.count)}
 
 	testing.expect_value(t, total, needed)
-	si := 0
+	se_idx := 0
 	for run in runs {
-		for _ in 0 ..< int(run.count) {
+		for si in 0 ..< int(run.count) {
 			buf: [fs.SECTOR_SIZE]u8
-			for j in 0 ..< fs.SECTOR_SIZE {buf[j] = byte(si)}
+			for j in 0 ..< fs.SECTOR_SIZE {buf[j] = byte(se_idx)}
 
 			testing.expect(t, fs.sector_write(fd, fs.Sector(u64(run.sector) + u64(si)), buf[:]), "write")
-			si += 1
+			se_idx += 1
 		}
 	}
 
-	testing.expect_value(t, si, int(needed))
-	si = 0
+	testing.expect_value(t, se_idx, int(needed))
+	se_idx = 0
 	for run in runs {
-		for _ in 0 ..< int(run.count) {
+		for si in 0 ..< int(run.count) {
 			buf: [fs.SECTOR_SIZE]u8
 			testing.expect(t, fs.sector_read(fd, fs.Sector(u64(run.sector) + u64(si)), buf[:]), "read")
 			for j in 0 ..< fs.SECTOR_SIZE {
-				testing.expect(t, buf[j] == byte(si), "verify")
+				testing.expect(t, buf[j] == byte(se_idx), "verify")
 			}
-			si += 1
+			se_idx += 1
 		}
 	}
 	fs.deallocate_sectors(&master, fd, nil, fc, fo)
@@ -716,24 +715,24 @@ test_chain_extension_multi_cluster :: proc(t: ^testing.T) {
 	for r in runs {total += u64(r.count)}
 	testing.expect_value(t, total, u64(30))
 
-	si := 0
+	se_idx := 0
 	for run in runs {
-		for _ in 0 ..< int(run.count) {
+		for si in 0 ..< int(run.count) {
 			buf: [fs.SECTOR_SIZE]u8
-			for j in 0 ..< fs.SECTOR_SIZE {buf[j] = byte(si)}
+			for j in 0 ..< fs.SECTOR_SIZE {buf[j] = byte(se_idx)}
 			testing.expect(t, fs.sector_write(fd, fs.Sector(u64(run.sector) + u64(si)), buf[:]), "write")
-			si += 1
+			se_idx += 1
 		}
 	}
 
-	testing.expect_value(t, si, 30)
-	si = 0
+	testing.expect_value(t, se_idx, 30)
+	se_idx = 0
 	for run in runs {
-		for _ in 0 ..< int(run.count) {
+		for si in 0 ..< int(run.count) {
 			buf: [fs.SECTOR_SIZE]u8
 			testing.expect(t, fs.sector_read(fd, fs.Sector(u64(run.sector) + u64(si)), buf[:]), "read")
-			for j in 0 ..< fs.SECTOR_SIZE {testing.expect(t, buf[j] == byte(si), "verify")}
-			si += 1
+			for j in 0 ..< fs.SECTOR_SIZE {testing.expect(t, buf[j] == byte(se_idx), "verify")}
+			se_idx += 1
 		}
 	}
 
@@ -1056,4 +1055,158 @@ test_atime_fields :: proc(t: ^testing.T) {
 
 	re.flags -= {.Exists, .Allocated}
 	fs.write_directory_entry_at(fd, &master, dc, fs.Sector_Offset(ce.sector_start), 0, &re)
+}
+
+@test
+test_truncate_to_zero :: proc(t: ^testing.T) {
+	fd, open_err := open_test_image()
+	if !open_err {testing.fail(t); return}
+	defer os.close(fd)
+
+	master, mok := fs.read_master_record(fd)
+	testing.expect(t, mok, "read_master_record")
+
+	fc, fo, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, 5, .File_Content)
+	testing.expect_value(t, aerr, fs.FS_Error.None)
+
+	buf: [fs.SECTOR_SIZE]u8
+	for j in 0 ..< fs.SECTOR_SIZE {buf[j] = 0xAB}
+	for si in 0 ..< 5 {
+		testing.expect(t, fs.sector_write(fd, fs.Sector(u64(fc) * master.cluster_size + u64(fo) + u64(si)), buf[:]), "write")
+	}
+
+	derr := fs.deallocate_sectors(&master, fd, nil, fc, fo)
+	testing.expect_value(t, derr, fs.FS_Error.None)
+
+	_, rok := fs.resolve_extents(fd, &master, fc, fo)
+	testing.expect(t, !rok, "extents should be empty after deallocate")
+
+	fc2, fo2, aerr2 := fs.allocate_sectors(&master, fd, nil, 0, 0, 5, .File_Content)
+	testing.expect_value(t, aerr2, fs.FS_Error.None)
+	testing.expect(t, fc2 == fc || fo2 == fo, "reused deallocated space")
+}
+
+@test
+test_truncate_partial :: proc(t: ^testing.T) {
+	fd, open_err := open_test_image()
+	if !open_err {testing.fail(t); return}
+	defer os.close(fd)
+
+	master, mok := fs.read_master_record(fd)
+	testing.expect(t, mok, "read_master_record")
+
+	fc, fo, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, 10, .File_Content)
+	testing.expect_value(t, aerr, fs.FS_Error.None)
+
+	for si in 0 ..< 10 {
+		buf: [fs.SECTOR_SIZE]u8
+		for j in 0 ..< fs.SECTOR_SIZE {buf[j] = byte(si)}
+		testing.expect(t, fs.sector_write(fd, fs.Sector(u64(fc) * master.cluster_size + u64(fo) + u64(si)), buf[:]), "write")
+	}
+
+	ce, ce_ok := fs.find_cluster_entry(fd, &master, fc, fo)
+	testing.expect(t, ce_ok, "find_cluster_entry")
+	old_size := ce.allocation_size
+	testing.expect(t, old_size == 10, "allocated 10 sectors")
+
+	ce.allocation_size = 4
+	ce_tbl: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
+	fs.read_cluster_entry_table(fd, &master, fc, &ce_tbl)
+	for &e, _ in ce_tbl {
+		if e.sector_start == u16(fo) {
+			e = ce
+			testing.expect(t, fs.write_cluster_entry_table(fd, &master, fc, &ce_tbl), "write partial CE")
+			break
+		}
+	}
+
+	runs, rok := fs.resolve_extents(fd, &master, fc, fo)
+	testing.expect(t, rok, "resolve_extents after partial truncate")
+	total: u64
+	for r in runs {total += u64(r.count)}
+	testing.expect_value(t, total, 4)
+}
+
+@test
+test_lfn_create_and_read :: proc(t: ^testing.T) {
+	fd, open_err := open_test_image()
+	if !open_err {testing.fail(t); return}
+	defer os.close(fd)
+
+	master, mok := fs.read_master_record(fd)
+	testing.expect(t, mok, "read_master_record")
+
+	rce, rce_ok := fs.find_cluster_entry(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+	testing.expect(t, rce_ok, "root cluster entry")
+
+	long_name := "this_is_a_very_long_filename_exceeding_16_bytes"
+	entry := fs.Directory_Entry{
+		flags = fs.Dir_Flags{.Allocated, .Exists},
+		stored_cluster = master.root_cluster,
+		sector_index = rce.sector_start,
+	}
+
+	copy(entry.file_name[:], long_name)
+	entry.file_name[15] = 0
+
+	testing.expect(t, fs.write_directory_entry_at(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(rce.sector_start), 0, &entry), "write LFN entry")
+
+	dirs, dirs_ok := fs.read_directory_entries(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+	testing.expect(t, dirs_ok, "read dir entries")
+	testing.expect(t, len(dirs) > 0, "found entries")
+}
+
+@test
+test_rename_same_dir_via_primitives :: proc(t: ^testing.T) {
+	fd, open_err := open_test_image()
+	if !open_err {testing.fail(t); return}
+	defer os.close(fd)
+
+	master, mok := fs.read_master_record(fd)
+	testing.expect(t, mok, "read_master_record")
+
+	rce, rce_ok := fs.find_cluster_entry(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+	testing.expect(t, rce_ok, "root cluster entry")
+
+	entry := fs.Directory_Entry{
+		flags = fs.Dir_Flags{.Allocated, .Exists, .Directory},
+		stored_cluster = master.root_cluster,
+		sector_index = rce.sector_start,
+	}
+	copy(entry.file_name[:], "oldname\x00\x00\x00\x00\x00\x00\x00\x00\x00")
+	testing.expect(t, fs.write_directory_entry_at(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(rce.sector_start), 0, &entry), "write old entry")
+
+	entry.flags = fs.Dir_Flags{.Allocated, .Exists}
+	copy(entry.file_name[:], "newname\x00\x00\x00\x00\x00\x00\x00\x00\x00")
+	testing.expect(t, fs.write_directory_entry_at(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(rce.sector_start), 1, &entry), "write new entry")
+
+	dirs, _ := fs.read_directory_entries(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+	testing.expect(t, len(dirs) >= 1, "at least one entry after rename")
+}
+
+@test
+test_resolve_path_extended_dir :: proc(t: ^testing.T) {
+	fd, open_err := open_test_image()
+	if !open_err {testing.fail(t); return}
+	defer os.close(fd)
+
+	master, mok := fs.read_master_record(fd)
+	testing.expect(t, mok, "read_master_record")
+
+	rce, rce_ok := fs.find_cluster_entry(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+	testing.expect(t, rce_ok, "root cluster entry")
+
+	for i in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
+		entry := fs.Directory_Entry{
+			flags = fs.Dir_Flags{.Allocated, .Exists},
+			stored_cluster = master.root_cluster,
+		}
+		name := fmt.tprintf("file_%02d", i)
+		copy(entry.file_name[:], name)
+		testing.expect(t, fs.write_directory_entry_at(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(rce.sector_start), i, &entry), fmt.tprintf("write entry %d", i))
+	}
+
+	dirs, dirs_ok := fs.read_directory_entries(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+	testing.expect(t, dirs_ok, "read dir entries")
+	testing.expect(t, len(dirs) == fs.DIR_ENTRIES_PER_SECTOR, "all entries readable")
 }

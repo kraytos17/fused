@@ -103,7 +103,7 @@ _alloc_cache_build :: proc(cache: ^Cluster_Bitmap_Cache, master: ^Master_Record,
 }
 
 // alloc_cache_count_free returns the total number of free sectors.
-// Uses a stack-local fallback (no LRU pollution) to avoid rebuild churn.
+// Uses a stack-local fallback to avoid rebuild churn.
 alloc_cache_count_free :: proc(cache: ^Cluster_Bitmap_Cache, master: ^Master_Record, disk: ^os.File) -> u64 {
 	free: u64 = 0
 	for ci in 0 ..< int(master.cluster_map_size) {

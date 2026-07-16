@@ -65,7 +65,7 @@ TIMING_FLAG   := $(if $(SHOW_TIMINGS),-show-timings,)
 ODIN_VERSION  := $(shell $(ODIN) version 2>&1 | head -1)
 
 .PHONY: all build release disker run-disker imgdump \
-        test check smoke smoke-harness smoke-rw smoke-rw-harness ci ci-full \
+        test check smoke smoke-harness smoke-rw smoke-rw-harness smoke-mt smoke-mt-harness ci ci-full \
         disker-test audit mount unmount \
         verify verify-full clean clean-logs rebuild help \
         vet vet-all vet-shadowing vet-unused vet-style vet-cast \
@@ -154,6 +154,13 @@ smoke-rw: build run-disker
 smoke-rw-harness: build run-disker
 	@bash $(TEST_DIR)/fuse_harness.sh --timeout=90 $(TEST_DIR)/smoke_rw.sh
 
+smoke-mt: build run-disker
+	@echo "==> Multi-threaded stress test (concurrent read/write/delete)"
+	@bash $(TEST_DIR)/fuse_harness.sh --timeout=120 $(TEST_DIR)/smoke_mt.sh
+
+smoke-mt-harness: build run-disker
+	@bash $(TEST_DIR)/fuse_harness.sh --timeout=120 $(TEST_DIR)/smoke_mt.sh
+
 ci: build run-disker
 	@bash $(TEST_DIR)/ci.sh
 
@@ -234,8 +241,8 @@ help:
 	@echo "  rebuild         clean && build"
 	@echo ""
 	@echo "Tests:"
-	@echo "  test            Odin test suite (@test, 41 tests)"
-	@echo "  disker-test     disker + imgdump integration tests (20 tests)"
+	@echo "  test            Odin test suite"
+	@echo "  disker-test     disker + imgdump integration tests"
 	@echo "  check           C vs Odin struct size cross-check"
 	@echo "  audit           audit \"c\" callbacks for context + logger restoration"
 	@echo "  smoke           mount + ls + cat + stat + write + unmount"

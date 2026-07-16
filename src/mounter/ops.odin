@@ -12,6 +12,7 @@ import "core:log"
 import "core:mem"
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:sys/posix"
 import "core:time"
 import "src:fuse3"
@@ -24,6 +25,7 @@ FS :: struct {
 	master:      fs.Master_Record,
 	logger:      log.Logger,
 	image_size:  u64,
+	mu:          sync.Mutex,
 	path_cache:  lru.Cache(string, Path_Cache_Value),
 	lfn_cache:   lru.Cache(u64, string),
 	alloc_cache: fs.Cluster_Bitmap_Cache,
@@ -95,26 +97,37 @@ unpack_fh :: proc(fh: u64) -> (fs.Cluster, fs.Sector_Offset, int) {
 
 read_entry_from_fh :: proc(fsys: ^FS, fh: u64) -> (fs.Directory_Entry, fs.Cluster, fs.Sector_Offset, bool) {
 	pc, po, idx := unpack_fh(fh)
-	dir_ce, dir_ok := fs.find_cluster_entry(fsys.disk, &fsys.master, pc, po)
-	if !dir_ok {
+	if idx < 0 {
 		return {}, 0, 0, false
 	}
 
+	runs, runs_ok := fs.resolve_extents(fsys.disk, &fsys.master, pc, po)
+	if !runs_ok {
+		return {}, 0, 0, false
+	}
+
+	remaining := idx
 	buf: [fs.SECTOR_SIZE]u8
-	data_sector := fs.Sector(u64(pc) * fsys.master.cluster_size + u64(dir_ce.sector_start))
-	if !fs.sector_read(fsys.disk, data_sector, buf[:]) {
-		return {}, 0, 0, false
-	}
+	for run in runs {
+		n := int(run.count)
+		for si in 0 ..< n {
+			if remaining < fs.DIR_ENTRIES_PER_SECTOR {
+				sec := fs.Sector(u64(run.sector) + u64(si))
+				if !fs.sector_read(fsys.disk, sec, buf[:]) {
+					return {}, 0, 0, false
+				}
 
-	entries := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(buf[:]))
-	if idx < 0 || idx >= fs.DIR_ENTRIES_PER_SECTOR {
-		return {}, 0, 0, false
+				entries := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(buf[:]))
+				e := entries[remaining]
+				if .Exists not_in e.flags {
+					return {}, 0, 0, false
+				}
+				return e, fs.Cluster(e.stored_cluster), fs.Sector_Offset(e.sector_index), true
+			}
+			remaining -= fs.DIR_ENTRIES_PER_SECTOR
+		}
 	}
-	e := entries[idx]
-	if .Exists not_in e.flags {
-		return {}, 0, 0, false
-	}
-	return e, fs.Cluster(e.stored_cluster), fs.Sector_Offset(e.sector_index), true
+	return {}, 0, 0, false
 }
 
 Path_Cache_Value :: struct {
@@ -218,12 +231,7 @@ resolve_path :: proc(fsys: ^FS, path: string, allocator := context.allocator) ->
 	for comp_idx in 0 ..< n_comps {
 		target := path[comps[comp_idx].start:comps[comp_idx].end]
 		is_last := comp_idx == n_comps - 1
-		dir_ce, dir_ok := fs.find_cluster_entry(fsys.disk, &fsys.master, current_cluster, current_offset)
-		if !dir_ok {
-			return {}, {}, {}, 0, false
-		}
-
-		dirs, dirs_ok := fs.read_directory_entries(fsys.disk, &fsys.master, current_cluster, fs.Sector_Offset(dir_ce.sector_start))
+		dirs, dirs_ok := fs.read_directory_entries(fsys.disk, &fsys.master, current_cluster, current_offset)
 		if !dirs_ok {
 			return {}, {}, {}, 0, false
 		}
@@ -270,20 +278,35 @@ split_parent_name :: proc(path: string) -> (parent: string, name: string) {
 
 @(private)
 write_entry_back :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, cluster: fs.Cluster, offset: fs.Sector_Offset, index: int) -> bool {
-	dir_ce := fs.find_cluster_entry(fsys.disk, &fsys.master, cluster, offset) or_return
-	return fs.write_directory_entry_at(
-		fsys.disk, &fsys.master,
-		cluster, fs.Sector_Offset(dir_ce.sector_start),
-		index, entry)
+	runs, runs_ok := fs.resolve_extents(fsys.disk, &fsys.master, cluster, offset)
+	if !runs_ok {
+		return false
+	}
+
+	remaining := index
+	for run in runs {
+		n := int(run.count)
+		for si in 0 ..< n {
+			if remaining < fs.DIR_ENTRIES_PER_SECTOR {
+				dsec := fs.Sector_Offset(u64(run.sector) + u64(si) - u64(cluster) * fsys.master.cluster_size)
+				return fs.write_directory_entry_at(
+					fsys.disk, &fsys.master,
+					cluster, dsec,
+					remaining, entry)
+			}
+			remaining -= fs.DIR_ENTRIES_PER_SECTOR
+		}
+	}
+	return false
 }
 
-// find_free_slot_in_extent returns (absolute_sector, entry_index) for the first
+// find_free_slot_in_extent returns (cluster, sector_offset, entry_index) for the first
 // free slot found by scanning the directory's extent chain.
 // Returns ok=false when no free slot exists (caller should extend the chain).
-find_free_slot_in_extent :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Sector_Offset) -> (dsec: fs.Sector_Offset, didx: int, ok: bool) {
+find_free_slot_in_extent :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Sector_Offset) -> (dcluster: fs.Cluster, dsec: fs.Sector_Offset, didx: int, ok: bool) {
 	dir_runs, dir_ok := fs.resolve_extents(fsys.disk, &fsys.master, dir_cluster, dir_offset)
 	if !dir_ok {
-		return {}, 0, false
+		return {}, 0, 0, false
 	}
 
 	scan_buf: [fs.SECTOR_SIZE]u8
@@ -292,56 +315,71 @@ find_free_slot_in_extent :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset:
 		for si in 0 ..< n {
 			sec := fs.Sector(u64(run.sector) + u64(si))
 			if !fs.sector_read(fsys.disk, sec, scan_buf[:]) {
-				return {}, 0, false
+				return {}, 0, 0, false
 			}
 
 			raw := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(scan_buf[:]))
 			for i in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
 				zero_flags: fs.Dir_Flags
 				if raw[i].flags == zero_flags {
-					dsec = fs.Sector_Offset(u64(sec) - u64(dir_cluster) * fsys.master.cluster_size)
-					return dsec, i, true
+					cluster := u64(sec) / fsys.master.cluster_size
+					dsec = fs.Sector_Offset(u64(sec) - cluster * fsys.master.cluster_size)
+					return fs.Cluster(cluster), dsec, i, true
 				}
 			}
 		}
 	}
-	return {}, 0, false
+	return {}, 0, 0, false
 }
 
 // find_or_extend_dir finds a free slot in a directory, extending the chain
-// if needed. Returns (sector_offset, entry_index, ok).
-find_or_extend_dir :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Sector_Offset) -> (dsec: fs.Sector_Offset, didx: int, ok: bool) {
-	dsec, didx, ok = find_free_slot_in_extent(fsys, dir_cluster, dir_offset)
+// if needed. Returns (cluster, sector_offset_within_cluster, entry_index, ok).
+find_or_extend_dir :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Sector_Offset) -> (dcluster: fs.Cluster, dsec: fs.Sector_Offset, didx: int, ok: bool) {
+	dcluster, dsec, didx, ok = find_free_slot_in_extent(fsys, dir_cluster, dir_offset)
 	if ok {
 		return
 	}
 
-	_, _, ext_err := fs.allocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, dir_cluster, dir_offset, 1, .Directory)
+	current_runs, cr_ok := fs.resolve_extents(fsys.disk, &fsys.master, dir_cluster, dir_offset)
+	if !cr_ok {
+		return {}, {}, 0, false
+	}
+
+	current_count: u64
+	for r in current_runs {
+		current_count += u64(r.count)
+	}
+
+	_, _, ext_err := fs.allocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, dir_cluster, dir_offset, current_count + 1, .Directory)
 	if ext_err != .None {
-		return {}, 0, false
+		return {}, {}, 0, false
 	}
 
 	dir_runs, dir_ok := fs.resolve_extents(fsys.disk, &fsys.master, dir_cluster, dir_offset)
 	if !dir_ok {
-		return {}, 0, false
+		return {}, {}, 0, false
 	}
 
 	last_run := dir_runs[len(dir_runs) - 1]
 	last_sec := fs.Sector(u64(last_run.sector) + u64(last_run.count) - 1)
 	ext_buf: [fs.SECTOR_SIZE]u8
 	if !fs.sector_read(fsys.disk, last_sec, ext_buf[:]) {
-		return {}, 0, false
+		return {}, {}, 0, false
 	}
 
 	raw := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(ext_buf[:]))
 	zero_flags: fs.Dir_Flags
 	for i in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
 		if raw[i].flags == zero_flags {
-			dsec = fs.Sector_Offset(u64(last_sec) - u64(dir_cluster) * fsys.master.cluster_size)
-			return dsec, i, true
+			dlc := u64(last_sec) / fsys.master.cluster_size
+			dcluster = fs.Cluster(dlc)
+			dsec = fs.Sector_Offset(u64(last_sec) - dlc * fsys.master.cluster_size)
+			didx = i
+			ok = true
+			return
 		}
 	}
-	return {}, 0, false
+	return {}, 0, 0, false
 }
 
 // check_name_exists scans the directory for a name collision.
@@ -377,6 +415,21 @@ check_name_exists :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Sec
 // names longer than 16 characters.
 write_entry_with_lfn :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> bool {
 	set_entry_time_to_now(entry)
+	return set_entry_name(fsys, entry, name)
+}
+
+// set_entry_name writes a name into a DirectoryEntry, handling LFN allocation
+// and old LFN deallocation. Does NOT modify timestamps — caller is responsible.
+set_entry_name :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> bool {
+	if .LFN in entry.flags {
+		ptr := (^fs.LFN_Pointer)(raw_data(entry.file_name[:]))
+		if ptr.cluster != 0 {
+			if derr := fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, fs.Cluster(ptr.cluster), fs.Sector_Offset(ptr.sector)); derr != .None {
+				return false
+			}
+		}
+		entry.flags -= {.LFN}
+	}
 	if len(name) > 16 {
 		needed := u16(len(name))
 		if !fsys.lfn_bump.active || fsys.lfn_bump.next_byte + needed > fs.SECTOR_SIZE {
@@ -417,7 +470,9 @@ write_entry_with_lfn :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string
 		fsys.lfn_bump.next_byte += needed
 	} else {
 		copy(entry.file_name[:], name)
-		entry.file_name[min(15, len(name))] = 0
+		for i := len(name); i < 16; i += 1 {
+			entry.file_name[i] = 0
+		}
 	}
 	return true
 }
@@ -426,6 +481,9 @@ fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Inf
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
+	sync.mutex_lock(&fsys.mu)
+	defer sync.mutex_unlock(&fsys.mu)
+
 	entry, _, _, _, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
 	if !ok {
 		log.debugf("getattr: %s → ENOENT", path)
@@ -435,23 +493,39 @@ fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Inf
 	stbuf^ = {}
 	is_dir := .Directory in entry.flags
 	if is_dir {
-		stbuf.st_mode = posix.mode_t{posix.Mode_Bits.IFDIR, .IRUSR, .IXUSR, .IRGRP, .IXGRP, .IROTH, .IXOTH}
+		mode := posix.mode_t{posix.Mode_Bits.IFDIR, .IRUSR, .IXUSR, .IRGRP, .IXGRP, .IROTH, .IXOTH}
+		if .No_Read in entry.flags {
+			mode -= {.IRUSR, .IRGRP, .IROTH}
+		}
+		if .No_Write in entry.flags {
+			mode -= {.IWUSR, .IWGRP, .IWOTH}
+		}
+		if .No_Execute in entry.flags {
+			mode -= {.IXUSR, .IXGRP, .IXOTH}
+		}
+		stbuf.st_mode = mode
 		stbuf.st_nlink = 2
 	} else {
-		stbuf.st_mode = posix.mode_t{posix.Mode_Bits.IFREG, .IRUSR, .IRGRP, .IROTH}
+		mode := posix.mode_t{posix.Mode_Bits.IFREG, .IRUSR, .IWUSR, .IRGRP, .IROTH}
+		if .No_Write in entry.flags || .Read_Only in entry.flags {
+			mode -= {.IWUSR, .IWGRP, .IWOTH}
+		}
+		if .No_Read in entry.flags {
+			mode -= {.IRUSR, .IRGRP, .IROTH}
+		}
+
+		stbuf.st_mode = mode
 		stbuf.st_nlink = 1
 		stbuf.st_size = posix.off_t(entry.file_size)
 	}
 
 	dt := entry.date_time
-	ts := posix.time_t(
-		i64(entry.year - 1970) * 365 * 86400 +
-		i64(dt.date) * 86400 +
-		i64(dt.hour) * 3600 +
-		i64(dt.minute) * 60 +
-		i64(dt.second),
+	t, _ := time.components_to_time(
+		i64(entry.year), i64(dt.month), i64(dt.date),
+		i64(dt.hour), i64(dt.minute), i64(dt.second),
 	)
 
+	ts := posix.time_t(time.time_to_unix(t))
 	stbuf.st_atim.tv_sec = ts
 	stbuf.st_mtim.tv_sec = ts
 	stbuf.st_ctim.tv_sec = ts
@@ -470,6 +544,9 @@ fused_readdir :: proc "c" (
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
+	sync.mutex_lock(&fsys.mu)
+	defer sync.mutex_unlock(&fsys.mu)
+
 	entry, _, _, _, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
 	if !ok || .Directory not_in entry.flags {
 		log.debugf("readdir: %s → ENOENT/not-dir", path)
@@ -536,6 +613,9 @@ fused_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
+	sync.mutex_lock(&fsys.mu)
+	defer sync.mutex_unlock(&fsys.mu)
+
 	entry, parent_cluster, parent_offset, entry_idx, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
 	if !ok {
 		log.debugf("open: %s → ENOENT", path)
@@ -544,6 +624,15 @@ fused_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	if .Directory in entry.flags {
 		log.debugf("open: %s → EISDIR", path)
 		return fuse3.nix(.EISDIR)
+	}
+
+	open_flags := transmute(posix.O_Flags)(fi.flags)
+	wants_write := .WRONLY in open_flags || .RDWR in open_flags
+	if wants_write && (.No_Write in entry.flags || .Read_Only in entry.flags) {
+		return fuse3.nix(.EACCES)
+	}
+	if !wants_write && .No_Read in entry.flags {
+		return fuse3.nix(.EACCES)
 	}
 	fi.fh = (u64(parent_cluster) << 32) | (u64(parent_offset) << 16) | u64(entry_idx)
 	return 0
@@ -638,6 +727,9 @@ fused_write :: proc "c" (
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
+	sync.mutex_lock(&fsys.mu)
+	defer sync.mutex_unlock(&fsys.mu)
+
 	entry, data_cluster, data_offset, ok := read_entry_from_fh(fsys, fi.fh)
 	if !ok {
 		log.debugf("write: %s → ENOENT", path)
@@ -683,11 +775,6 @@ fused_write :: proc "c" (
 	sector_rw: [fs.SECTOR_SIZE]u8
 
 	new_size := max(u64(entry.file_size), write_off + u64(size))
-	if new_size != u64(entry.file_size) {
-		set_entry_time_to_now(&entry)
-		entry.file_size = new_size
-		write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx)
-	}
 	for run in runs {
 		run_bytes := u64(run.count) * fs.SECTOR_SIZE
 		if pos_in_file + run_bytes <= write_off {
@@ -745,6 +832,11 @@ fused_write :: proc "c" (
 		if remaining == 0 {break}
 		pos_in_file = u64(run.sector + fs.Sector(run.count)) * fs.SECTOR_SIZE
 	}
+	if new_size != u64(entry.file_size) {
+		set_entry_time_to_now(&entry)
+		entry.file_size = new_size
+		write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx)
+	}
 	lru.remove(&fsys.path_cache, string(path))
 	return c.int(bytes_written)
 }
@@ -753,6 +845,9 @@ fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
+	sync.mutex_lock(&fsys.mu)
+	defer sync.mutex_unlock(&fsys.mu)
+
 	parent, name := split_parent_name(string(path))
 	parent_entry, _, _, _, ok := resolve_path_cached(fsys, parent, context.temp_allocator)
 	if !ok {
@@ -767,7 +862,7 @@ fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 		return fuse3.nix(.EEXIST)
 	}
 
-	dsec, didx, slot_ok := find_or_extend_dir(fsys, dir_cluster, dir_offset)
+	dcluster, dsec, didx, slot_ok := find_or_extend_dir(fsys, dir_cluster, dir_offset)
 	if !slot_ok {
 		log.debugf("create: %s → ENOSPC (dir full)", path)
 		return fuse3.nix(.ENOSPC)
@@ -783,9 +878,11 @@ fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 	if !write_entry_with_lfn(fsys, &new_entry, name) {
 		return fuse3.nix(.ENOSPC)
 	}
+	if !fs.write_directory_entry_at(fsys.disk, &fsys.master, dcluster, dsec, didx, &new_entry) {
+		return fuse3.nix(.EIO)
+	}
 
-	fs.write_directory_entry_at(fsys.disk, &fsys.master, dir_cluster, dsec, didx, &new_entry)
-	fi.fh = (u64(dir_cluster) << 32) | (u64(dsec) << 16) | u64(didx)
+	fi.fh = (u64(dcluster) << 32) | (u64(dsec) << 16) | u64(didx)
 	path_cache_invalidate_all(fsys)
 	log.debugf("create: %s → ok", path)
 	return 0
@@ -795,6 +892,9 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
+	sync.mutex_lock(&fsys.mu)
+	defer sync.mutex_unlock(&fsys.mu)
+
 	parent, name := split_parent_name(string(path))
 	parent_entry, _, _, _, ok := resolve_path_cached(fsys, parent, context.temp_allocator)
 	if !ok {
@@ -807,7 +907,7 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 		return fuse3.nix(.EEXIST)
 	}
 
-	dsec, didx, slot_ok := find_or_extend_dir(fsys, dir_cluster, dir_offset)
+	dcluster, dsec, didx, slot_ok := find_or_extend_dir(fsys, dir_cluster, dir_offset)
 	if !slot_ok {
 		return fuse3.nix(.ENOSPC)
 	}
@@ -817,9 +917,15 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 		return fuse3.nix(.ENOSPC)
 	}
 
-	dir_runs, _ := fs.resolve_extents(fsys.disk, &fsys.master, new_cluster, new_offset)
+	dir_runs, dr_ok := fs.resolve_extents(fsys.disk, &fsys.master, new_cluster, new_offset)
+	if !dr_ok || len(dir_runs) == 0 {
+		return fuse3.nix(.EIO)
+	}
+
 	zero: [fs.SECTOR_SIZE]u8
-	fs.sector_write(fsys.disk, dir_runs[0].sector, zero[:])
+	if !fs.sector_write(fsys.disk, dir_runs[0].sector, zero[:]) {
+		return fuse3.nix(.EIO)
+	}
 
 	new_entry: fs.Directory_Entry
 	new_entry.flags = fs.Dir_Flags{.Allocated, .Directory, .Exists}
@@ -828,9 +934,13 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 
 	set_entry_time_to_now(&new_entry)
 	copy(new_entry.file_name[:], name)
-	new_entry.file_name[min(15, len(name))] = 0
+	if len(name) < 16 {
+		new_entry.file_name[len(name)] = 0
+	}
+	if !fs.write_directory_entry_at(fsys.disk, &fsys.master, dcluster, dsec, didx, &new_entry) {
+		return fuse3.nix(.EIO)
+	}
 
-	fs.write_directory_entry_at(fsys.disk, &fsys.master, dir_cluster, dsec, didx, &new_entry)
 	path_cache_invalidate_all(fsys)
 	log.debugf("mkdir: %s → ok", path)
 	return 0
@@ -840,6 +950,9 @@ fused_unlink :: proc "c" (path: cstring) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
+	sync.mutex_lock(&fsys.mu)
+	defer sync.mutex_unlock(&fsys.mu)
+
 	entry, cluster, offset, idx, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
 	if !ok {
 		log.debugf("unlink: %s → ENOENT", path)
@@ -850,11 +963,16 @@ fused_unlink :: proc "c" (path: cstring) -> c.int {
 		return fuse3.nix(.EISDIR)
 	}
 	if entry.stored_cluster != 0 {
-		fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index))
+		if derr := fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index)); derr != .None {
+			return fuse3.nix(.EIO)
+		}
 	}
 
 	entry.flags = {}
-	write_entry_back(fsys, &entry, cluster, offset, idx)
+	if !write_entry_back(fsys, &entry, cluster, offset, idx) {
+		return fuse3.nix(.EIO)
+	}
+
 	path_cache_invalidate_all(fsys)
 	log.debugf("unlink: %s → ok", path)
 	return 0
@@ -864,6 +982,9 @@ fused_rmdir :: proc "c" (path: cstring) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
+	sync.mutex_lock(&fsys.mu)
+	defer sync.mutex_unlock(&fsys.mu)
+
 	entry, cluster, offset, idx, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
 	if !ok {
 		return fuse3.nix(.ENOENT)
@@ -881,11 +1002,16 @@ fused_rmdir :: proc "c" (path: cstring) -> c.int {
 		}
 	}
 	if entry.stored_cluster != 0 {
-		fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index))
+		if derr := fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index)); derr != .None {
+			return fuse3.nix(.EIO)
+		}
 	}
 
 	entry.flags = {}
-	write_entry_back(fsys, &entry, cluster, offset, idx)
+	if !write_entry_back(fsys, &entry, cluster, offset, idx) {
+		return fuse3.nix(.EIO)
+	}
+
 	path_cache_invalidate_all(fsys)
 	log.debugf("rmdir: %s → ok", path)
 	return 0
@@ -895,6 +1021,9 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
+	sync.mutex_lock(&fsys.mu)
+	defer sync.mutex_unlock(&fsys.mu)
+
 	entry, data_cluster, data_offset, ok := read_entry_from_fh(fsys, fi.fh)
 	if !ok {
 		log.debugf("truncate: %s → ENOENT", path)
@@ -926,15 +1055,36 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 				break
 			}
 
+			before := cntr
 			cntr += u64(ce.allocation_size)
 			if cntr > new_sectors {
-				if ce.next_cluster != 0 {
-					next_c := fs.Cluster(ce.next_cluster)
-					next_o := fs.Sector_Offset(ce.next_sector_index)
-					fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, next_c, next_o)
-					ce.next_cluster = 0
-					ce.next_sector_index = 0
-					fs.write_cluster_entry_at(fsys.disk, &fsys.master, current_c, ce_idx, &ce)
+				needed := new_sectors - before
+				if needed == 0 {
+					nc := fs.Cluster(ce.next_cluster)
+					no := fs.Sector_Offset(ce.next_sector_index)
+					if derr := fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, current_c, current_o); derr != .None {
+						return fuse3.nix(.EIO)
+					}
+					if nc != 0 {
+						if derr := fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, nc, no); derr != .None {
+							return fuse3.nix(.EIO)
+						}
+					}
+				} else {
+					if ce.next_cluster != 0 {
+						nc := fs.Cluster(ce.next_cluster)
+						no := fs.Sector_Offset(ce.next_sector_index)
+						if derr := fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, nc, no); derr != .None {
+							return fuse3.nix(.EIO)
+						}
+						ce.next_cluster = 0
+						ce.next_sector_index = 0
+					}
+
+					ce.allocation_size = u16(needed)
+					if !fs.write_cluster_entry_at(fsys.disk, &fsys.master, current_c, ce_idx, &ce) {
+						return fuse3.nix(.EIO)
+					}
 				}
 				break
 			}
@@ -953,7 +1103,9 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 
 	set_entry_time_to_now(&entry)
 	entry.file_size = u64(size)
-	write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx)
+	if !write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx) {
+		return fuse3.nix(.EIO)
+	}
 	log.debugf("truncate: %s → %d", path, size)
 	return 0
 }
@@ -962,10 +1114,26 @@ fused_utimens :: proc "c" (path: cstring, tv: [^]posix.timespec, fi: ^fuse3.File
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
-	entry_cluster, entry_offset, entry_idx := unpack_fh(fi.fh)
-	entry, _, _, ok := read_entry_from_fh(fsys, fi.fh)
-	if !ok {
-		return fuse3.nix(.ENOENT)
+	sync.mutex_lock(&fsys.mu)
+	defer sync.mutex_unlock(&fsys.mu)
+
+	entry: fs.Directory_Entry
+	entry_cluster: fs.Cluster
+	entry_offset: fs.Sector_Offset
+	entry_idx: int
+	if fi != nil {
+		entry_cluster, entry_offset, entry_idx = unpack_fh(fi.fh)
+		e, _, _, ok := read_entry_from_fh(fsys, fi.fh)
+		if !ok {return fuse3.nix(.ENOENT)}
+		entry = e
+	} else {
+		e, c, o, i, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
+		if !ok {return fuse3.nix(.ENOENT)}
+
+		entry = e
+		entry_cluster = c
+		entry_offset = o
+		entry_idx = i
 	}
 	if tv == nil {
 		set_entry_time_to_now(&entry)
@@ -986,7 +1154,9 @@ fused_utimens :: proc "c" (path: cstring, tv: [^]posix.timespec, fi: ^fuse3.File
 			set_entry_atime_from_unix(&entry, i64(tv[0].tv_sec))
 		}
 	}
-	write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx)
+	if !write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx) {
+		return fuse3.nix(.EIO)
+	}
 	return 0
 }
 
@@ -994,6 +1164,9 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
+	sync.mutex_lock(&fsys.mu)
+	defer sync.mutex_unlock(&fsys.mu)
+
 	if u32(flags) & u32(fuse3.RENAME_NOREPLACE) != 0 {
 		log.debugf("rename: RENAME_NOREPLACE not supported")
 		return fuse3.nix(.ENOSYS)
@@ -1019,19 +1192,27 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 		if dst_entry, _, _, dst_idx, dst_ok := resolve_path_cached(fsys, string(newpath), context.temp_allocator); dst_ok {
 			if .Directory not_in dst_entry.flags {
 				if dst_entry.stored_cluster != 0 {
-					fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, fs.Cluster(dst_entry.stored_cluster), fs.Sector_Offset(dst_entry.sector_index))
+					if derr := fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, fs.Cluster(dst_entry.stored_cluster), fs.Sector_Offset(dst_entry.sector_index)); derr != .None {
+						return fuse3.nix(.EIO)
+					}
 				}
+
 				dst_entry.flags = {}
-				write_entry_back(fsys, &dst_entry, new_parent_c, new_parent_o, dst_idx)
+				if !write_entry_back(fsys, &dst_entry, new_parent_c, new_parent_o, dst_idx) {
+					return fuse3.nix(.EIO)
+				}
 			} else {
 				log.debugf("rename: %s → %s → EISDIR (destination is dir)", oldpath, newpath)
 				return fuse3.nix(.EISDIR)
 			}
 		}
+		if !set_entry_name(fsys, &entry, new_name) {
+			return fuse3.nix(.ENOSPC)
+		}
+		if !write_entry_back(fsys, &entry, old_cluster, old_offset, old_idx) {
+			return fuse3.nix(.EIO)
+		}
 
-		copy(entry.file_name[:], new_name)
-		entry.file_name[min(15, len(new_name))] = 0
-		write_entry_back(fsys, &entry, old_cluster, old_offset, old_idx)
 		path_cache_invalidate_all(fsys)
 		log.debugf("rename: %s → %s ok", oldpath, newpath)
 		return 0
@@ -1047,7 +1228,6 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 				log.debugf("rename: %s → %s → EINVAL (circular)", oldpath, newpath)
 				return fuse3.nix(.EINVAL)
 			}
-
 			parent_of_check, _ := split_parent_name(check_path)
 			check_path = parent_of_check
 		}
@@ -1058,27 +1238,37 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 		dst_idx = dst_idx_resolved
 		if .Directory not_in dst_entry.flags {
 			if dst_entry.stored_cluster != 0 {
-				fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, fs.Cluster(dst_entry.stored_cluster), fs.Sector_Offset(dst_entry.sector_index))
+				if derr := fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, fs.Cluster(dst_entry.stored_cluster), fs.Sector_Offset(dst_entry.sector_index)); derr != .None {
+					return fuse3.nix(.EIO)
+				}
 			}
+
 			dst_entry.flags = {}
-			write_entry_back(fsys, &dst_entry, new_parent_c, new_parent_o, dst_idx)
+			if !write_entry_back(fsys, &dst_entry, new_parent_c, new_parent_o, dst_idx) {
+				return fuse3.nix(.EIO)
+			}
 		} else {
 			log.debugf("rename: %s → %s → EISDIR (destination is dir)", oldpath, newpath)
 			return fuse3.nix(.EISDIR)
 		}
 	}
 
-	dst_sec, dst_slot_idx, slot_ok := find_free_slot_in_extent(fsys, new_parent_c, new_parent_o)
+	dst_cluster, dst_sec, dst_slot_idx, slot_ok := find_or_extend_dir(fsys, new_parent_c, new_parent_o)
 	if !slot_ok {
 		return fuse3.nix(.ENOSPC)
 	}
-
-	copy(entry.file_name[:], new_name)
-	entry.file_name[min(15, len(new_name))] = 0
-	fs.write_directory_entry_at(fsys.disk, &fsys.master, new_parent_c, dst_sec, dst_slot_idx, &entry)
+	if !set_entry_name(fsys, &entry, new_name) {
+		return fuse3.nix(.ENOSPC)
+	}
+	if !fs.write_directory_entry_at(fsys.disk, &fsys.master, dst_cluster, dst_sec, dst_slot_idx, &entry) {
+		return fuse3.nix(.EIO)
+	}
 
 	entry.flags = {}
-	write_entry_back(fsys, &entry, old_cluster, old_offset, old_idx)
+	if !write_entry_back(fsys, &entry, old_cluster, old_offset, old_idx) {
+		return fuse3.nix(.EIO)
+	}
+
 	path_cache_invalidate_all(fsys)
 	log.debugf("rename: %s → %s ok (cross-directory)", oldpath, newpath)
 	return 0
@@ -1088,8 +1278,26 @@ fused_access :: proc "c" (path: cstring, mask: c.int) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
-	_, _, _, _, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
-	if !ok {return fuse3.nix(.ENOENT)}
+	sync.mutex_lock(&fsys.mu)
+	defer sync.mutex_unlock(&fsys.mu)
+
+	entry, _, _, _, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
+	if !ok {
+		return fuse3.nix(.ENOENT)
+	}
+
+	m := transmute(posix.Mode_Flags)(mask)
+	if (posix.Mode_Flag_Bits.R_OK in m) && .No_Read in entry.flags {
+		return fuse3.nix(.EACCES)
+	}
+	if (posix.Mode_Flag_Bits.W_OK in m) && (.No_Write in entry.flags || .Read_Only in entry.flags) {
+		return fuse3.nix(.EACCES)
+	}
+	if (posix.Mode_Flag_Bits.X_OK in m) && .No_Execute in entry.flags {
+		if .Directory not_in entry.flags {
+			return fuse3.nix(.EACCES)
+		}
+	}
 	return 0
 }
 
@@ -1107,9 +1315,6 @@ fused_release :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
-	if fsys.fd >= 0 {
-		posix.fsync(fsys.fd)
-	}
 	return 0
 }
 
@@ -1156,4 +1361,22 @@ fused_statfs :: proc "c" (path: cstring, stbuf: ^posix.statvfs_t) -> c.int {
 		f_namemax = c.ulong(255),
 	}
 	return 0
+}
+
+fused_init :: proc "c" (conn_info: ^fuse3.Conn_Info, cfg: ^fuse3.Config) -> rawptr {
+	context = runtime.default_context()
+	fsys := get_fs()
+	context.logger = fsys.logger
+	conn_info.time_gran = 1
+	conn_info.max_background = 16
+	conn_info.congestion_threshold = 12
+	log.debugf("init: fused v4, cluster_size=%d", fsys.master.cluster_size)
+	return fsys
+}
+
+fused_destroy :: proc "c" (private_data: rawptr) {
+	context = runtime.default_context()
+	fsys := (^FS)(private_data)
+	context.logger = fsys.logger
+	log.debugf("destroy: fused unmounting")
 }
