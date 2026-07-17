@@ -14,15 +14,27 @@ Flags :: struct {
 	json:     bool   `args:"name=json" usage:"Output as JSON (machine-readable)"`,
 	all:      bool   `args:"name=all" usage:"Show all clusters including empty ones in text mode"`,
 	hex_path: string `args:"name=hex" usage:"Dump file contents as hex (e.g. --hex=/Kernel or --hex for root)"`,
+	log_level: string `args:"name=log-level" usage:"Log level: debug, info, warn, error (default: warn)"`,
 	overflow: [dynamic]string `args:"hidden"`,
 }
 
 main :: proc() {
 	context = runtime.default_context()
-	context.logger = log.create_console_logger(log.Level.Warning)
 
 	f: Flags
 	flags.parse_or_exit(&f, os.args, flags.Parsing_Style.Unix)
+
+	log_level := log.Level.Warning
+	switch f.log_level {
+	case "debug": log_level = log.Level.Debug
+	case "info":  log_level = log.Level.Info
+	case "warn":  log_level = log.Level.Warning
+	case "error": log_level = log.Level.Error
+	case:
+		log.errorf("unknown log level: %s (use debug|info|warn|error)", f.log_level)
+	}
+
+	context.logger = log.create_console_logger(log_level)
 	fd, open_err := os.open(f.path, {.Read})
 	if open_err != nil {
 		log.errorf("cannot open %s: %v", f.path, open_err)

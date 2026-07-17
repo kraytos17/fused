@@ -31,6 +31,7 @@ Flags :: struct {
 	no_demo:      bool   `args:"name=no-demo" usage:"Do not embed a demo file"`,
 	verbose:      bool   `args:"name=verbose" usage:"Show progress for large images"`,
 	force:        bool   `args:"name=force" usage:"Overwrite existing output"`,
+	log_level:    string `args:"name=log-level" usage:"Log level: debug, info, warn, error (default: info)"`,
 	overflow: [dynamic]string `args:"hidden"`,
 }
 
@@ -56,7 +57,6 @@ writer_write :: proc(w: ^Writer, data: []u8) -> bool {
 
 main :: proc() {
 	context = runtime.default_context()
-	context.logger = log.create_console_logger(log.Level.Info)
 
 	f: Flags
 	f.size_str = "1M"
@@ -64,6 +64,18 @@ main :: proc() {
 	f.output = "fused.img"
 
 	flags.parse_or_exit(&f, os.args, flags.Parsing_Style.Unix)
+	log_level := log.Level.Info
+	switch f.log_level {
+	case "debug": log_level = log.Level.Debug
+	case "info":  log_level = log.Level.Info
+	case "warn":  log_level = log.Level.Warning
+	case "error": log_level = log.Level.Error
+	case:
+		log.errorf("unknown log level: %s (use debug|info|warn|error)", f.log_level)
+		os.exit(1)
+	}
+
+	context.logger = log.create_console_logger(log_level)
 	size, size_ok := parse_size(f.size_str)
 	if !size_ok {
 		log.errorf("invalid --size: %s", f.size_str)
@@ -96,7 +108,8 @@ main :: proc() {
 
 	trunc_err := os.truncate(fd, i64(size))
 	if trunc_err != nil {
-		log.fatalf("truncate to %d failed: %v", size, trunc_err)
+		log.errorf("truncate to %d failed: %v", size, trunc_err)
+		os.exit(1)
 	}
 	if f.verbose {
 		log.infof("formatting %s: size=%d cluster_size=%d",
@@ -146,7 +159,10 @@ main :: proc() {
 	{
 		master_buf: [fs.SECTOR_SIZE]u8
 		(^fs.Master_Record)(&master_buf[0])^ = master
-		if !writer_write(&w, master_buf[:]) { os.exit(1) }
+		if !writer_write(&w, master_buf[:]) {
+			log.errorf("write master failed")
+			os.exit(1)
+		}
 	}
 	{
 		report_interval := max(1, cm_sectors / 10)
@@ -164,7 +180,10 @@ main :: proc() {
 					entries[ei] = {flags = {.Allocated}}
 				}
 			}
-			if !writer_write(&w, sec_buf[:]) { os.exit(1) }
+			if !writer_write(&w, sec_buf[:]) {
+				log.errorf("write cluster map failed")
+				os.exit(1)
+			}
 			if f.verbose && cm_sectors > 100 && sec_idx % report_interval == 0 {
 				log.infof("  cluster map: %d/%d sectors", sec_idx + 1, cm_sectors)
 			}
@@ -195,6 +214,7 @@ main :: proc() {
 			}
 		}
 		if !writer_write(&w, ce_buf[:]) {
+			log.errorf("write CE table failed")
 			os.exit(1)
 		}
 
@@ -217,12 +237,16 @@ main :: proc() {
 			(^fs.Directory_Entry)(&dir_buf[0])^ = entry
 		}
 		if !writer_write(&w, dir_buf[:]) {
+			log.errorf("write directory entry failed")
 			os.exit(1)
 		}
 		if len(demo_data) > 0 {
 			content_buf: [fs.SECTOR_SIZE]u8
 			copy(content_buf[:], demo_data)
-			if !writer_write(&w, content_buf[:]) { os.exit(1) }
+			if !writer_write(&w, content_buf[:]) {
+				log.errorf("write file content failed")
+				os.exit(1)
+			}
 		}
 	}
 

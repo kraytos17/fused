@@ -234,7 +234,7 @@ print_directory :: proc(fd: ^os.File, m: ^fs.Master_Record, cluster: fs.Cluster,
 					entry_count += 1
 					esc_sb: strings.Builder
 					strings.builder_init(&esc_sb, context.temp_allocator)
-					
+
 					json_escape_name(&esc_sb, name)
 					esc_name := strings.to_string(esc_sb)
 					fmt.print(`"`)

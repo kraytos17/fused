@@ -540,7 +540,6 @@ fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Inf
 	stbuf.st_ctim.tv_sec = ts
 	stbuf.st_uid = posix.uid_t(entry.uid)
 	stbuf.st_gid = posix.gid_t(entry.gid)
-	log.debugf("getattr: %s → ok size=%d dir=%v", path, entry.file_size, is_dir)
 	return 0
 }
 
@@ -649,7 +648,9 @@ fused_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	if !wants_write && .No_Read in entry.flags {
 		return fuse3.nix(.EACCES)
 	}
+
 	fi.fh = (u64(parent_cluster) << 32) | (u64(parent_offset) << 16) | u64(entry_idx)
+	log.debugf("open: %s → ok", path)
 	return 0
 }
 
@@ -663,6 +664,7 @@ fused_read :: proc "c" (
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
+	read_start := time.now()
 	_, data_cluster, data_offset, ok := read_entry_from_fh(fsys, fi.fh)
 	if !ok {
 		return fuse3.nix(.ENOENT)
@@ -728,7 +730,8 @@ fused_read :: proc "c" (
 		}
 		pos_in_file = u64(run.sector + fs.Sector(run.count)) * fs.SECTOR_SIZE
 	}
-	log.debugf("read: %s off=%d size=%d → %d bytes", path, off, size, bytes_read)
+
+	log.debugf("read: %s off=%d size=%d → %d bytes (%v)", path, off, size, bytes_read, time.since(read_start))
 	return c.int(bytes_read)
 }
 
@@ -742,6 +745,7 @@ fused_read_buf :: proc "c" (
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
+	read_start := time.now()
 	_, data_cluster, data_offset, ok := read_entry_from_fh(fsys, fi.fh)
 	if !ok {
 		return fuse3.nix(.ENOENT)
@@ -813,8 +817,8 @@ fused_read_buf :: proc "c" (
 	}
 
 	bufp^ = bv
-	log.debugf("read_buf: %s off=%d size=%d → %d bytes (%d bufs)",
-		path, off, size, total_provided, buf_count)
+	log.debugf("read_buf: %s off=%d size=%d → %d bytes (%d bufs, %v)",
+		path, off, size, total_provided, buf_count, time.since(read_start))
 	return c.int(total_provided)
 }
 
@@ -828,6 +832,7 @@ fused_write :: proc "c" (
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
+	write_start := time.now()
 	sync.mutex_lock(&fsys.mu)
 	defer sync.mutex_unlock(&fsys.mu)
 
@@ -938,7 +943,9 @@ fused_write :: proc "c" (
 		entry.file_size = new_size
 		write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx)
 	}
+
 	lru.remove(&fsys.path_cache, string(path))
+	log.debugf("write: %s off=%d size=%d → %d bytes (%v)", path, off, size, bytes_written, time.since(write_start))
 	return c.int(bytes_written)
 }
 
@@ -951,6 +958,7 @@ fused_write_buf :: proc "c" (
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
+	write_start := time.now()
 	sync.mutex_lock(&fsys.mu)
 	defer sync.mutex_unlock(&fsys.mu)
 
@@ -1109,7 +1117,7 @@ fused_write_buf :: proc "c" (
 	}
 
 	lru.remove(&fsys.path_cache, string(path))
-	log.debugf("write_buf: %s off=%d → %d bytes", path, off, bytes_written)
+	log.debugf("write_buf: %s off=%d → %d bytes (%v)", path, off, bytes_written, time.since(write_start))
 	return c.int(bytes_written)
 }
 
@@ -1775,6 +1783,7 @@ fused_access :: proc "c" (path: cstring, mask: c.int) -> c.int {
 			return fuse3.nix(.EACCES)
 		}
 	}
+	log.debugf("access: %s → mask=%d ok", path, mask)
 	return 0
 }
 
@@ -1871,6 +1880,7 @@ fused_flush :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	fsys := get_fs()
 	context.logger = fsys.logger
 	os.sync(fsys.disk)
+	log.debugf("flush: %s → ok", path)
 	return 0
 }
 
@@ -1878,6 +1888,7 @@ fused_release :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
+	log.debugf("release: %s → ok", path)
 	return 0
 }
 
@@ -2134,7 +2145,7 @@ fused_init :: proc "c" (conn_info: ^fuse3.Conn_Info, cfg: ^fuse3.Config) -> rawp
 	conn_info.time_gran = 1
 	conn_info.max_background = 16
 	conn_info.congestion_threshold = 12
-	log.debugf("init: fused v4, cluster_size=%d", fsys.master.cluster_size)
+	log.debugf("init: fused rev %d, cluster_size=%d", fsys.master.rev_max, fsys.master.cluster_size)
 	return fsys
 }
 

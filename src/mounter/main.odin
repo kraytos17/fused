@@ -3,15 +3,17 @@
 // Opens a fused disk image, validates the MasterRecord, wires the
 // FUSE callbacks from ops.odin, and calls fuse3.run.
 //
-// Usage: fused [--log-file=<path>] [--log-level=<level>] <image-path> [fuse-options...] <mountpoint>
+// Usage: fused [--log-file=<path>] [--log-level=<level>] [--log-format=<format>] <image-path> [fuse-options...] <mountpoint>
 // Example: fused --log-file=fused.log --log-level=warn fused.img -f mnt
 // Levels: debug, info, warn, error (default: debug)
+// Formats: long (default, with date/time/location), short (level only), full (level + thread id)
 #+build linux
 package main
 
 import "base:runtime"
 import "core:c"
 import "core:container/lru"
+import "core:fmt"
 import "core:log"
 import "core:mem"
 import "core:os"
@@ -19,8 +21,23 @@ import "core:strings"
 import "src:fs"
 import "src:fuse3"
 
+usage :: proc() {
+	fmt.println("Usage: fused [--log-file=<path>] [--log-level=<level>] [--log-format=<format>] <image-path> [fuse-options...] <mountpoint>")
+	fmt.println("Levels:  debug, info, warn, error  (default: debug)")
+	fmt.println("Formats: long (default, date/time/location), short (level only), full (level + thread id)")
+	fmt.println("Flags:   --log-file=<path>  --log-level=<level>  --log-format=<format>")
+	fmt.println("         -f (foreground, default), -d (FUSE debug), -s (single-threaded)")
+}
+
 main :: proc() {
 	context = runtime.default_context()
+	for arg in os.args[1:] {
+		if arg == "--help" || arg == "-h" {
+			usage()
+			os.exit(0)
+		}
+	}
+
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)
@@ -34,8 +51,10 @@ main :: proc() {
 
 	log_file_path: string
 	log_level := log.Level.Debug
+	log_opts := log.Default_Console_Logger_Opts
 	fuse_args: [dynamic]string
 	defer delete(fuse_args)
+
 	for i in 1 ..< len(os.args) {
 		arg := os.args[i]
 		switch {
@@ -51,6 +70,15 @@ main :: proc() {
 			case:
 				log.errorf("unknown log level: %s (use debug|info|warn|error)", level_str)
 			}
+		case strings.has_prefix(arg, "--log-format="):
+			fmt_str := strings.trim_prefix(arg, "--log-format=")
+			switch fmt_str {
+			case "short": log_opts = {.Level}
+			case "long":  log_opts = log.Default_Console_Logger_Opts
+			case "full":  log_opts = log.Default_Console_Logger_Opts + {.Thread_Id}
+			case:
+				log.errorf("unknown log format: %s (use short|long|full)", fmt_str)
+			}
 		case:
 			append(&fuse_args, arg)
 		}
@@ -60,23 +88,30 @@ main :: proc() {
 	if log_file_path != "" {
 		log_fd, log_open_err := os.open(log_file_path, {.Create, .Write, .Append})
 		if log_open_err != nil {
-			log.fatalf("cannot open log file %s: %v", log_file_path, log_open_err)
+			log.errorf("cannot open log file %s: %v", log_file_path, log_open_err)
+		os.exit(1)
 		}
-		context.logger = log.create_file_logger(log_fd, log_level)
+
+		file_logger := log.create_file_logger(log_fd, log_level, log.Default_File_Logger_Opts)
+		defer log.destroy_file_logger(file_logger)
+		context.logger = log.create_multi_logger(file_logger)
 		fsys.logger = context.logger
 	} else {
-		context.logger = log.create_console_logger(log_level)
+		context.logger = log.create_console_logger(log_level, log_opts)
+		defer log.destroy_console_logger(context.logger)
 		fsys.logger = context.logger
 	}
 
 	if len(fuse_args) < 1 {
-		log.fatalf("usage: fused [--log-file=<path>] [--log-level=<level>] <image-path> [fuse-options...] <mountpoint>")
+		log.errorf("usage: fused [--log-file=<path>] [--log-level=<level>] <image-path> [fuse-options...] <mountpoint>")
+		os.exit(1)
 	}
 
 	image_path := fuse_args[0]
 	fd, open_err := os.open(image_path, {.Read, .Write})
 	if open_err != nil {
-		log.fatalf("cannot open %s: %v", image_path, open_err)
+		log.errorf("cannot open %s: %v", image_path, open_err)
+		os.exit(1)
 	}
 	defer os.close(fd)
 
