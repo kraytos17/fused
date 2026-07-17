@@ -21,14 +21,17 @@ resolve_file :: proc(fd: ^os.File, m: ^fs.Master_Record, path: string) -> (entry
 
 		is_last := comp_idx == len(comp_list) - 1
 		dirs, dirs_ok := fs.read_directory_entries(fd, m, current_c, current_o)
+		defer delete(dirs)
 		if !dirs_ok { return }
 
 		found := false
 		for &d, didx in dirs {
 			if fs.entry_short_name(&d) != comp { continue }
+
 			found = true
 			if is_last { return d, current_c, current_o, didx, true }
 			if .Directory not_in d.flags { return }
+
 			current_c = fs.Cluster(d.stored_cluster)
 			current_o = fs.Sector_Offset(d.sector_index)
 			break

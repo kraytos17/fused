@@ -157,7 +157,7 @@ main :: proc() {
 		read    = hello_read,
 		release = hello_release,
 	}
-	
+
 	rc := fuse3.run(c.int(len(dynamic_argv)), raw_data(dynamic_argv), &ops, fsys)
 	if rc != 0 {
 		fmt.eprintln("fuse_main returned", rc)

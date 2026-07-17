@@ -30,6 +30,6 @@ read_master_record :: proc(disk: ^os.File) -> (master: Master_Record, ok: bool) 
 	if !sector_read(disk, Sector(0), buf[:]) {
 		return {}, false
 	}
-	master = (^Master_Record)(raw_data(buf[:]))^
+	master = (^Master_Record)(&buf[0])^
 	return master, true
 }

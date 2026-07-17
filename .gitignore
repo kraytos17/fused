@@ -6,3 +6,5 @@ mnt/
 logs/
 *.img
 *.bin
+__pycache__/
+ROADMAP.md

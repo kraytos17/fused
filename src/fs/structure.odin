@@ -11,7 +11,6 @@ Sector_Offset :: distinct u16 // sector offset within a cluster
 SECTOR_SIZE                :: 512
 CLUSTER_ENTRIES_PER_SECTOR :: 32
 CLUSTER_MAP_ENTRIES_PER_SECTOR :: 64
-DIR_ENTRIES_PER_SECTOR     :: 10
 DEFAULT_CLUSTER_SIZE       :: 16
 DEFAULT_IMAGE_SIZE         :: 1 * 1024 * 1024 // 1 MB
 FUSED_SIG                  :: [7]u8{'F', 'U', 'S', 'E', 'D', 0, 0}
@@ -19,8 +18,10 @@ FUSED_SIG                  :: [7]u8{'F', 'U', 'S', 'E', 'D', 0, 0}
 #assert(size_of(Cluster_Map_Entry) == 8)
 #assert(SECTOR_SIZE / size_of(Cluster_Map_Entry) == CLUSTER_MAP_ENTRIES_PER_SECTOR)
 #assert(SECTOR_SIZE / size_of(Cluster_Entry)     == CLUSTER_ENTRIES_PER_SECTOR)
-#assert(DIR_ENTRIES_PER_SECTOR * size_of(Directory_Entry) <= SECTOR_SIZE)
-#assert((DIR_ENTRIES_PER_SECTOR + 1) * size_of(Directory_Entry) >  SECTOR_SIZE)
+#assert(DIR_ENTRY_SIZE_V5 * DIR_ENTRIES_PER_SECTOR_V5 <= SECTOR_SIZE)
+#assert((DIR_ENTRIES_PER_SECTOR_V5 + 1) * DIR_ENTRY_SIZE_V5 >  SECTOR_SIZE)
+#assert(DIR_ENTRY_SIZE_V4 * DIR_ENTRIES_PER_SECTOR_V4 <= SECTOR_SIZE)
+#assert((DIR_ENTRIES_PER_SECTOR_V4 + 1) * DIR_ENTRY_SIZE_V4 >  SECTOR_SIZE)
 
 Cluster_Map_Flag :: enum u16 {
 	Allocated, // bit 0
@@ -39,15 +40,15 @@ Cluster_Entry_Flag :: enum u8 {
 Cluster_Entry_State :: bit_set[Cluster_Entry_Flag; u8]
 
 Dir_Flag :: enum u16 {
-	Allocated,  // bit 0
-	LFN,        // bit 1
-	Directory,  // bit 2
-	Read_Only,  // bit 3
-	Link,       // bit 4
-	Exists,     // bit 5
-	No_Write,   // bit 6
-	No_Read,    // bit 7
-	No_Execute, // bit 8
+	Allocated,
+	LFN,
+	Directory,
+	Read_Only,
+	Link,
+	Exists,
+	No_Write,
+	No_Read,
+	No_Execute,
 }
 Dir_Flags :: bit_set[Dir_Flag; u16]
 
@@ -73,6 +74,9 @@ FS_Error :: enum {
 	Cluster_Map_Full,
 	Multi_Sector_Cluster_Map_Unsupported,
 	Invalid_Signature,
+	Version_Too_Old,
+	Version_Too_New,
+	Feature_Not_Supported,
 	Corrupt_Master_Record,
 	No_Space,
 	Entry_Not_Found,
@@ -83,13 +87,32 @@ FS_Error :: enum {
 	Name_Too_Long,
 }
 
+// Rev 4 images had a single rev byte at offset 7 and can't be parsed
+// by the rev 5 Master_Record layout (rev_max would read garbage).
+// Minimum supported version is therefore 5.
+SUPPORTED_REV_MIN :: 5
+SUPPORTED_REV_MAX :: 5
+
+// Feature version map: each flag is associated with the rev it was introduced.
+// When adding a new feature: add it here, add to ALL_SUPPORTED_FEATURES, bump SUPPORTED_REV_MAX.
+Feature_Flag :: enum u64 {
+	Uid_Gid     = 0,  // rev 5: uid/gid fields in Directory_Entry, 56-byte entries, 9 per sector
+}
+Features :: bit_set[Feature_Flag; u64]
+
+// All features that this version understands.
+// When adding a new feature: add it here AND bump SUPPORTED_REV_MAX.
+ALL_SUPPORTED_FEATURES :: Features{.Uid_Gid}
+
+// Every defined Feature_Flag must be accounted for in ALL_SUPPORTED_FEATURES.
+#assert(ALL_SUPPORTED_FEATURES <= Features{.Uid_Gid})
+
 // MasterRecord — sector 0, 512 bytes
 Master_Record :: struct #packed #all_or_none {
 	sig:                [7]u8,
-	rev:                u8,
-	reserved0:          u8,
-	reserved1:          u16,
-	reserved2:          u32,
+	rev_min:            u8,
+	rev_max:            u8,
+	features:           u64,
 	cluster_map_offset: u64,
 	cluster_map_size:   u64,
 	cluster_size:       u64,
@@ -97,7 +120,7 @@ Master_Record :: struct #packed #all_or_none {
 	root_cluster:       u64,
 	reserved3:          u16,
 	reserved4:          u32,
-	resv:               [455]u8,
+	resv:               [453]u8,
 	end_sig:            u16,
 }
 #assert(size_of(Master_Record) == 512)
@@ -121,19 +144,43 @@ Cluster_Entry :: struct #packed {
 }
 #assert(size_of(Cluster_Entry) == 16)
 
-// DirectoryEntry — 48 bytes, 10 per sector
+// DirectoryEntry sizes
+DIR_ENTRY_SIZE_V4 :: 48
+DIR_ENTRIES_PER_SECTOR_V4 :: 10
+
+DIR_ENTRY_SIZE_V5 :: 56
+DIR_ENTRIES_PER_SECTOR_V5 :: 9
+
+// Default for the current format version
+DIR_ENTRIES_PER_SECTOR :: DIR_ENTRIES_PER_SECTOR_V5
+DIR_ENTRY_SIZE :: DIR_ENTRY_SIZE_V5
+
+dir_entry_size :: proc(features: Features) -> u16 {
+	if .Uid_Gid in features {return DIR_ENTRY_SIZE_V5}
+	return DIR_ENTRY_SIZE_V4
+}
+
+dir_entries_per_sector :: proc(features: Features) -> u16 {
+	if .Uid_Gid in features {return DIR_ENTRIES_PER_SECTOR_V5}
+	return DIR_ENTRIES_PER_SECTOR_V4
+}
+
+// DirectoryEntry — 56 bytes, 9 per sector (rev 5, with uid/gid)
+// or 48 bytes, 10 per sector (rev 4, without uid/gid)
 Directory_Entry :: struct #packed {
 	flags:           Dir_Flags,
 	file_name:       [16]u8,
 	sector_index:    u16,
 	stored_cluster:  u64,
+	uid:             u32,
+	gid:             u32,
 	year:            u16,
 	date_time:       Packed_Date_Time,
-	file_size:    	 u64,
+	file_size:       u64,
 	atime_date_time: Packed_Date_Time,
 	atime_year:      u16,
 }
-#assert(size_of(Directory_Entry) == 48)
+#assert(size_of(Directory_Entry) == 56)
 
 // LFN_Pointer — packed into file_name[16] when the LFN flag is set
 LFN_Pointer :: struct #packed {

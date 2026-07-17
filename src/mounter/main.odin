@@ -16,23 +16,8 @@ import "core:log"
 import "core:mem"
 import "core:os"
 import "core:strings"
-import "core:sys/posix"
 import "src:fs"
 import "src:fuse3"
-
-// extract_raw_fd reaches into os.File's internal layout to get the raw fd.
-// This depends on core:os's struct layout — check on Odin version upgrades.
-@(private)
-extract_raw_fd :: proc(f: ^os.File) -> posix.FD {
-	File_Impl_Layout :: struct {
-		file: rawptr,
-		name: string,
-		cname: cstring,
-		fd: posix.FD,
-	}
-	impl := (^struct{impl: ^File_Impl_Layout})(f)
-	return impl.impl.fd
-}
 
 main :: proc() {
 	context = runtime.default_context()
@@ -96,7 +81,8 @@ main :: proc() {
 	defer os.close(fd)
 
 	fsys.disk = fd
-	fsys.fd = extract_raw_fd(fd)
+	fsys.disk_raw_fd = c.int(os.fd(fd))
+	log.debugf("opened %s → fd=%d (raw=%d)", image_path, os.fd(fd), fsys.disk_raw_fd)
 	master, master_ok := fs.read_master_record(fd)
 	if !master_ok {
 		log.errorf("failed to read MasterRecord")
@@ -121,7 +107,7 @@ main :: proc() {
 	defer fs.alloc_cache_destroy(&fsys.alloc_cache)
 
 	log.infof("mounted: rev=%d cluster_size=%d clusters=%d root=%d",
-		master.rev, master.cluster_size, master.cluster_map_size, master.root_cluster)
+		master.rev_max, master.cluster_size, master.cluster_map_size, master.root_cluster)
 
 	ops := fuse3.Operations{
 		init       = fused_init,
@@ -132,19 +118,33 @@ main :: proc() {
 		read       = fused_read,
 		write      = fused_write,
 		create     = fused_create,
+		symlink    = fused_symlink,
+		readlink   = fused_readlink,
 		mkdir      = fused_mkdir,
 		unlink     = fused_unlink,
 		rmdir      = fused_rmdir,
 		truncate   = fused_truncate,
 		rename     = fused_rename,
 		access     = fused_access,
+		chmod      = fused_chmod,
+		chown      = fused_chown,
 		utimens    = fused_utimens,
+		fallocate  = fused_fallocate,
 		flush      = fused_flush,
 		release    = fused_release,
+		copy_file_range = fused_copy_file_range,
+		read_buf   = fused_read_buf,
+		write_buf  = fused_write_buf,
 		opendir    = fused_opendir,
 		releasedir = fused_releasedir,
 		fsync      = fused_fsync,
+		lseek      = fused_lseek,
 		statfs     = fused_statfs,
+		fsyncdir   = fused_fsyncdir,
+		mknod      = fused_mknod,
+		ioctl      = fused_ioctl,
+		link       = fused_link,
+		statx      = fused_statx,
 	}
 
 	dynamic_argv: [dynamic; 16]cstring

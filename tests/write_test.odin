@@ -459,8 +459,9 @@ test_directory_growth :: proc(t: ^testing.T) {
 	}
 
 	dirs, dirs_ok := fs.read_directory_entries(fd, &master, root_cluster, fs.Sector_Offset(rd_ce.sector_start))
-	testing.expect(t, dirs_ok, "read_directory_entries")
+	defer delete(dirs)
 
+	testing.expect(t, dirs_ok, "read_directory_entries")
 	found := 0
 	for &d in dirs {
 		name := fs.entry_short_name(&d)
@@ -1152,6 +1153,8 @@ test_lfn_create_and_read :: proc(t: ^testing.T) {
 	testing.expect(t, fs.write_directory_entry_at(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(rce.sector_start), 0, &entry), "write LFN entry")
 
 	dirs, dirs_ok := fs.read_directory_entries(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+	defer delete(dirs)
+
 	testing.expect(t, dirs_ok, "read dir entries")
 	testing.expect(t, len(dirs) > 0, "found entries")
 }
@@ -1181,6 +1184,7 @@ test_rename_same_dir_via_primitives :: proc(t: ^testing.T) {
 	testing.expect(t, fs.write_directory_entry_at(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(rce.sector_start), 1, &entry), "write new entry")
 
 	dirs, _ := fs.read_directory_entries(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+	defer delete(dirs)
 	testing.expect(t, len(dirs) >= 1, "at least one entry after rename")
 }
 
@@ -1207,6 +1211,227 @@ test_resolve_path_extended_dir :: proc(t: ^testing.T) {
 	}
 
 	dirs, dirs_ok := fs.read_directory_entries(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+	defer delete(dirs)
 	testing.expect(t, dirs_ok, "read dir entries")
 	testing.expect(t, len(dirs) == fs.DIR_ENTRIES_PER_SECTOR, "all entries readable")
+}
+
+@test
+test_symlink_create_and_read :: proc(t: ^testing.T) {
+	fd, open_err := open_test_image()
+	if !open_err {testing.fail(t); return}
+	defer os.close(fd)
+
+	master, mok := fs.read_master_record(fd)
+	testing.expect(t, mok, "read_master_record")
+
+	target := "/hello/world"
+	rce, rce_ok := fs.find_cluster_entry(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+	testing.expect(t, rce_ok, "root cluster entry")
+
+	sectors_needed := (u64(len(target)) + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
+	new_c, new_o, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, sectors_needed, .File_Content)
+	testing.expect_value(t, aerr, fs.FS_Error.None)
+
+	buf: [fs.SECTOR_SIZE]u8
+	copy(buf[:], transmute([]u8)(target))
+
+	runs, rok := fs.resolve_extents(fd, &master, new_c, new_o)
+	testing.expect(t, rok, "resolve_extents")
+	testing.expect(t, len(runs) > 0, "extent runs")
+	testing.expect(t, fs.sector_write(fd, runs[0].sector, buf[:]), "write target")
+
+	name_buf: [16]u8
+	copy(name_buf[:], "mylink")
+
+	entry := fs.Directory_Entry{
+		flags          = {.Allocated, .Exists, .Link},
+		file_name      = name_buf,
+		stored_cluster = u64(new_c),
+		sector_index   = u16(new_o),
+		file_size      = u64(len(target)),
+	}
+
+	testing.expect(t, fs.write_directory_entry_at(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(rce.sector_start), 0, &entry), "write symlink entry")
+	dirs, dirs_ok := fs.read_directory_entries(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+	defer delete(dirs)
+	testing.expect(t, dirs_ok, "read dir")
+	found := false
+	for &d in dirs {
+		if .Link in d.flags {
+			found = true
+			testing.expect(t, .Directory not_in d.flags, "link is not dir")
+			testing.expect_value(t, d.file_size, u64(len(target)))
+			testing.expect(t, d.stored_cluster == u64(new_c), "stored_cluster")
+
+			runs2, rok2 := fs.resolve_extents(fd, &master, fs.Cluster(d.stored_cluster), fs.Sector_Offset(d.sector_index))
+			testing.expect(t, rok2, "resolve extents for symlink")
+			if rok2 && len(runs2) > 0 {
+				read_buf: [fs.SECTOR_SIZE]u8
+				testing.expect(t, fs.sector_read(fd, runs2[0].sector, read_buf[:]), "read symlink target")
+				read_target := string(read_buf[:d.file_size])
+				testing.expect(t, read_target == target, "symlink target matches")
+			}
+		}
+	}
+	testing.expect(t, found, "symlink entry found in directory")
+}
+
+@test
+test_chmod_persistence :: proc(t: ^testing.T) {
+	fd, open_err := open_test_image()
+	if !open_err {testing.fail(t); return}
+	defer os.close(fd)
+
+	master, mok := fs.read_master_record(fd)
+	testing.expect(t, mok, "read_master_record")
+
+	rce, rce_ok := fs.find_cluster_entry(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+	testing.expect(t, rce_ok, "root cluster entry")
+
+	dirs, dirs_ok := fs.read_directory_entries(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+	defer delete(dirs)
+	testing.expect(t, dirs_ok, "read dir")
+
+	for &d in dirs {
+		// Check default: No_Read should not be set for normal files
+		testing.expect(t, .No_Read not_in d.flags, "default: No_Read not set")
+		testing.expect(t, .No_Write not_in d.flags, "default: No_Write not set")
+
+		// Set No_Read
+		d.flags += {.No_Read}
+		testing.expect(t, fs.write_directory_entry_at(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(rce.sector_start), 0, &d), "write No_Read entry")
+
+		// Read back and verify
+		dirs2, _ := fs.read_directory_entries(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+		delete(dirs2)
+		if len(dirs2) > 0 {
+			testing.expect(t, .No_Read in dirs2[0].flags, "readback: No_Read set")
+		}
+
+		// Clear No_Read, set No_Write
+		d.flags -= {.No_Read}
+		d.flags += {.No_Write}
+		testing.expect(t, fs.write_directory_entry_at(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(rce.sector_start), 0, &d), "write No_Write entry")
+
+		dirs3, _ := fs.read_directory_entries(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+		delete(dirs3)
+		if len(dirs3) > 0 {
+			testing.expect(t, .No_Read not_in dirs3[0].flags, "readback: No_Read cleared")
+			testing.expect(t, .No_Write in dirs3[0].flags, "readback: No_Write set")
+		}
+
+		// Reset
+		d.flags -= {.No_Write}
+		testing.expect(t, fs.write_directory_entry_at(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(rce.sector_start), 0, &d), "reset flags")
+		break
+	}
+}
+
+@test
+test_lseek_hole_data :: proc(t: ^testing.T) {
+	fd, open_err := open_test_image()
+	if !open_err {testing.fail(t); return}
+	defer os.close(fd)
+
+	master, mok := fs.read_master_record(fd)
+	testing.expect(t, mok, "read_master_record")
+
+	fc, fo, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, 4, .File_Content)
+	testing.expect_value(t, aerr, fs.FS_Error.None)
+
+	runs, rok := fs.resolve_extents(fd, &master, fc, fo)
+	testing.expect(t, rok, "resolve_extents")
+	testing.expect(t, len(runs) >= 1, "at least one extent")
+
+	total_sectors: u64
+	for r in runs {total_sectors += u64(r.count)}
+	testing.expect(t, total_sectors == 4, "4 sectors total")
+
+	// Write data to sector 0
+	buf0: [fs.SECTOR_SIZE]u8
+	for j in 0 ..< 4 {buf0[j] = 0xAA}
+	testing.expect(t, fs.sector_write(fd, runs[0].sector, buf0[:]), "write sector 0")
+
+	// Write data to sector 3
+	last_run := runs[len(runs)-1]
+	last_sec := fs.Sector(u64(last_run.sector) + u64(last_run.count) - 1)
+	buf3: [fs.SECTOR_SIZE]u8
+	for j in 0 ..< 4 {buf3[j] = 0xBB}
+	testing.expect(t, fs.sector_write(fd, last_sec, buf3[:]), "write last sector")
+
+	// Verify extents are correct
+	_, rok2 := fs.resolve_extents(fd, &master, fc, fo)
+	testing.expect(t, rok2, "resolve_extents after writes")
+}
+
+@test
+test_fallocate_extend :: proc(t: ^testing.T) {
+	fd, open_err := open_test_image()
+	if !open_err {testing.fail(t); return}
+	defer os.close(fd)
+
+	master, mok := fs.read_master_record(fd)
+	testing.expect(t, mok, "read_master_record")
+
+	fc, fo, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, 2, .File_Content)
+	testing.expect_value(t, aerr, fs.FS_Error.None)
+
+	runs, rok := fs.resolve_extents(fd, &master, fc, fo)
+	testing.expect(t, rok, "resolve_extents")
+	tt: u64; for r in runs {tt += u64(r.count)}
+	testing.expect_value(t, tt, 2)
+
+	// Extend from 2 sectors to 5
+	fc2, fo2, aerr2 := fs.allocate_sectors(&master, fd, nil, fc, fo, 5, .File_Content)
+	testing.expect_value(t, aerr2, fs.FS_Error.None)
+	testing.expect(t, fc2 == fc && fo2 == fo, "extended same chain")
+
+	runs2, rok2 := fs.resolve_extents(fd, &master, fc2, fo2)
+	testing.expect(t, rok2, "resolve_extents after extend")
+	tt2: u64; for r in runs2 {tt2 += u64(r.count)}
+	testing.expect_value(t, tt2, 5)
+
+	// Write to sector 0 and verify it persists
+	buf0: [fs.SECTOR_SIZE]u8
+	buf0[0] = 0xAB
+	testing.expect(t, fs.sector_write(fd, runs2[0].sector, buf0[:]), "write sector 0")
+
+	read_buf: [fs.SECTOR_SIZE]u8
+	testing.expect(t, fs.sector_read(fd, runs2[0].sector, read_buf[:]), "read sector 0")
+	testing.expect_value(t, read_buf[0], u8(0xAB))
+}
+
+@test
+test_copy_file_range_simple :: proc(t: ^testing.T) {
+	fd, open_err := open_test_image()
+	if !open_err {testing.fail(t); return}
+	defer os.close(fd)
+
+	master, mok := fs.read_master_record(fd)
+	testing.expect(t, mok, "read_master_record")
+
+	// Create source: allocate 1 sector, write "HELLO"
+	src_c, src_o, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, 1, .File_Content)
+	testing.expect_value(t, aerr, fs.FS_Error.None)
+
+	src_buf: [fs.SECTOR_SIZE]u8
+	copy(src_buf[:], "HELLO")
+	src_runs, _ := fs.resolve_extents(fd, &master, src_c, src_o)
+	testing.expect(t, fs.sector_write(fd, src_runs[0].sector, src_buf[:]), "write src")
+
+	// Create dest: allocate 1 sector
+	dst_c, dst_o, aerr2 := fs.allocate_sectors(&master, fd, nil, 0, 0, 1, .File_Content)
+	testing.expect_value(t, aerr2, fs.FS_Error.None)
+
+	// Manual copy: read from src, write to dst
+	dst_runs, _ := fs.resolve_extents(fd, &master, dst_c, dst_o)
+	copy_buf: [fs.SECTOR_SIZE]u8
+	testing.expect(t, fs.sector_read(fd, src_runs[0].sector, copy_buf[:]), "read src for copy")
+	testing.expect(t, fs.sector_write(fd, dst_runs[0].sector, copy_buf[:]), "write dst")
+
+	// Verify
+	verify_buf: [fs.SECTOR_SIZE]u8
+	testing.expect(t, fs.sector_read(fd, dst_runs[0].sector, verify_buf[:]), "read dst")
+	testing.expect(t, string(verify_buf[:5]) == "HELLO", "content matches")
 }

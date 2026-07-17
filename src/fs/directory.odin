@@ -3,6 +3,7 @@
 package fs
 
 import "core:log"
+import "core:mem"
 import "core:os"
 
 entry_short_name :: proc "contextless" (entry: ^Directory_Entry) -> string {
@@ -24,6 +25,9 @@ read_directory_entries :: proc(
 		return {}, false
 	}
 
+	features := transmute(Features)master.features
+	des := int(dir_entry_size(features))
+	deps := int(dir_entries_per_sector(features))
 	sector_buf: [SECTOR_SIZE]u8
 	for run in runs {
 		n := int(run.count)
@@ -31,11 +35,10 @@ read_directory_entries :: proc(
 			sec := Sector(u64(run.sector) + u64(si))
 			if !sector_read(disk, sec, sector_buf[:]) {
 				return entries, false
-			}
-
-			raw := (^[DIR_ENTRIES_PER_SECTOR]Directory_Entry)(raw_data(sector_buf[:]))
-			for i in 0 ..< DIR_ENTRIES_PER_SECTOR {
-				if .Exists in raw[i].flags {append(&entries, raw[i])}
+		}
+		for i in 0 ..< deps {
+			entry := (^Directory_Entry)(mem.ptr_offset(&sector_buf[0], i * des))
+				if .Exists in entry.flags {append(&entries, entry^)}
 			}
 		}
 	}
@@ -52,7 +55,7 @@ resolve_lfn :: proc(
 		return entry_short_name(entry), true
 	}
 
-	ptr := (^LFN_Pointer)(raw_data(entry.file_name[:]))
+	ptr := (^LFN_Pointer)(&entry.file_name[0])
 	if ptr.cluster == 0 {
 		return "", false
 	}
@@ -129,7 +132,9 @@ write_directory_entry_at :: proc(
 		return false
 	}
 
-	raw := (^[DIR_ENTRIES_PER_SECTOR]Directory_Entry)(raw_data(buf[:]))
-	raw[entry_index] = entry^
+	features := transmute(Features)master.features
+	des := int(dir_entry_size(features))
+	dst := (^Directory_Entry)(mem.ptr_offset(&buf[0], entry_index * des))
+	dst^ = entry^
 	return sector_write(disk, table_sector, buf[:])
 }

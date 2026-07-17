@@ -38,6 +38,15 @@ RENAME_NOREPLACE :: c.uint(1 << 0)
 RENAME_EXCHANGE  :: c.uint(1 << 1)
 RENAME_WHITEOUT  :: c.uint(1 << 2)
 
+SEEK_DATA :: c.int(3)
+SEEK_HOLE :: c.int(4)
+
+FALLOC_FL_KEEP_SIZE      :: c.int(1 << 0)
+FALLOC_FL_PUNCH_HOLE     :: c.int(1 << 1)
+FALLOC_FL_ZERO_RANGE     :: c.int(1 << 2)
+FALLOC_FL_COLLAPSE_RANGE :: c.int(1 << 3)
+FALLOC_FL_INSERT_RANGE   :: c.int(1 << 5)
+
 Cap_Bit :: enum u32 {
 	Async_Read, // 1<<0
 	Posix_Locks, // 1<<1

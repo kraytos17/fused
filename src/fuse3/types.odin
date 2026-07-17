@@ -168,6 +168,9 @@ Bufvec :: struct {
 
 #assert(size_of(Bufvec) == 72)
 
+FUSE_BUF_IS_FD  :: 2
+FUSE_BUF_FD_SEEK :: 4
+
 Fill_Dir_Proc :: proc "c"(
 	buf:   rawptr,
 	name:  cstring,

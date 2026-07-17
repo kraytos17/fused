@@ -42,14 +42,14 @@ test_dir_many_entries_across_extents :: proc(t: ^testing.T) {
 		fs.write_directory_entry_at(fd, master, dc, fs.Sector_Offset(ce.sector_start), didx, &e)
 	}
 
-	// Write entries to fill the first sector (DIR_ENTRIES_PER_SECTOR = 10)
+	// Write entries to fill the first sector (9 entries, rev 5 format)
 	buf: [fs.SECTOR_SIZE]u8
 	for i in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
 		name := fmt.tprintf("FILE%d", i)
 		write_file_entry(fd, &master, dc, ce, i, name)
 	}
 
-	// Verify all 10 entries are present
+	// Verify all 9 entries are present in first sector
 	sec := fs.Sector(u64(dc) * master.cluster_size + u64(ce.sector_start))
 	fs.sector_read(fd, sec, buf[:])
 	raw := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(buf[:]))
@@ -63,32 +63,45 @@ test_dir_many_entries_across_extents :: proc(t: ^testing.T) {
 	existing_runs, _ := fs.resolve_extents(fd, &master, dc, d_o)
 	existing_total: u64
 	for r in existing_runs {existing_total += u64(r.count)}
+	// Need at least existing_total + 1 sectors; the two extra entries may already
+	// have triggered extension if they went past the first sector.
+	if existing_total == 1 {
+		_, _, ext_err := fs.allocate_sectors(&master, fd, nil, dc, d_o, existing_total + 1, .Directory)
+		testing.expect_value(t, ext_err, fs.FS_Error.None)
+	}
 
-	_, _, ext_err := fs.allocate_sectors(&master, fd, nil, dc, d_o, existing_total + 1, .Directory)
-	testing.expect_value(t, ext_err, fs.FS_Error.None)
-
-	// The new sector is appended at the end — zero it
+	// Write entries in the new sector
 	new_runs, nr_ok := fs.resolve_extents(fd, &master, dc, d_o)
 	testing.expect(t, nr_ok, "resolve_extents after extend")
 	last_run := new_runs[len(new_runs) - 1]
 	last_sec := fs.Sector(u64(last_run.sector) + u64(last_run.count) - 1)
-	fs.sector_write(fd, last_sec, zero[:])
+	fs.sector_read(fd, last_sec, buf[:])
+	raw_new := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(buf[:]))
 
-	// Find the new sector's offset within the cluster
+	e_a := fs.Directory_Entry{flags = fs.Dir_Flags{.Allocated, .Exists}}
+	copy(e_a.file_name[:], "FILEa")
+	e_a.file_name[5] = 0
+	raw_new[0] = e_a
+
+	e_b := fs.Directory_Entry{flags = fs.Dir_Flags{.Allocated, .Exists}}
+	copy(e_b.file_name[:], "FILEb")
+	e_b.file_name[5] = 0
+	raw_new[1] = e_b
+	fs.sector_write(fd, last_sec, buf[:])
+
+	// Write "EXTRA" entry in the new sector at slot 2
+	e_extra := fs.Directory_Entry{flags = fs.Dir_Flags{.Allocated, .Exists}}
+	copy(e_extra.file_name[:], "EXTRA")
+	e_extra.file_name[5] = 0
 	new_sector_offset := fs.Sector_Offset(u64(last_sec) - u64(dc) * master.cluster_size)
+	fs.write_directory_entry_at(fd, &master, dc, new_sector_offset, 2, &e_extra)
 
-	// Write entry directly into the new sector
-	e2 := fs.Directory_Entry{flags = fs.Dir_Flags{.Allocated, .Exists}}
-	copy(e2.file_name[:], "EXTRA")
-	e2.file_name[5] = 0
-	fs.write_directory_entry_at(fd, &master, dc, new_sector_offset, 0, &e2)
-
-	// Verify it
+	// Verify "EXTRA"
 	verify_buf: [fs.SECTOR_SIZE]u8
 	fs.sector_read(fd, last_sec, verify_buf[:])
 	raw2 := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(verify_buf[:]))
-	testing.expect(t, .Exists in raw2[0].flags, "extra entry exists")
-	extra_name := fs.entry_short_name(&raw2[0])
+	testing.expect(t, .Exists in raw2[2].flags, "extra entry exists")
+	extra_name := fs.entry_short_name(&raw2[2])
 	testing.expect(t, extra_name == "EXTRA", "extra entry name")
 
 	// Now scan all extents to find all entries — this exercises the same
@@ -108,14 +121,17 @@ test_dir_many_entries_across_extents :: proc(t: ^testing.T) {
 			}
 		}
 	}
-	testing.expectf(t, found == 11, "expected 11 entries across extents, got %d", found)
 
+	testing.expectf(t, found == 12, "expected 12 entries across extents, got %d", found)
 	// Clean up entries
 	for i in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
 		raw[i].flags -= {.Exists, .Allocated}
 	}
+
 	fs.sector_write(fd, sec, buf[:])
 	raw2[0].flags -= {.Exists, .Allocated}
+	raw2[1].flags -= {.Exists, .Allocated}
+	raw2[2].flags -= {.Exists, .Allocated}
 	fs.sector_write(fd, last_sec, verify_buf[:])
 }
 

@@ -6,8 +6,16 @@ validate_master :: proc(master: ^Master_Record, image_size: u64) -> FS_Error {
 	if master.sig != FUSED_SIG {
 		return .Invalid_Signature
 	}
-	if master.rev < 4 {
-		return .Invalid_Signature
+	if master.rev_max < SUPPORTED_REV_MIN {
+		return .Version_Too_Old
+	}
+	if master.rev_min > SUPPORTED_REV_MAX {
+		return .Version_Too_New
+	}
+
+	unknown := transmute(Features)(master.features) & ~ALL_SUPPORTED_FEATURES
+	if unknown != {} {
+		return .Feature_Not_Supported
 	}
 	if master.end_sig != 0x0BB0 {
 		return .Invalid_Signature

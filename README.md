@@ -1,9 +1,9 @@
-# fused — FUSE filesystem
+# fused — FUSE filesystem in Odin
 
-FUSE filesystem daemon implemented in Odin. Implements a cluster-based on-disk
-format (rev 4) with read-write FUSE mounting via a libfuse3 FFI binding.
-Multi-threaded by default (no `-s` flag), with a `sync.Mutex` protecting shared
-caches.
+FUSE filesystem daemon implemented in Odin. Cluster-based on-disk format
+(rev 5 with feature flags, uid/gid support). 35 of 44 `fuse_operations`
+callbacks implemented. Multi-threaded by default with `sync.Mutex` for
+cache protection. Zero-copy I/O via `splice(2)`.
 
 ## Quick start
 
@@ -18,21 +18,21 @@ make unmount
 ## Repository layout
 
 ```
-src/fuse3/        FFI binding to libfuse3.so
-src/fs/           ├── structure.odin     Packed on-disk structs
-                  ├── diskio.odin        Sector read/write
-                  ├── validate.odin      MasterRecord validation
-                  ├── display.odin       Human-readable flag formatters
-                  ├── clustermap.odin    Cluster map reader/writer
-                  ├── extents.odin       Extent chain walker
-                  ├── directory.odin     Directory entry iteration, LFN
-                  ├── allocate.odin      Sector allocator/deallocator
-                  └── alloc_cache.odin   LRU bitmap cache
-src/disker/       Image formatter (standalone, no libfuse3)
-src/mounter/      FUSE callbacks — wires src/fs/ into src/fuse3/
-tools/imgdump/    Image dumper (read-only, uses only src/fs/)
-tests/            Unit tests, struct-size cross-checks, smoke tests
-demo/             Standalone hello-world FUSE demo (no src/fs/ dependency)
+src/fuse3/          FFI binding to libfuse3.so
+src/fs/
+  structure.odin    Packed on-disk structs (rev 5 with feature flags)
+  diskio.odin       Sector read/write
+  validate.odin     MasterRecord validation (range + feature flags)
+  display.odin      Human-readable flag formatters
+  clustermap.odin   Cluster map reader/writer
+  extents.odin      Extent chain walker
+  directory.odin    Directory entry iteration, LFN, uid/gid
+  allocate.odin     Sector allocator/deallocator
+  alloc_cache.odin  LRU bitmap cache
+src/disker/         Image formatter (standalone, no libfuse3)
+src/mounter/        FUSE callbacks (35 wired) — wires src/fs/ into src/fuse3/
+tools/imgdump/      Image dumper (read-only, JSON/text/hex output)
+tests/              Odin unit tests + Python integration suite
 ```
 
 ## Build
@@ -43,24 +43,23 @@ demo/             Standalone hello-world FUSE demo (no src/fs/ dependency)
 - Linux kernel with fuse module loaded (`modprobe fuse`)
 
 ```
-make all           # clean → build all binaries → format image → test → vet
+make all           # clean → build all → format image → test → vet
 make build         # debug build → build/fused
 make release       # optimized build → build/fused_release
 make disker        # image formatter → build/disker
 make imgdump       # image dumper → build/imgdump
-make run-disker    # format 1MB image → fused.img
-make test          # unit tests
-make disker-test   # integration tests for disker + imgdump (20)
+make run-disker    # format 1 MB image → fused.img
+make test          # Odin unit tests (52)
 make ci            # full pipeline: build + check + audit + test + FUSE smoke
 ```
 
 ## Mount
 
 ```
-make mount         # foreground, debug, mountpoint=mnt
-./build/fused fused.img -f mnt                    # foreground
-./build/fused --log-file=fused.log fused.img mnt   # with application log
-./build/fused --log-level=warn fused.img mnt       # production (warnings only)
+make mount                     # foreground, debug, mountpoint=mnt
+./build/fused fused.img -f mnt                           # foreground
+./build/fused --log-file=fused.log fused.img mnt          # with app log
+./build/fused --log-level=warn fused.img mnt              # production
 ```
 
 | Flag | Purpose |
@@ -68,31 +67,23 @@ make mount         # foreground, debug, mountpoint=mnt
 | `-f` | Foreground (default — added automatically) |
 | `-s` | Single-threaded mode (default: multi-threaded with mutex) |
 | `-d` | FUSE protocol debug output (stderr) |
-| `--log-file=<path>` | Redirect Odin log messages to file (append mode) |
+| `--log-file=<path>` | Redirect Odin log messages to file (append) |
 | `--log-level=<level>` | Filter: debug (default), info, warn, error |
 
 ## Production logging
-
-Odin log messages (getattr, create, write, errors) are written to stdout by
-default. The FUSE `-d` flag produces low-level protocol output on stderr.
-
-**Log levels:**
 
 ```
 ./build/fused --log-level=warn fused.img mnt
 ./build/fused --log-level=error fused.img mnt
 ```
 
-**External rotation (recommended):**
+The daemon does not implement SIGHUP log reopening. Use `copytruncate` in
+logrotate or pipe-based rotation:
 
 ```
 ./build/fused --log-level=warn fused.img mnt 2>&1 \
     | rotatelogs /var/log/fused/%Y%m%d.log 86400
 ```
-
-The daemon does not implement SIGHUP log reopening — Odin's logger allocates
-memory during initialization, which is not signal-safe. Use `copytruncate` in
-logrotate or pipe-based rotation instead.
 
 ## Makefile targets
 
@@ -104,38 +95,67 @@ logrotate or pipe-based rotation instead.
 | `imgdump` | Image dumper → build/imgdump |
 | `release` | Optimized build → build/fused_release |
 | `run-disker` | Format 1 MB image → fused.img |
-| `test` | Unit tests (47) |
-| `disker-test` | Integration tests for disker + imgdump (20) |
-| `smoke` | Read-only FUSE smoke test (14 checks) |
-| `smoke-rw` | Read-write FUSE smoke test (25 steps: create, write, mkdir, unlink, remount, persistence, df) |
-| `smoke-harness` | smoke via fuse_harness (isolated namespace, timed) |
-| `smoke-rw-harness` | smoke-rw via fuse_harness (isolated namespace, timed) |
-| `smoke-mt` | Multi-threaded stress test (concurrent read/write/delete workers) |
-| `check` | C vs Odin struct size cross-check |
-| `audit` | Verify every `proc "c"` restores context and logger |
-| `ci` | build + check + audit + test + smoke-harness (all phases) |
-| `ci-full` | ci + tool integration tests + smoke-rw |
-| `clean` | Remove build/ and logs/ |
-| `clean-logs` | Remove logs/ and cached test image |
+| `mount` | Build + mount in foreground |
+| `unmount` | fusermount3 -u mnt |
+| `clean` | Remove build/, logs/, mnt/, fused.img, kill running mount |
+| `test` | Odin unit tests (52) |
+| `check` | C vs Odin struct size cross-check (11 structs) |
+| `audit` | Verify every `proc "c"` restores context + logger (35 callbacks) |
+| `smoke` | Basic FUSE smoke test inside isolated namespace (10 checks) |
+| `smoke-rw` | Read-write FUSE test (24 checks: create, write, mkdir, unlink, persistence, chmod, fallocate, symlink) |
+| `smoke-mt` | Multi-threaded stress test (reader + writer workers, 15s) |
+| `disker-test` | Disker CLI + imgdump JSON/text/hex validation (26 checks) |
+| `ci` | build + check + audit + test + tool integration + all smoke tests |
+| `verify` | check + audit (no FUSE needed) |
+| `verify-full` | check + audit + all smoke tests |
 
-The compiler uses `-thread-count:4` by default (set `THREAD_COUNT=N` to tune)
-and `-no-threaded-checker` to skip the race-detector LLVM pass. Clean builds
-use `-use-single-module` for speed; incremental builds use `-use-separate-modules`.
+The compiler uses `-thread-count:4` by default (set `THREAD_COUNT=N` to tune).
 Set `SHOW_TIMINGS=1` to see compile-time breakdown.
+
+## Format image
+
+```
+build/imgdump fused.img                           # human-readable dump
+build/imgdump --json fused.img                    # machine-readable JSON
+build/imgdump --hex=/Kernel fused.img             # hex dump of /Kernel
+build/disker --force --output=my.img --size=16M   # custom image
+```
+
+`imgdump --json` always produces valid JSON — non-printable bytes in entry names
+are escaped as `\uXXXX`. The JSON master record includes `rev_min`, `rev_max`,
+and `features` fields.
 
 ## ABI compatibility
 
 Every cross-FFI struct in `src/fuse3/types.odin` and every on-disk struct in
 `src/fs/structure.odin` carries a compile-time `#assert(size_of(T) == N)`.
 All 12 FUSE struct sizes and all 43 `fuse_operations` field offsets are
-cross-checked against C at build time via `make check`.
+cross-checked against C ground truth at build time via `make check`.
 
-## Architecture notes
+## Architecture highlights
 
-Mount state (disk handle, master record, LRU bitmap cache, path cache, logger)
-is held in a single `FS` struct passed as `fuse_get_context().private_data`. No
-package-level globals — the `fs/` package is fully stateless, with all
-dependencies passed as explicit parameters. This makes the concurrency model
-explicit: a `sync.Mutex` on the `FS` struct serializes cache-mutating callbacks,
-enabling multi-threaded FUSE dispatch by default. Read-only callbacks
-(`read`, `statfs`) run lock-free.
+- **Zero package-level globals** — all mount state in a single `FS` struct
+  passed via `fuse_get_context().private_data`. The `fs/` package is fully
+  stateless.
+
+- **Thread safety** — `sync.Mutex` on `FS` serializes cache-mutating
+  callbacks. Multi-threaded FUSE dispatch is the default. Read-only callbacks
+  (`read`, `read_buf`, `statfs`, `lseek`) run lock-free.
+
+- **Zero-copy I/O** — `fused_read_buf` returns a `fuse_bufvec` with
+  `FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK` pointing to the backing file. The
+  kernel splices directly from disk → FUSE pipe. `fused_write_buf` uses
+  `linux.splice()` for the write side.
+
+- **Format versioning** — rev 5 with `rev_min`/`rev_max` range checking and
+  `features` bitmask for runtime dispatch. `SUPPORTED_REV_MIN = SUPPORTED_REV_MAX = 5`.
+  Rev 4 images can't be parsed (the MasterRecord struct changed between rev 4 and 5).
+
+- **Two in-memory caches** — LRU bitmap cache (1024 cluster entries) + LRU
+  path-resolution cache (128 entries). No filesystem-size-scaled arrays.
+
+## Remaining work
+
+9 of 44 `fuse_operations` callbacks are not yet wired:
+`lock`, `flock`, `bmap`, `poll`, `setxattr`, `getxattr`, `listxattr`,
+`removexattr`. See `ROADMAP.md` for details.

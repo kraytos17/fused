@@ -10,32 +10,17 @@
 #+build linux
 package fs
 
-import "core:mem"
+import "core:container/bit_array"
 import "core:os"
 import "core:log"
 
 @private
-bit_mark :: #force_inline proc(bitmap: []u8, sector: u16) {
-	bitmap[sector / 8] |= 1 << (sector % 8)
-}
-
-@private
-bit_isset :: #force_inline proc(bitmap: []u8, sector: u16) -> bool {
-	return (bitmap[sector / 8] & (1 << (sector % 8))) != 0
-}
-
-@private
-bit_clear :: #force_inline proc(bitmap: []u8, sector: u16) {
-	bitmap[sector / 8] &= ~(1 << (sector % 8))
-}
-
-@private
-find_contiguous_free :: proc(bitmap: []u8, total_sectors: u64, needed: u16) -> (start: u16, available: u16, ok: bool) {
+find_contiguous_free :: proc(bitmap: ^bit_array.Bit_Array, total_sectors: u64, needed: u16) -> (start: u16, available: u16, ok: bool) {
 	run_start: u16 = 0xFFFF
 	run_len: u16 = 0
-	max_s := u64(min(total_sectors, 65535))
-	for s: u64 = 0; s < max_s; s += 1 {
-		if bit_isset(bitmap, u16(s)) {
+	max_s := int(min(total_sectors, 65535))
+	for s in 0 ..< max_s {
+		if bit_array.unsafe_get(bitmap, s) {
 			if run_len > 0 && run_len >= needed {
 				return run_start, run_len, true
 			}
@@ -59,10 +44,10 @@ find_contiguous_free :: proc(bitmap: []u8, total_sectors: u64, needed: u16) -> (
 }
 
 @private
-is_cluster_full :: proc(bitmap: []u8, total_sectors: u64) -> bool {
-	max_s := u64(min(total_sectors, 65535))
-	for s: u64 = 0; s < max_s; s += 1 {
-		if !bit_isset(bitmap, u16(s)) {
+is_cluster_full :: proc(bitmap: ^bit_array.Bit_Array, total_sectors: u64) -> bool {
+	max_s := int(min(total_sectors, 65535))
+	for s in 0 ..< max_s {
+		if !bit_array.unsafe_get(bitmap, s) {
 			return false
 		}
 	}
@@ -81,15 +66,15 @@ cluster_entry_state_for :: proc(kind: Allocation_Kind) -> Cluster_Entry_State {
 }
 
 @private
-get_bitmap_fallback :: proc(bitmap: []u8, master: ^Master_Record, disk: ^os.File, cluster: Cluster, cme: ^Cluster_Map_Entry) {
-	mem.zero_slice(bitmap)
-	bit_mark(bitmap, cme.sector_index)
+get_bitmap_fallback :: proc(bitmap: ^bit_array.Bit_Array, master: ^Master_Record, disk: ^os.File, cluster: Cluster, cme: ^Cluster_Map_Entry) {
+	bit_array.clear(bitmap)
+	bit_array.unsafe_set(bitmap, int(cme.sector_index))
 	table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 	if read_cluster_entry_table(disk, master, cluster, &table) {
 		for &e in table {
 			if .Allocated in e.state {
 				for off in 0 ..< e.allocation_size {
-					bit_mark(bitmap, e.sector_start + off)
+					bit_array.unsafe_set(bitmap, int(e.sector_start + off))
 				}
 			}
 		}
@@ -161,7 +146,7 @@ allocate_sectors :: proc(
 			}
 		}
 
-		bitmap: []u8
+		bitmap: bit_array.Bit_Array
 		used: u16 = 0
 		if cache_init {
 			var_bitmap, var_used, var_ok := alloc_cache_ensure(cache, master, disk, cluster_idx)
@@ -171,12 +156,11 @@ allocate_sectors :: proc(
 			bitmap = var_bitmap
 			used = var_used
 		} else {
-			bitmap_len := max(1, int((master.cluster_size + 7) / 8))
-			bitmap = make([]u8, bitmap_len, context.temp_allocator)
-			get_bitmap_fallback(bitmap, master, disk, Cluster(cluster_idx), &cme)
+			bit_array.init(&bitmap, int(master.cluster_size), 0, context.temp_allocator)
+			get_bitmap_fallback(&bitmap, master, disk, Cluster(cluster_idx), &cme)
 		}
 
-		free_start, free_avail, free_ok := find_contiguous_free(bitmap, master.cluster_size, u16(min(remaining, 65535)))
+		free_start, free_avail, free_ok := find_contiguous_free(&bitmap, master.cluster_size, u16(min(remaining, 65535)))
 		if !free_ok {
 			if .Full not_in cme.flags {
 				cme.flags += {.Full}
@@ -196,7 +180,6 @@ allocate_sectors :: proc(
 		if !read_cluster_entry_table(disk, master, Cluster(cluster_idx), &table) {
 			continue
 		}
-
 		if !cache_init {
 			used = 0
 			for &e in table {
@@ -361,7 +344,8 @@ deallocate_sectors :: proc(
 		}
 		for &e in table {
 			if e.sector_start == u16(current_offset) {
-				e = entry; break
+				e = entry
+				break
 			}
 		}
 		if !write_cluster_entry_table(disk, master, current_cluster, &table) {

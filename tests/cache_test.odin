@@ -7,6 +7,7 @@
 #+build linux
 package tests
 
+import "core:container/bit_array"
 import "core:os"
 import "core:testing"
 import "src:fs"
@@ -25,7 +26,7 @@ test_cache_init_destroy :: proc(t: ^testing.T) {
 	fs.alloc_cache_init(&cache, &master)
 	defer fs.alloc_cache_destroy(&cache)
 
-	testing.expect(t, cache.bitmap_len > 0, "bitmap_len > 0")
+	testing.expect(t, cache.cache_size > 0, "cache_size > 0")
 	_, _, bok := fs.alloc_cache_ensure(&cache, &master, fd, 0)
 	testing.expect(t, bok, "ensure cluster 0 after init")
 }
@@ -46,31 +47,29 @@ test_cache_bitmap_matches_disk :: proc(t: ^testing.T) {
 	defer fs.alloc_cache_destroy(&cache)
 
 	for ci in 0 ..< int(master.cluster_map_size) {
-		bitmap, _, bok := fs.alloc_cache_ensure(&cache, &master, fd, u64(ci))
+		bm, _, bok := fs.alloc_cache_ensure(&cache, &master, fd, u64(ci))
 		if !bok {continue}
 
 		table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
 		if !fs.read_cluster_entry_table(fd, &master, fs.Cluster(ci), &table) {continue}
 
-		expected_bitmap := make([]u8, cache.bitmap_len)
-		defer delete(expected_bitmap)
-
+		expected_bitmap: bit_array.Bit_Array
+		bit_array.init(&expected_bitmap, cache.cache_size, 0, context.temp_allocator)
 		cme, cme_ok := fs.read_cluster_map_entry(fd, &master, fs.Cluster(ci))
 		if cme_ok {
-			expected_bitmap[cme.sector_index / 8] |= 1 << (cme.sector_index % 8)
+			bit_array.unsafe_set(&expected_bitmap, int(cme.sector_index))
 		}
 		for &e in table {
 			if .Allocated in e.state {
 				for off in 0 ..< e.allocation_size {
 					s := e.sector_start + off
-					expected_bitmap[s / 8] |= 1 << (s % 8)
+					bit_array.unsafe_set(&expected_bitmap, int(s))
 				}
 			}
 		}
-
 		for b in 0 ..< u16(master.cluster_size) {
-			bit_expected := (expected_bitmap[b / 8] & (1 << (b % 8))) != 0
-			bit_actual   := (bitmap[b / 8] & (1 << (b % 8))) != 0
+			bit_expected := bit_array.unsafe_get(&expected_bitmap, int(b))
+			bit_actual   := bit_array.unsafe_get(&bm, int(b))
 			if bit_expected != bit_actual {
 				testing.expectf(t, false, "cluster %d sector %d: expected=%v actual=%v", ci, b, bit_expected, bit_actual)
 				return

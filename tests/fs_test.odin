@@ -37,7 +37,7 @@ test_fs_core :: proc(t: ^testing.T) {
 	err := fs.validate_master(&master, img_size)
 	testing.expect_value(t, err, fs.FS_Error.None)
 	testing.expect_value(t, master.sig, fs.FUSED_SIG)
-	testing.expect_value(t, master.rev, u8(4))
+	testing.expect_value(t, master.rev_max, u8(5))
 
 	root_cluster := fs.Cluster(master.root_cluster)
 	root_offset  := fs.Sector_Offset(master.root_sector_index)
@@ -51,6 +51,8 @@ test_fs_core :: proc(t: ^testing.T) {
 	testing.expect(t, .Directory in rd_ce.state, "root dir is directory")
 
 	dirs, ok_dir := fs.read_directory_entries(fd, &master, root_cluster, fs.Sector_Offset(rd_ce.sector_start))
+	defer delete(dirs)
+
 	testing.expect(t, ok_dir, "read_directory_entries")
 	testing.expect(t, len(dirs) >= 1, "at least one entry")
 

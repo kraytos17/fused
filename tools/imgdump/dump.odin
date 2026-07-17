@@ -8,57 +8,61 @@ import "core:os"
 import "core:strings"
 import "src:fs"
 
-fmt_size :: proc(buf: []u8, bytes: u64) -> string {
+fmt_size :: proc(bytes: u64) -> string {
+	sb: strings.Builder
+	strings.builder_init(&sb, context.temp_allocator)
 	switch {
 	case bytes < 1024:
-		return fmt.bprintf(buf, "%d B", bytes)
+		fmt.sbprintf(&sb, "%d B", bytes)
 	case bytes < 1024 * 1024:
-		return fmt.bprintf(buf, "%.1f KB", f64(bytes) / 1024.0)
+		fmt.sbprintf(&sb, "%.1f KB", f64(bytes) / 1024.0)
 	case:
-		return fmt.bprintf(buf, "%.1f MB", f64(bytes) / (1024.0 * 1024.0))
+		fmt.sbprintf(&sb, "%.1f MB", f64(bytes) / (1024.0 * 1024.0))
+	}
+	return strings.to_string(sb)
+}
+
+json_escape_name :: proc(sb: ^strings.Builder, name: string) {
+	for i in 0 ..< len(name) {
+		b := u8(name[i])
+		if b < 0x20 || b >= 0x7f {
+			fmt.sbprintf(sb, "\\u%04x", u32(b))
+		} else if b == '"' {
+			strings.write_string(sb, `\"`)
+		} else if b == '\\' {
+			strings.write_string(sb, `\\`)
+		} else {
+			strings.write_byte(sb, b)
+		}
 	}
 }
 
 print_master :: proc(fd: ^os.File, m: ^fs.Master_Record, json: bool, needs_comma: ^bool) {
 	if json {
-		if needs_comma^ { fmt.print(",") }
-
-		needs_comma^ = true
-		sb: strings.Builder
-		strings.builder_init(&sb, context.temp_allocator)
-		strings.write_string(&sb, `"master":{"sig":"`)
-		raw_sig := string(m.sig[:])
-		for i := 0; i < len(raw_sig); i += 1 {
-			if raw_sig[i] == 0 {
-				strings.write_string(&sb, `\u0000`)
-			} else {
-				strings.write_byte(&sb, raw_sig[i])
-			}
+		if needs_comma^ {
+			fmt.print(",")
 		}
 
-		strings.write_string(&sb, `","rev":`)
-		fmt.sbprint(&sb, m.rev)
-		strings.write_string(&sb, `,"cluster_map_offset":`)
-		fmt.sbprint(&sb, m.cluster_map_offset)
-		strings.write_string(&sb, `,"cluster_map_size":`)
-		fmt.sbprint(&sb, m.cluster_map_size)
-		strings.write_string(&sb, `,"cluster_size":`)
-		fmt.sbprint(&sb, m.cluster_size)
-		strings.write_string(&sb, `,"root_sector_index":`)
-		fmt.sbprint(&sb, m.root_sector_index)
-		strings.write_string(&sb, `,"root_cluster":`)
-		fmt.sbprint(&sb, m.root_cluster)
-		strings.write_string(&sb, `}`)
-		fmt.print(strings.to_string(sb))
+		needs_comma^ = true
+		sig_str := string(m.sig[:])
+		sig_esc, _ := strings.replace(sig_str, "\x00", "\\u0000", -1)
+		fmt.print(`"master":{"sig":"`)
+		fmt.print(sig_esc)
+		fmt.printf(`","rev_min":%d,"rev_max":%d,"features":%d,"cluster_map_offset":%d,` +
+			`"cluster_map_size":%d,"cluster_size":%d,"root_sector_index":%d,"root_cluster":%d}`,
+			m.rev_min, m.rev_max, m.features, m.cluster_map_offset, m.cluster_map_size,
+			m.cluster_size, m.root_sector_index, m.root_cluster)
 		return
 	}
 
 	sig_len := 0
-	for sig_len < 7 && m.sig[sig_len] != 0 { sig_len += 1 }
+	for sig_len < 7 && m.sig[sig_len] != 0 {
+		sig_len += 1
+	}
 
 	image_mb := f64(u64(m.cluster_map_size) * u64(m.cluster_size) * fs.SECTOR_SIZE) / (1024.0 * 1024.0)
 	fmt.println("=== MasterRecord (sector 0) ===")
-	fmt.printf("  sig       = \"%s\"  (rev %d)\n", string(m.sig[:sig_len]), m.rev)
+	fmt.printf("  sig       = \"%s\"  (rev %d..%d)\n", string(m.sig[:sig_len]), m.rev_min, m.rev_max)
 	fmt.printf("  image     = %d clusters  (%d sectors/cluster = %.1f MB)\n",
 		m.cluster_map_size, m.cluster_size, image_mb)
 	fmt.printf("  root dir  = cluster %d, sector %d\n", m.root_cluster, m.root_sector_index)
@@ -81,7 +85,7 @@ print_cluster_map :: proc(fd: ^os.File, m: ^fs.Master_Record, json: bool, needs_
 			break
 		}
 
-		cmes := (^[fs.CLUSTER_MAP_ENTRIES_PER_SECTOR]fs.Cluster_Map_Entry)(raw_data(buf[:]))
+		cmes := (^[fs.CLUSTER_MAP_ENTRIES_PER_SECTOR]fs.Cluster_Map_Entry)(&buf[0])
 		for ei in 0 ..< fs.CLUSTER_MAP_ENTRIES_PER_SECTOR {
 			ci := int(sec_idx) * fs.CLUSTER_MAP_ENTRIES_PER_SECTOR + ei
 			if u64(ci) >= m.cluster_map_size { break }
@@ -127,9 +131,11 @@ print_cluster_map :: proc(fd: ^os.File, m: ^fs.Master_Record, json: bool, needs_
 								ce_buf: [64]u8
 								state_str := fs.ce_state_str(e.state, ce_buf[:])
 								next_str := ""
-								nb: [32]u8
 								if e.next_cluster != 0 {
-									next_str = fmt.bprintf(nb[:], "  next=(%d,%d)", e.next_cluster, e.next_sector_index)
+									sb: strings.Builder
+									strings.builder_init(&sb, context.temp_allocator)
+									fmt.sbprintf(&sb, "  next=(%d,%d)", e.next_cluster, e.next_sector_index)
+									next_str = strings.to_string(sb)
 								}
 
 								sectors := "sector"
@@ -144,12 +150,7 @@ print_cluster_map :: proc(fd: ^os.File, m: ^fs.Master_Record, json: bool, needs_
 		}
 	}
 	if json {
-		fmt.print(`],"allocated":`)
-		fmt.print(allocated)
-		fmt.print(`,"free":`)
-		fmt.print(m.cluster_map_size - allocated)
-		fmt.print(`,"total":`)
-		fmt.print(m.cluster_map_size)
+		fmt.printf(`],"allocated":%d,"free":%d,"total":%d`, allocated, m.cluster_map_size - allocated, m.cluster_map_size)
 	} else {
 		fmt.printf("  (%d allocated, %d free)\n", allocated, m.cluster_map_size - allocated)
 		fmt.println()
@@ -184,13 +185,20 @@ print_directory :: proc(fd: ^os.File, m: ^fs.Master_Record, cluster: fs.Cluster,
 			buf: [fs.SECTOR_SIZE]u8
 			if !fs.sector_read(fd, sec, buf[:]) { break }
 
-			raw := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(buf[:]))
-			last_in_sector := -1
-			for i in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
-				if .Exists in raw[i].flags { last_in_sector = i }
+			features := transmute(fs.Features)m.features
+			des := int(fs.dir_entry_size(features))
+			depc := int(fs.dir_entries_per_sector(features))
+
+			get_ent :: #force_inline proc(buf: []u8, idx: int, des: int) -> ^fs.Directory_Entry {
+				return (^fs.Directory_Entry)(&buf[idx * des])
 			}
-			for i in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
-				e := raw[i]
+
+			last_in_sector := -1
+			for i in 0 ..< depc {
+				if .Exists in get_ent(buf[:], i, des).flags { last_in_sector = i }
+			}
+			for i in 0 ..< depc {
+				e := get_ent(buf[:], i, des)^
 				if .Exists not_in e.flags { continue }
 
 				name := fs.entry_short_name(&e)
@@ -224,8 +232,13 @@ print_directory :: proc(fd: ^os.File, m: ^fs.Master_Record, cluster: fs.Cluster,
 					if entry_count > 0 { fmt.print(",") }
 
 					entry_count += 1
+					esc_sb: strings.Builder
+					strings.builder_init(&esc_sb, context.temp_allocator)
+					
+					json_escape_name(&esc_sb, name)
+					esc_name := strings.to_string(esc_sb)
 					fmt.print(`"`)
-					fmt.print(name)
+					fmt.print(esc_name)
 					fmt.print(`":{"kind":"`)
 					fmt.print(kind)
 					fmt.print(`","size":`)
@@ -251,12 +264,14 @@ print_directory :: proc(fd: ^os.File, m: ^fs.Master_Record, cluster: fs.Cluster,
 					}
 					fmt.print(`}`)
 				} else {
-					sz_buf: [64]u8
-					size_str := fmt_size(sz_buf[:], e.file_size)
-					lc_buf: [32]u8
-					loc_str := fmt.bprintf(lc_buf[:], "@(%d,%d)", e.stored_cluster, e.sector_index)
+					size_str := fmt_size(e.file_size)
+					sb2: strings.Builder
+					strings.builder_init(&sb2, context.temp_allocator)
+					fmt.sbprintf(&sb2, "@(%d,%d)", e.stored_cluster, e.sector_index)
+					loc_str := strings.to_string(sb2)
 					fb: [24]u8
 					fi := 0
+
 					if .Read_Only in e.flags { fb[fi] = 'R'; fi += 1 }
 					if .No_Write in e.flags { fb[fi] = 'W'; fi += 1 }
 					if .No_Read in e.flags { fb[fi+0] = 'R'; fb[fi+1] = '!'; fi += 2 }
@@ -264,15 +279,19 @@ print_directory :: proc(fd: ^os.File, m: ^fs.Master_Record, cluster: fs.Cluster,
 
 					flags_suffix := string(fb[:fi])
 					if .Link in e.flags && target != "" {
-						fmt.printf("%s%s\"%s\" → \"%s\"  %-4s  %5s  %s  %s%s\n",
-							prefix, connector, name, target, kind, size_str, loc_str, dt_str, flags_suffix)
+						fmt.printf("%s%s\"%s\" → \"%s\"  %-4s  %5s  %s  %s  uid=%d gid=%d%s\n",
+							prefix, connector, name, target, kind, size_str, loc_str, dt_str,
+							e.uid, e.gid, flags_suffix)
 					} else {
-						fmt.printf("%s%s\"%s\"  %-4s  %5s  %s  %s%s\n",
-							prefix, connector, name, kind, size_str, loc_str, dt_str, flags_suffix)
+						fmt.printf("%s%s\"%s\"  %-4s  %5s  %s  %s  uid=%d gid=%d%s\n",
+							prefix, connector, name, kind, size_str, loc_str, dt_str,
+							e.uid, e.gid, flags_suffix)
 					}
 					if .Directory in e.flags {
-						cp_buf: [128]u8
-						child_prefix := fmt.bprintf(cp_buf[:], "%s  ", prefix)
+						sb3: strings.Builder
+						strings.builder_init(&sb3, context.temp_allocator)
+						fmt.sbprintf(&sb3, "%s  ", prefix)
+						child_prefix := strings.to_string(sb3)
 						print_directory(fd, m,
 							fs.Cluster(e.stored_cluster),
 							fs.Sector_Offset(e.sector_index),
@@ -304,9 +323,7 @@ print_hex_by_path :: proc(fd: ^os.File, m: ^fs.Master_Record, path: string) {
 	strings.builder_init(&sb, context.allocator)
 	defer strings.builder_destroy(&sb)
 
-	header_buf: [64]u8
-	fmt.bprintf(header_buf[:], "=== Hex dump of \"%s\" (%d bytes) ===\n", path, entry.file_size)
-	fmt.print(string(header_buf[:]))
+	fmt.sbprintf(&sb, "=== Hex dump of \"%s\" (%d bytes) ===\n", path, entry.file_size)
 
 	remaining := entry.file_size
 	file_off: u64

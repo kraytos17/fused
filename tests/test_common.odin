@@ -23,7 +23,7 @@ open_test_image :: proc() -> (^os.File, bool) {
 			if cached_err == nil {
 				cached_master, cached_ok := fs.read_master_record(cached_fd)
 				os.close(cached_fd)
-				src_stale = !cached_ok || cached_master.rev < 4
+				src_stale = !cached_ok || cached_master.rev_max < fs.SUPPORTED_REV_MIN
 			}
 		}
 	}
