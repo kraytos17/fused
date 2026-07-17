@@ -3,6 +3,7 @@
 # Every test function returns a TestResult or TestSuite.
 # The runner aggregates them and produces one final summary.
 
+import errno
 from dataclasses import dataclass, field
 
 
@@ -37,6 +38,31 @@ class TestSuite:
         r = TestResult(name=name, passed=passed, detail=detail)
         self.results.append(r)
         return r
+
+    def check_errno(self, name: str, fn, *args,
+                    expected_errno: int = errno.ENOENT,
+                    **kwargs) -> None:
+        """Call fn(*args, **kwargs) and assert it raises OSError with expected_errno."""
+        try:
+            fn(*args, **kwargs)
+            self.add_result(name, False, f"expected OSError({expected_errno}), got success")
+        except OSError as e:
+            if e.errno == expected_errno:
+                self.add_result(name, True, detail=f"errno={e.errno}")
+            else:
+                self.add_result(name, False,
+                                detail=f"expected errno={expected_errno}, got {e.errno}: {e.strerror}")
+        except Exception as e:
+            self.add_result(name, False,
+                            detail=f"expected OSError, got {type(e).__name__}: {e}")
+
+    def check_ok(self, name: str, fn, *args, **kwargs) -> None:
+        """Call fn(*args, **kwargs) and assert it succeeds."""
+        try:
+            fn(*args, **kwargs)
+            self.add_result(name, True)
+        except Exception as e:
+            self.add_result(name, False, detail=str(e))
 
     def print_summary(self, indent: str = "") -> None:
         for r in self.results:

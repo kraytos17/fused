@@ -37,7 +37,7 @@ ODIN_VERSION  := $(shell $(ODIN) version 2>&1 | head -1)
 VET_DIRS      := src/disker src/mounter
 
 .PHONY: all build release disker run-disker imgdump \
-        test check audit smoke smoke-rw smoke-mt \
+        test check audit smoke smoke-rw smoke-mt smoke-errors \
         ci disker-test mount unmount \
         verify verify-full clean clean-logs rebuild help \
         vet vet-all vet-shadowing vet-unused vet-style vet-cast \
@@ -151,6 +151,11 @@ smoke-mt: build run-disker
 	@$(HARNESS) 120 python3 -m fused_test.suites.stress \
 		--fused=build/fused --image=fused.img --mount=$(MOUNTPOINT) --logs=$(LOGS_DIR)
 
+smoke-errors: build run-disker
+	@echo "==> Smoke test (FUSE error paths)"
+	@$(HARNESS) 60 python3 -m fused_test.suites.errors \
+		--fused=build/fused --image=fused.img --mount=$(MOUNTPOINT) --logs=$(LOGS_DIR)
+
 ci: build run-disker imgdump
 	@PYTHONPATH=$(TEST_DIR) python3 tests/ci.py
 
@@ -204,13 +209,14 @@ help:
 	@echo "  rebuild          clean && build"
 	@echo ""
 	@echo "Tests:"
-	@echo "  test             Odin unit test suite (requires image)"
-	@echo "  disker-test      disker + imgdump integration tests"
-	@echo "  check            C vs Odin struct size cross-check"
-	@echo "  audit            audit \"c\" callbacks for context + logger restoration"
-	@echo "  smoke            basic FUSE mount + ops test (isolated namespace)"
-	@echo "  smoke-rw         read-write + persistence test (isolated namespace)"
+	@echo "  test             Odin unit test suite (57 tests, requires image)"
+	@echo "  disker-test      disker + imgdump integration tests (29 checks)"
+	@echo "  check            C vs Odin struct size cross-check (11 structs)"
+	@echo "  audit            audit \"c\" callbacks for context + logger restoration (35 callbacks)"
+	@echo "  smoke            basic FUSE mount + ops test (18 checks, isolated namespace)"
+	@echo "  smoke-rw         read-write + persistence test (37 checks, isolated namespace)"
 	@echo "  smoke-mt         multi-threaded stress test (isolated namespace)"
+	@echo "  smoke-errors     FUSE error path test (10 checks, isolated namespace)"
 	@echo "  ci               build + check + audit + test + tools + all smoke tests"
 	@echo "  verify           check + audit (no FUSE needed)"
 	@echo "  verify-full      check + audit + all smoke tests"

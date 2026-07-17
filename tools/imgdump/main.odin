@@ -14,7 +14,7 @@ Flags :: struct {
 	json:     bool   `args:"name=json" usage:"Output as JSON (machine-readable)"`,
 	all:      bool   `args:"name=all" usage:"Show all clusters including empty ones in text mode"`,
 	hex_path: string `args:"name=hex" usage:"Dump file contents as hex (e.g. --hex=/Kernel or --hex for root)"`,
-	log_level: string `args:"name=log-level" usage:"Log level: debug, info, warn, error (default: warn)"`,
+	log_level: string `args:"name=log-level" usage:"Log level: debug, info, warn, error (default: debug)"`,
 	overflow: [dynamic]string `args:"hidden"`,
 }
 
@@ -23,13 +23,13 @@ main :: proc() {
 
 	f: Flags
 	flags.parse_or_exit(&f, os.args, flags.Parsing_Style.Unix)
-
-	log_level := log.Level.Warning
+	log_level := log.Level.Debug
 	switch f.log_level {
 	case "debug": log_level = log.Level.Debug
 	case "info":  log_level = log.Level.Info
 	case "warn":  log_level = log.Level.Warning
 	case "error": log_level = log.Level.Error
+	case "":
 	case:
 		log.errorf("unknown log level: %s (use debug|info|warn|error)", f.log_level)
 	}

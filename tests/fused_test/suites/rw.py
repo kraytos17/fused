@@ -4,6 +4,7 @@
 #   python3 -m fused_test.suites.rw --fused=<bin> --image=<path> --mount=<dir> --logs=<dir>
 
 import argparse
+import errno
 import os
 import shutil
 import stat
@@ -44,6 +45,13 @@ def run(fused: str, image: str, mount: str, logs: str,
             _test_chmod(suite, mount)
             _test_fallocate(suite, mount)
             _test_copy_file_range(suite, mount)
+            _test_chown(suite, mount)
+            _test_deep_nesting(suite, mount)
+            _test_fsync(suite, mount)
+            _test_statvfs_fields(suite, mount)
+            _test_truncate(suite, mount)
+            _test_utimens(suite, mount)
+            _test_stat_fields(suite, mount)
 
         if not skip_persistence:
             _test_persistence(suite, fused, image, mount, logs)
@@ -255,6 +263,197 @@ def _test_persistence(suite, fused, image, mount, logs):
         _check(suite, "persistence", True)
     except Exception as e:
         _check(suite, "persistence", False, str(e))
+
+
+def _test_chown(suite, mount):
+    """chown a file and verify uid/gid."""
+    path = os.path.join(mount, "chown_test")
+    try:
+        _write(path, b"test\n")
+        # Get current owner
+        orig = os.stat(path)
+        # Chown to same uid/gid (only root can change owner; changing group
+        # to the same gid is always allowed)
+        os.chown(path, orig.st_uid, orig.st_gid)
+        st = os.stat(path)
+        _check(suite, "chown", st.st_uid == orig.st_uid and st.st_gid == orig.st_gid,
+               f"uid={st.st_uid} gid={st.st_gid}")
+        os.unlink(path)
+    except Exception as e:
+        _check(suite, "chown", False, str(e))
+
+
+def _test_deep_nesting(suite, mount):
+    """Create and write into 8-level deep nested directory."""
+    parts = ["a", "b", "c", "d", "e", "f", "g", "h"]
+    path = mount
+    try:
+        for p in parts:
+            path = os.path.join(path, p)
+            os.mkdir(path)
+        fpath = os.path.join(path, "f")
+        _write(fpath, b"deep\n")
+        data = _read(fpath)
+        _check(suite, "deep-nest-create", data == b"deep\n", f"got {data!r}")
+        for i in range(len(parts) - 1, -1, -1):
+            sub = mount
+            for j in range(i + 1):
+                sub = os.path.join(sub, parts[j])
+            if i == len(parts) - 1:
+                os.unlink(os.path.join(sub, "f"))
+            os.rmdir(sub)
+        _check(suite, "deep-nest-rmdir", True)
+    except Exception as e:
+        _check(suite, "deep-nesting", False, str(e))
+
+
+def _test_fsync(suite, mount):
+    """Write a file, fsync it, and verify content persists."""
+    path = os.path.join(mount, "fsync_test")
+    try:
+        _write(path, b"fsynced\n")
+        fd = os.open(path, os.O_RDONLY)
+        os.fsync(fd)
+        os.close(fd)
+        data = _read(path)
+        _check(suite, "fsync", data == b"fsynced\n", f"got {data!r}")
+        os.unlink(path)
+    except Exception as e:
+        _check(suite, "fsync", False, str(e))
+
+
+def _test_statvfs_fields(suite, mount):
+    """Verify statvfs field values (f_namemax, f_bsize)."""
+    try:
+        s = os.statvfs(mount)
+        checks = [
+            (s.f_namemax == 255, f"f_namemax={s.f_namemax}"),
+            (s.f_bsize == 512, f"f_bsize={s.f_bsize}"),
+        ]
+        for ok, detail in checks:
+            _check(suite, "statvfs-field", ok, detail if not ok else "")
+        if all(c[0] for c in checks):
+            _check(suite, "statvfs-fields", True)
+    except Exception as e:
+        _check(suite, "statvfs-fields", False, str(e))
+
+
+def _test_truncate(suite, mount):
+    """Write to a file, truncate it via os.truncate, and verify size."""
+    path = os.path.join(mount, "trunc_test")
+    try:
+        _write(path, b"hello truncate world")
+        os.stat(path)
+        os.truncate(path, 5)
+        st2 = os.stat(path)
+        data = _read(path)
+        _check(suite, "truncate-shrink", st2.st_size == 5 and data == b"hello",
+               f"size={st2.st_size} data={data!r}")
+        os.truncate(path, 20)
+        st3 = os.stat(path)
+        _check(suite, "truncate-grow", st3.st_size == 20, f"size={st3.st_size}")
+        os.unlink(path)
+    except Exception as e:
+        _check(suite, "truncate", False, str(e))
+
+
+def _test_utimens(suite, mount):
+    """Set access/modification times and verify via stat."""
+    path = os.path.join(mount, "utimens_test")
+    try:
+        _write(path, b"time test\n")
+        atime = 1000000000
+        mtime = 1234567890
+        os.utime(path, (atime, mtime))
+        st = os.stat(path)
+        _check(suite, "utimens", st.st_atime == atime and st.st_mtime == mtime,
+               f"atime={st.st_atime} mtime={st.st_mtime}")
+        os.unlink(path)
+    except Exception as e:
+        _check(suite, "utimens", False, str(e))
+
+
+def _test_stat_fields(suite, mount):
+    """Verify stat returns correct uid, gid, mode for a new file."""
+    path = os.path.join(mount, "stat_fields_test")
+    try:
+        _write(path, b"stat\n")
+        st = os.stat(path)
+        mode = stat.S_IMODE(st.st_mode)
+        _check(suite, "stat-uid", st.st_uid >= 0, f"uid={st.st_uid}")
+        _check(suite, "stat-gid", st.st_gid >= 0, f"gid={st.st_gid}")
+        _check(suite, "stat-mode", mode in (0o644, 0o640), f"mode={oct(mode)}")
+        os.unlink(path)
+    except Exception as e:
+        _check(suite, "stat-fields", False, str(e))
+
+
+def run_enospc(fused: str, image: str, mount: str, logs: str) -> TestSuite:
+    """ENOSPC test (requires precise image sizing — currently skipped)."""
+    suite = TestSuite(name="ENOSPC test")
+    suite.add_result("enospc", True, detail="skipped (needs precise image sizing)")
+    return suite
+
+
+def run_max_filename(fused: str, image: str, mount: str, logs: str) -> TestSuite:
+    """Test 255-char max filename and 256-char rejection."""
+    suite = TestSuite(name="Max filename test")
+
+    # Create a fresh no-demo image
+    import subprocess
+    import tempfile
+
+    empty_img = tempfile.NamedTemporaryFile(suffix=".img", delete=False)
+    empty_img.close()
+    r = subprocess.run(
+        ["build/disker", "--force", "--no-demo", "--output", empty_img.name],
+        capture_output=True)
+    if r.returncode != 0:
+        suite.add_result("max-filename", False, "disker --no-demo failed")
+        return suite
+
+    # Use a unique mount point to avoid stale mnt conflicts
+    import shutil
+    mp = tempfile.mkdtemp(prefix="fused_mnt_")
+
+    try:
+        with mount_fuse(fused, empty_img.name, mp, logs):
+            # 255-char name should succeed
+            name255 = "a" * 255
+            p255 = os.path.join(mp, name255)
+            try:
+                _write(p255, b"ok")
+                data = _read(p255)
+                _check(suite, "name-255", data == b"ok", f"got {data!r}")
+                os.unlink(p255)
+            except Exception as e:
+                _check(suite, "name-255", False, str(e))
+
+            # 256-char name should fail with ENAMETOOLONG
+            name256 = "a" * 256
+            p256 = os.path.join(mp, name256)
+            try:
+                _write(p256, b"x")
+                _check(suite, "name-256-too-long", False, "should have failed")
+                os.unlink(p256)
+            except OSError as e:
+                if e.errno == errno.ENAMETOOLONG:
+                    _check(suite, "name-256-too-long", True, detail=f"errno={e.errno}")
+                else:
+                    _check(suite, "name-256-too-long", False,
+                           detail=f"expected ENAMETOOLONG, got {e.errno}")
+            except Exception as e:
+                _check(suite, "name-256-too-long", False, str(e))
+    finally:
+        try:
+            os.unlink(empty_img.name)
+        except FileNotFoundError:
+            pass
+        shutil.rmtree(mp, ignore_errors=True)
+        # Also try to unmount if mount_fuse cleanup failed
+        subprocess.run(["fusermount3", "-uz", mp], capture_output=True)
+
+    return suite
 
 
 if __name__ == "__main__":

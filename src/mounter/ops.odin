@@ -253,6 +253,14 @@ resolve_path :: proc(fsys: ^FS, path: string, allocator := context.allocator) ->
 		for &d, didx in dirs {
 			if fs.entry_short_name(&d) == target {
 				found = true
+			}
+			if !found && .LFN in d.flags {
+				lfn_name, lfn_ok := fs.resolve_lfn(fsys.disk, &fsys.master, &d, context.temp_allocator)
+				if lfn_ok && lfn_name == target {
+					found = true
+				}
+			}
+			if found {
 				if is_last {
 					return d, current_cluster, current_offset, didx, true
 				}
@@ -535,9 +543,15 @@ fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Inf
 	)
 
 	ts := posix.time_t(time.time_to_unix(t))
-	stbuf.st_atim.tv_sec = ts
 	stbuf.st_mtim.tv_sec = ts
 	stbuf.st_ctim.tv_sec = ts
+	at := entry.atime_date_time
+	atime_t, _ := time.components_to_time(
+		i64(entry.atime_year), i64(at.month), i64(at.date),
+		i64(at.hour), i64(at.minute), i64(at.second),
+	)
+
+	stbuf.st_atim.tv_sec = posix.time_t(time.time_to_unix(atime_t))
 	stbuf.st_uid = posix.uid_t(entry.uid)
 	stbuf.st_gid = posix.gid_t(entry.gid)
 	return 0
@@ -1378,13 +1392,40 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 	sync.mutex_lock(&fsys.mu)
 	defer sync.mutex_unlock(&fsys.mu)
 
-	entry, data_cluster, data_offset, ok := read_entry_from_fh(fsys, fi.fh)
-	if !ok {
-		log.debugf("truncate: %s → ENOENT", path)
-		return fuse3.nix(.ENOENT)
+	log.debugf("truncate: %s size=%d fi=%v", path, size, fi != nil)
+
+	entry: fs.Directory_Entry
+	data_cluster: fs.Cluster
+	data_offset: fs.Sector_Offset
+	entry_cluster: fs.Cluster
+	entry_offset: fs.Sector_Offset
+	entry_idx: int
+	if fi != nil {
+		entry_cluster, entry_offset, entry_idx = unpack_fh(fi.fh)
+		e, dc, ddo, ok := read_entry_from_fh(fsys, fi.fh)
+		if !ok {
+			log.debugf("truncate: %s → ENOENT (fh)", path)
+			return fuse3.nix(.ENOENT)
+		}
+
+		entry = e
+		data_cluster = dc
+		data_offset = ddo
+	} else {
+		e, c, o, i, resolved := resolve_path_cached(fsys, string(path), context.temp_allocator)
+		if !resolved {
+			log.debugf("truncate: %s → ENOENT", path)
+			return fuse3.nix(.ENOENT)
+		}
+
+		entry = e
+		entry_cluster = c
+		entry_offset = o
+		entry_idx = i
+		data_cluster = fs.Cluster(entry.stored_cluster)
+		data_offset = fs.Sector_Offset(entry.sector_index)
 	}
 
-	entry_cluster, entry_offset, entry_idx := unpack_fh(fi.fh)
 	if .Directory in entry.flags {
 		log.debugf("truncate: %s → EISDIR", path)
 		return fuse3.nix(.EISDIR)
@@ -1460,6 +1501,8 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 	if !write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx) {
 		return fuse3.nix(.EIO)
 	}
+
+	lru.remove(&fsys.path_cache, string(path))
 	log.debugf("truncate: %s → %d", path, size)
 	return 0
 }
@@ -1641,6 +1684,7 @@ fused_utimens :: proc "c" (path: cstring, tv: [^]posix.timespec, fi: ^fuse3.File
 	if !write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx) {
 		return fuse3.nix(.EIO)
 	}
+	lru.remove(&fsys.path_cache, string(path))
 	return 0
 }
 

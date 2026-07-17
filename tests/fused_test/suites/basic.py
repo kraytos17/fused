@@ -40,8 +40,12 @@ def run(fused: str, image: str, mount: str, logs: str) -> TestSuite:
             _test_statvfs(suite, mount)
             _test_mount_table()
             _test_fuse_ops(suite, logs)
+            _test_max_filename(suite, mount)
+            _test_statvfs_values(suite, mount)
     except Exception as e:
         suite.add(TestResult(name="mount", passed=False, detail=str(e)))
+
+    _test_log_format_opts(suite, fused)
 
     return suite
 
@@ -161,6 +165,46 @@ def _test_fuse_ops(suite, logs_dir):
         _check(suite, "FUSE ops", len(found) >= 3, f"only found {found}")
     except Exception as e:
         _check(suite, "FUSE ops", False, str(e))
+
+
+def _test_max_filename(suite, mount):
+    """Create a file with 255-char name and read it back."""
+    name = "a" * 255
+    path = os.path.join(mount, name)
+    try:
+        _write(path, b"ok")
+        data = _read(path)
+        _check(suite, "max-filename", data == b"ok", f"got {data!r}")
+        os.unlink(path)
+        _check(suite, "max-filename-unlink", True)
+    except Exception as e:
+        _check(suite, "max-filename", False, str(e))
+
+
+def _test_statvfs_values(suite, mount):
+    """Check specific statvfs field values."""
+    try:
+        s = os.statvfs(mount)
+        checks = [
+            (s.f_namemax == 255, f"f_namemax={s.f_namemax}"),
+            (s.f_bsize == 512, f"f_bsize={s.f_bsize}"),
+        ]
+        for ok, detail in checks:
+            _check(suite, "statvfs-field", ok, detail if not ok else "")
+        if all(c[0] for c in checks):
+            _check(suite, "statvfs-fields", True)
+    except Exception as e:
+        _check(suite, "statvfs-fields", False, str(e))
+
+
+def _test_log_format_opts(suite, fused):
+    """Verify --log-format=short and --log-format=full are accepted."""
+    import subprocess
+    for fmt in ["short", "long", "full"]:
+        r = subprocess.run([fused, "--log-format=" + fmt, "--help"],
+                           capture_output=True, text=True)
+        _check(suite, f"log-format-{fmt}", r.returncode == 0,
+               f"exit={r.returncode}")
 
 
 if __name__ == "__main__":

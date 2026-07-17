@@ -92,12 +92,13 @@ def phase_fuse(skip=False):
 
     harness = os.path.join(ROOT, "tests", "run_in_namespace.sh")
     total_p = total_f = 0
-
     suites = [
         ("basic", "smoke-basic", "60",
          "python3", "-m", "fused_test.suites.basic"),
         ("rw", "smoke-rw", "120",
          "python3", "-m", "fused_test.suites.rw"),
+        ("errors", "smoke-errors", "60",
+         "python3", "-m", "fused_test.suites.errors"),
         ("mt", "smoke-mt", "120",
          "python3", "-m", "fused_test.suites.stress"),
     ]

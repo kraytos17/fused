@@ -4,7 +4,7 @@
 
 fused is a FUSE filesystem daemon implemented in Odin. It provides a libfuse3
 FFI binding, a cluster-based on-disk format (rev 5 with feature flags), and
-read-write FUSE mounting (35 of 44 `fuse_operations` callbacks implemented).
+read-write FUSE mounting (35 of 43 `fuse_operations` callbacks implemented).
 
 ```
 ┌─────────────┐     ┌──────────────────┐     ┌──────────────┐
@@ -21,13 +21,13 @@ read-write FUSE mounting (35 of 44 `fuse_operations` callbacks implemented).
 ### Packages
 
 | Package | Purpose | Depends on |
-|---|---|---|
-| **`src/fuse3/`** | FFI binding to libfuse3. 44 `fuse_operations` callbacks, 12 cross-FFI structs with compile-time `#assert(size_of)`, 43 callback offsets verified against C ground truth. | `libfuse3.so` (system) |
+|---|---|---|---|
+| **`src/fuse3/`** | FFI binding to libfuse3. 43 `fuse_operations` callbacks, 12 cross-FFI structs with compile-time `#assert(size_of)`, 43 callback offsets verified against C ground truth. | `libfuse3.so` (system) |
 | **`src/fs/`** | Filesystem logic operating on raw disk images. No FUSE dependency. | `core:os` |
-| **`src/mounter/`** | FUSE callbacks (35 of 44 wired) that delegate to `src/fs/`. Translates `FS_Error` to negated errno. | `src/fs/`, `src/fuse3/` |
+| **`src/mounter/`** | FUSE callbacks (35 of 43 wired) that delegate to `src/fs/`. Translates `FS_Error` to negated errno. | `src/fs/`, `src/fuse3/` |
 | **`src/disker/`** | Standalone image formatter. Produces valid disk images without libfuse3. | `src/fs/` |
 | **`tools/imgdump/`** | Read-only image dumper. Walks the image structure and prints it in human-readable or JSON form. | `src/fs/` |
-| **`tests/`** | Odin unit tests, Python integration test suite, struct-size cross-checks, context audit. | — |
+| **`tests/`** | Odin unit tests, Python integration test suite (37 checks), struct-size cross-checks, context audit. | — |
 
 ## On-disk format (rev 5)
 
@@ -210,7 +210,7 @@ allocation. `src/mounter/main.odin` wraps the mount lifecycle in a
 `mem.Tracking_Allocator` guarded behind `when ODIN_DEBUG` — zero overhead in
 release builds. Leaked allocations are reported at unmount time.
 
-## FUSE callbacks (35 of 44 wired)
+## FUSE callbacks (35 of 43 wired)
 
 | Category | Callbacks |
 |---|---|
@@ -232,18 +232,19 @@ release builds. Leaked allocations are reported at unmount time.
 tests/
   fused_test/              Python test package
     suites/
-      basic.py             10 FUSE smoke tests (ls, stat, read, write, subdirs)
-      rw.py                24 read-write tests (cp, dd, mkdir, symlink, chmod, fallocate, copy_file_range)
+      basic.py             18 FUSE smoke tests (ls, stat, read, write, subdirs, max-filename, statvfs, log-format)
+      rw.py                37 read-write tests (cp, dd, mkdir, symlink, chmod, fallocate, copy_file_range, chown, deep-nest, fsync, truncate, utimens, stat-fields)
+      errors.py            10 FUSE error path tests (ENOTDIR, ENOTEMPTY, EACCES, ENOENT, EEXIST, ENOSYS, access)
       stress.py            Multi-threaded stress test (reader + writer, 15s)
       disker.py            7 disker CLI tests + 19 imgdump validation tests
-      imgdump.py           JSON/text/hex output validation (6 test suites)
+      imgdump.py           JSON/text/hex output validation (6 test suites + 2 corrupted image tests)
       audit_context.py     Audits 35 `proc "c"` callbacks for context+logger restoration
       audit_sizes.py       Cross-checks 11 C struct sizes against Odin bindings
-    mount.py               FUSE mount context manager (replaces lib.sh)
-    result.py              TestSuite/TestResult dataclasses
+    mount.py               FUSE mount context manager
+    result.py              TestSuite/TestResult dataclasses with check_errno/check_ok helpers
   ci.py                    CI orchestrator (8 phases)
   run_in_namespace.sh      Thin shell: `exec unshare -rUm timeout "$@"`
-  *.odin                   52 Odin unit tests (allocation, cache, directory, write, fs)
+  *.odin                   57 Odin unit tests (allocation, cache, directory, write, fs, validate, display, LFN)
   c_assert.c / size_check.odin  C + Odin ground truth for struct size cross-check
 ```
 
@@ -252,14 +253,15 @@ tests/
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `odin test` (52 tests) |
-| 3. Tool integration | Disker CLI tests + imgdump JSON/text/hex validation (26 suite tests) |
-| 4. FUSE basic | `suites/basic.py` inside `unshare -rUm` (10 assertions) |
-| 5. FUSE read-write | `suites/rw.py` inside `unshare -rUm` (24 assertions) |
-| 6. FUSE stress | `suites/stress.py` inside `unshare -rUm` (3 assertions) |
+| 2. Unit tests | `odin test` (57 tests) |
+| 3. Tool integration | Disker CLI tests + imgdump JSON/text/hex validation (29 suite tests) |
+| 4. FUSE basic | `suites/basic.py` inside `unshare -rUm` (18 assertions) |
+| 5. FUSE read-write | `suites/rw.py` inside `unshare -rUm` (37 assertions) |
+| 6. FUSE errors | `suites/errors.py` inside `unshare -rUm` (10 assertions) |
+| 7. FUSE stress | `suites/stress.py` inside `unshare -rUm` (3 assertions) |
 
-Total: 34 suite-level tests + 52 Odin unit tests + 11 struct cross-checks + 35
-context audits = 132 passing checks.
+Total: 37 suite-level tests + 57 Odin unit tests + 11 struct cross-checks + 35
+context audits + 3 log-format CLI checks = 143 passing checks. Zero memory leaks.
 
 ### Test isolation
 

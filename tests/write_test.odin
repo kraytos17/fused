@@ -1435,3 +1435,74 @@ test_copy_file_range_simple :: proc(t: ^testing.T) {
 	testing.expect(t, fs.sector_read(fd, dst_runs[0].sector, verify_buf[:]), "read dst")
 	testing.expect(t, string(verify_buf[:5]) == "HELLO", "content matches")
 }
+
+@test
+test_resolve_lfn_actual_resolution :: proc(t: ^testing.T) {
+	fd, open_err := open_test_image()
+	if !open_err {testing.fail(t); return}
+	defer os.close(fd)
+
+	master, mok := fs.read_master_record(fd)
+	testing.expect(t, mok, "read_master_record")
+
+	// Allocate one sector for LFN data
+	lfn_c, lfn_o, aerr := fs.allocate_sectors(&master, fd, nil, 0, 0, 1, .LFN)
+	testing.expect_value(t, aerr, fs.FS_Error.None)
+	defer fs.deallocate_sectors(&master, fd, nil, lfn_c, lfn_o)
+
+	// Resolve the allocated sector
+	lfn_runs, runs_ok := fs.resolve_extents(fd, &master, lfn_c, lfn_o)
+	testing.expect(t, runs_ok, "resolve LFN extents")
+	testing.expect(t, len(lfn_runs) > 0, "LFN extents not empty")
+
+	// Write the long name to the LFN data sector
+	long_name := "this_is_a_very_long_filename_exceeding_16_bytes_abcdefghij"
+	sector_buf: [fs.SECTOR_SIZE]u8
+	copy(sector_buf[:], long_name)
+	testing.expect(t, fs.sector_write(fd, lfn_runs[0].sector, sector_buf[:]), "write LFN data")
+
+	// Find the ClusterEntry that was allocated for the LFN data
+	lfn_entry, found := fs.find_cluster_entry(fd, &master, lfn_c, lfn_o)
+	testing.expect(t, found, "find LFN cluster entry")
+	testing.expect(t, .Allocated in lfn_entry.state, "LFN entry allocated")
+
+	ptr := fs.LFN_Pointer{
+		cluster = u64(lfn_c),
+		size    = u32(len(long_name)),
+		sector  = lfn_entry.sector_start,
+		_pad    = 0,
+	}
+	entry := fs.Directory_Entry{
+		flags          = {.Allocated, .Exists, .LFN},
+		sector_index   = lfn_entry.sector_start,
+		stored_cluster = u64(lfn_c),
+		file_size      = u64(len(long_name)),
+	}
+
+	(^fs.LFN_Pointer)(&entry.file_name[0])^ = ptr
+	// Write the entry to the root directory at index 1 (index 0 is Kernel)
+	rce, rce_ok := fs.find_cluster_entry(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+	testing.expect(t, rce_ok, "root cluster entry")
+	testing.expect(t, fs.write_directory_entry_at(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(rce.sector_start), 1, &entry), "write LFN dir entry")
+
+	// Read directory entries back
+	dirs, dirs_ok := fs.read_directory_entries(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+	defer delete(dirs)
+
+	testing.expect(t, dirs_ok, "read dir entries after LFN write")
+	testing.expect(t, len(dirs) >= 2, "at least 2 entries")
+	// Find our LFN entry and resolve its name
+	resolved := false
+	for &d in dirs {
+		if .LFN in d.flags {
+			name, name_ok := fs.resolve_lfn(fd, &master, &d)
+			testing.expect(t, name_ok, "resolve_lfn ok")
+			if name_ok {
+				testing.expect(t, name == long_name,
+					fmt.tprintf("resolved name %q != expected %q", name, long_name))
+				resolved = true
+			}
+		}
+	}
+	testing.expect(t, resolved, "LFN entry found and resolved")
+}

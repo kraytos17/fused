@@ -31,7 +31,7 @@ Flags :: struct {
 	no_demo:      bool   `args:"name=no-demo" usage:"Do not embed a demo file"`,
 	verbose:      bool   `args:"name=verbose" usage:"Show progress for large images"`,
 	force:        bool   `args:"name=force" usage:"Overwrite existing output"`,
-	log_level:    string `args:"name=log-level" usage:"Log level: debug, info, warn, error (default: info)"`,
+	log_level:    string `args:"name=log-level" usage:"Log level: debug, info, warn, error (default: debug)"`,
 	overflow: [dynamic]string `args:"hidden"`,
 }
 
@@ -64,12 +64,13 @@ main :: proc() {
 	f.output = "fused.img"
 
 	flags.parse_or_exit(&f, os.args, flags.Parsing_Style.Unix)
-	log_level := log.Level.Info
+	log_level := log.Level.Debug
 	switch f.log_level {
 	case "debug": log_level = log.Level.Debug
 	case "info":  log_level = log.Level.Info
 	case "warn":  log_level = log.Level.Warning
 	case "error": log_level = log.Level.Error
+	case "":
 	case:
 		log.errorf("unknown log level: %s (use debug|info|warn|error)", f.log_level)
 		os.exit(1)

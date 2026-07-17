@@ -1,9 +1,10 @@
 # fused — FUSE filesystem in Odin
 
 FUSE filesystem daemon implemented in Odin. Cluster-based on-disk format
-(rev 5 with feature flags, uid/gid support). 35 of 44 `fuse_operations`
+(rev 5 with feature flags, uid/gid support). 35 of 43 `fuse_operations`
 callbacks implemented. Multi-threaded by default with `sync.Mutex` for
-cache protection. Zero-copy I/O via `splice(2)`.
+cache protection. Zero-copy I/O via `splice(2)`. LFN (long filenames up to
+255 chars) supported through bump-allocated data sectors.
 
 ## Quick start
 
@@ -49,7 +50,7 @@ make release       # optimized build → build/fused_release
 make disker        # image formatter → build/disker
 make imgdump       # image dumper → build/imgdump
 make run-disker    # format 1 MB image → fused.img
-make test          # Odin unit tests (52)
+make test          # Odin unit tests
 make ci            # full pipeline: build + check + audit + test + FUSE smoke
 ```
 
@@ -69,6 +70,7 @@ make mount                     # foreground, debug, mountpoint=mnt
 | `-d` | FUSE protocol debug output (stderr) |
 | `--log-file=<path>` | Redirect Odin log messages to file (append) |
 | `--log-level=<level>` | Filter: debug (default), info, warn, error |
+| `--log-format=<fmt>` | Output format: long (default), short, full |
 
 ## Production logging
 
@@ -98,13 +100,14 @@ logrotate or pipe-based rotation:
 | `mount` | Build + mount in foreground |
 | `unmount` | fusermount3 -u mnt |
 | `clean` | Remove build/, logs/, mnt/, fused.img, kill running mount |
-| `test` | Odin unit tests (52) |
+| `test` | Odin unit tests |
 | `check` | C vs Odin struct size cross-check (11 structs) |
 | `audit` | Verify every `proc "c"` restores context + logger (35 callbacks) |
-| `smoke` | Basic FUSE smoke test inside isolated namespace (10 checks) |
-| `smoke-rw` | Read-write FUSE test (24 checks: create, write, mkdir, unlink, persistence, chmod, fallocate, symlink) |
+| `smoke` | Basic FUSE smoke test inside isolated namespace (18 checks) |
+| `smoke-rw` | Read-write FUSE test (37 checks: create, write, mkdir, unlink, persistence, chmod, fallocate, symlink, truncate, utimens, chown, fsync, deep-nest) |
 | `smoke-mt` | Multi-threaded stress test (reader + writer workers, 15s) |
-| `disker-test` | Disker CLI + imgdump JSON/text/hex validation (26 checks) |
+| `smoke-errors` | FUSE error path tests (ENOTDIR, ENOTEMPTY, EACCES, ENOENT, EEXIST, ENOSYS) |
+| `disker-test` | Disker CLI + imgdump JSON/text/hex validation (29 checks) |
 | `ci` | build + check + audit + test + tool integration + all smoke tests |
 | `verify` | check + audit (no FUSE needed) |
 | `verify-full` | check + audit + all smoke tests |
@@ -156,6 +159,6 @@ cross-checked against C ground truth at build time via `make check`.
 
 ## Remaining work
 
-9 of 44 `fuse_operations` callbacks are not yet wired:
+8 of 43 `fuse_operations` callbacks are not yet wired:
 `lock`, `flock`, `bmap`, `poll`, `setxattr`, `getxattr`, `listxattr`,
-`removexattr`. See `ROADMAP.md` for details.
+`removexattr`.

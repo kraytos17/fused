@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import tempfile
 
 from ..result import TestSuite, TestResult
 
@@ -55,6 +56,7 @@ def run_cli(imgdump: str) -> TestSuite:
     _test_help_text(suite, imgdump)
     _test_missing_path(suite, imgdump)
     _test_invalid_path(suite, imgdump)
+    _test_corrupted_image(suite, imgdump)
     return suite
 
 
@@ -189,3 +191,28 @@ def _test_missing_path(suite, imgdump):
 def _test_invalid_path(suite, imgdump):
     _, _, rc = _run(imgdump, ["/nonexistent"])
     _check(suite, "invalid-path-exit", rc == 1, f"exit={rc}")
+
+
+def _test_corrupted_image(suite, imgdump):
+    """imgdump exits 1 on corrupted images."""
+    with tempfile.NamedTemporaryFile(suffix=".img", delete=False) as f:
+        path = f.name
+        f.write(b"\0" * 512)  # All-zero sector — bad signature
+
+    _, _, rc = _run(imgdump, [path])
+    _check(suite, "corrupt-zero", rc == 1, f"exit={rc}")
+    os.unlink(path)
+
+    # Image with wrong end_sig (0x0BB0 required)
+    with tempfile.NamedTemporaryFile(suffix=".img", delete=False) as f:
+        path = f.name
+        data = bytearray(512)
+        data[0:7] = b"FUSED\0\0"
+        data[7] = 5  # rev_min
+        data[8] = 5  # rev_max
+        data[510:512] = b"\x00\x00"  # wrong end_sig
+        f.write(data)
+
+    _, _, rc = _run(imgdump, [path])
+    _check(suite, "corrupt-end-sig", rc == 1, f"exit={rc}")
+    os.unlink(path)

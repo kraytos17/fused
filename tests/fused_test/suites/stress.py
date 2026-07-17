@@ -32,8 +32,6 @@ def run(fused: str, image: str, mount: str, logs: str,
 
     os.makedirs(mount_abs, exist_ok=True)
     os.makedirs(logs_abs, exist_ok=True)
-
-    # Start FUSE daemon (—log-file tells it where to write its log)
     log_path = os.path.join(logs_abs, "fused_mt.log")
     daemon = subprocess.Popen(
         [fused, f"--log-file={log_path}", "--log-level=warn", image, "-f", mount_abs],
@@ -99,8 +97,6 @@ def run(fused: str, image: str, mount: str, logs: str,
     return suite
 
 
-# ── Worker functions ────────────────────────────────────────────────────
-
 def _reader_worker(mount: str, duration: int) -> tuple[int, int]:
     end = time.monotonic() + duration
     ops = 0
@@ -140,8 +136,6 @@ def _writer_worker(mount: str, duration: int) -> tuple[int, int]:
         time.sleep(0.05)
     return ops, errors
 
-
-# ── Main entry point ────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Multi-threaded FUSE stress test")
