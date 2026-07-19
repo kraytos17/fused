@@ -1,9 +1,13 @@
+// api.odin — High-level FUSE API wrappers.
+// Provides the Odin-side run loop, fill_dir helper, version checks,
+// and errno translation (nix).
 #+build linux
 package fuse3
 
 import "core:c"
 import "core:sys/posix"
 
+// current_libfuse_version returns the runtime libfuse3 version from the foreign function.
 current_libfuse_version :: #force_inline proc "contextless"() -> Libfuse_Version {
 	return Libfuse_Version {
 		major   = FUSE_USE_VERSION_MAJOR,
@@ -13,12 +17,14 @@ current_libfuse_version :: #force_inline proc "contextless"() -> Libfuse_Version
 	}
 }
 
+// run starts the FUSE event loop with the given operations and user_data.
 @(require_results)
 run :: proc "c"(argc: c.int, argv: [^]cstring, ops: ^Operations, user_data: rawptr) -> c.int {
 	v := current_libfuse_version()
 	return fuse_main_real_versioned(argc, argv, ops, size_of(Operations), &v, user_data)
 }
 
+// fill_dir adds an entry to a directory buffer during readdir.
 @(require_results)
 fill_dir :: #force_inline proc "c"(
 	filler: Fill_Dir_Proc,
@@ -30,11 +36,13 @@ fill_dir :: #force_inline proc "c"(
 	return filler(buf, name, stbuf, off, c.int(Fill_Dir_Flags.Defaults))
 }
 
+// check_version checks compile-time vs runtime FUSE versions are compatible.
 check_version :: #force_inline proc "contextless"() -> (major, minor: c.int) {
 	v := fuse_version()
 	return v / 100, v % 100
 }
 
+// pkgversion returns the libfuse3 package version string.
 pkgversion :: #force_inline proc "contextless"() -> cstring {
 	return fuse_pkgversion()
 }

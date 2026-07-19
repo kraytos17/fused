@@ -60,7 +60,7 @@ volume_open :: proc(path: string) -> (vol: Volume, err: FS_Error) {
 		os.close(fd)
 		return {}, verr
 	}
-	
+
 	vol.master = master
 	alloc_cache_init(&vol.cache, &vol.master)
 	if .Journal_V2 in master.features {
@@ -105,9 +105,11 @@ make_file_handle :: proc(cluster: Cluster, offset: Sector_Offset, idx: int) -> F
 
 		runs, rok := resolve_extents(vol, new_c, new_o)
 		defer delete(runs)
-		if !rok || len(runs) == 0 { return {}, false }
+		if rok != .None || len(runs) == 0 { return {}, false }
 
-		new_state := LFN_Bump_State{cluster = new_c, offset = new_o, sector = runs[0].sector, next_byte = 0}
+		new_state := LFN_Bump_State{
+			cluster = new_c, offset = new_o, sector = runs[0].sector, next_byte = 0,
+		}
 		bump.state = new_state
 		s = new_state
 	}
@@ -123,6 +125,7 @@ make_file_handle :: proc(cluster: Cluster, offset: Sector_Offset, idx: int) -> F
 		sector  = u16(s.offset),
 		_pad    = s.next_byte,
 	}
+
 	new_state := LFN_Bump_State{cluster = s.cluster, offset = s.offset, sector = s.sector, next_byte = s.next_byte + needed}
 	bump.state = new_state
 	return ptr, true

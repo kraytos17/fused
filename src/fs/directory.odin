@@ -5,6 +5,7 @@ package fs
 import "core:log"
 import "core:mem"
 
+// entry_short_name returns the file name from a Directory_Entry (up to first null byte).
 entry_short_name :: proc "contextless" (entry: ^Directory_Entry) -> string {
 	n := 0
 	for n < 16 && entry.file_name[n] != 0 {
@@ -13,11 +14,12 @@ entry_short_name :: proc "contextless" (entry: ^Directory_Entry) -> string {
 	return string(entry.file_name[:n])
 }
 
-read_directory_entries :: proc(vol: ^Volume, cluster: Cluster, sector_offset: Sector_Offset) -> (entries: [dynamic]Directory_Entry, ok: bool) {
-	runs, runs_ok := resolve_extents(vol, cluster, sector_offset)
+// read_directory_entries reads all directory entries in a directory's extent chain.
+read_directory_entries :: proc(vol: ^Volume, cluster: Cluster, sector_offset: Sector_Offset) -> (entries: [dynamic]Directory_Entry, err: FS_Error) {
+	runs, runs_err := resolve_extents(vol, cluster, sector_offset)
 	defer delete(runs)
-	if !runs_ok {
-		return {}, false
+	if runs_err != .None {
+		return {}, runs_err
 	}
 
 	features := vol.master.features
@@ -29,7 +31,7 @@ read_directory_entries :: proc(vol: ^Volume, cluster: Cluster, sector_offset: Se
 		for si in 0 ..< n {
 			sec := Sector(u64(run.sector) + u64(si))
 			if !sector_read(vol, sec, sector_buf[:]) {
-				return entries, false
+				return entries, .Sector_Read_Error
 		}
 		for i in 0 ..< deps {
 			entry := (^Directory_Entry)(mem.ptr_offset(&sector_buf[0], i * des))
@@ -37,9 +39,10 @@ read_directory_entries :: proc(vol: ^Volume, cluster: Cluster, sector_offset: Se
 			}
 		}
 	}
-	return entries, true
+	return entries, .None
 }
 
+// resolve_lfn reconstructs a long filename from the LFN data sector.
 resolve_lfn :: proc(vol: ^Volume, entry: ^Directory_Entry, allocator := context.allocator) -> (name: string, ok: bool) {
 	if .LFN not_in entry.flags {
 		return entry_short_name(entry), true
@@ -51,7 +54,10 @@ resolve_lfn :: proc(vol: ^Volume, entry: ^Directory_Entry, allocator := context.
 	}
 
 	ce_buf: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-	read_cluster_entry_table(vol, Cluster(ptr.cluster), &ce_buf) or_return
+	if read_cluster_entry_table(vol, Cluster(ptr.cluster), &ce_buf) != .None { 
+		return "", false 
+	}
+	
 	target: Cluster_Entry
 	for &t in ce_buf {
 		if t.sector_start == ptr.sector && .Allocated in t.state {
@@ -94,8 +100,8 @@ resolve_lfn :: proc(vol: ^Volume, entry: ^Directory_Entry, allocator := context.
 			break
 		}
 
-		next, found_next := find_cluster_entry(vol, Cluster(current_entry.next_cluster), Sector_Offset(current_entry.next_sector_index))
-		if !found_next {
+		next, find_err := find_cluster_entry(vol, Cluster(current_entry.next_cluster), Sector_Offset(current_entry.next_sector_index))
+		if find_err != .None {
 			break
 		}
 		current_cluster = Cluster(current_entry.next_cluster)
@@ -107,6 +113,7 @@ resolve_lfn :: proc(vol: ^Volume, entry: ^Directory_Entry, allocator := context.
 	return string(data[:]), true
 }
 
+// write_directory_entry_at writes a single Directory_Entry back to disk.
 write_directory_entry_at :: proc(vol: ^Volume, cluster: Cluster, sector_offset: Sector_Offset, entry_index: int, entry: ^Directory_Entry) -> bool {
 	buf: [SECTOR_SIZE]u8
 	table_sector := Sector(u64(cluster) * vol.master.cluster_size + u64(sector_offset))

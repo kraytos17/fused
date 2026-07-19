@@ -28,8 +28,8 @@ test_dir_many_entries_across_extents :: proc(t: ^testing.T) {
 	zero: [fs.SECTOR_SIZE]u8
 	fs.sector_write(&vol, druns[0].sector, zero[:])
 
-	ce, ce_ok := fs.find_cluster_entry(&vol, dc, d_o)
-	testing.expect(t, ce_ok, "CE")
+	ce, ce_err := fs.find_cluster_entry(&vol, dc, d_o)
+	testing.expectf(t, ce_err == .None, "CE")
 
 	write_file_entry :: proc(vol: ^fs.Volume, dc: fs.Cluster, ce: fs.Cluster_Entry, didx: int, name: string) {
 		e := fs.Directory_Entry{flags = fs.Dir_Flags{.Allocated, .Exists}}
@@ -67,8 +67,8 @@ test_dir_many_entries_across_extents :: proc(t: ^testing.T) {
 	}
 
 	// Write entries in the new sector
-	new_runs, nr_ok := fs.resolve_extents(&vol, dc, d_o)
-	testing.expect(t, nr_ok, "resolve_extents after extend")
+	new_runs, nr_err := fs.resolve_extents(&vol, dc, d_o)
+	testing.expectf(t, nr_err == .None, "resolve_extents after extend")
 	last_run := new_runs[len(new_runs) - 1]
 	last_sec := fs.Sector(u64(last_run.sector) + u64(last_run.count) - 1)
 	fs.sector_read(&vol, last_sec, buf[:])
@@ -146,8 +146,8 @@ test_dir_reuse_slot_in_extended_sector :: proc(t: ^testing.T) {
 	zero: [fs.SECTOR_SIZE]u8
 	fs.sector_write(&vol, druns[0].sector, zero[:])
 
-	ce, ce_ok := fs.find_cluster_entry(&vol, dc, d_o)
-	testing.expect(t, ce_ok, "CE")
+	ce, ce_err := fs.find_cluster_entry(&vol, dc, d_o)
+	testing.expectf(t, ce_err == .None, "CE")
 
 	// Fill first sector
 	e := fs.Directory_Entry{flags = fs.Dir_Flags{.Allocated, .Exists}}
@@ -163,8 +163,8 @@ test_dir_reuse_slot_in_extended_sector :: proc(t: ^testing.T) {
 	_, _, ext_err := fs.allocate_sectors(&vol, dc, d_o, et + 1, .Directory)
 	testing.expect_value(t, ext_err, fs.FS_Error.None)
 
-	new_runs, nr_ok := fs.resolve_extents(&vol, dc, d_o)
-	testing.expect(t, nr_ok, "resolve_extents")
+	new_runs, nr_err := fs.resolve_extents(&vol, dc, d_o)
+	testing.expectf(t, nr_err == .None, "resolve_extents")
 	last_run := new_runs[len(new_runs) - 1]
 	last_sec := fs.Sector(u64(last_run.sector) + u64(last_run.count) - 1)
 	fs.sector_write(&vol, last_sec, zero[:])

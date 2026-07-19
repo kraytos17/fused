@@ -8,13 +8,14 @@ import os
 import subprocess
 import sys
 import time
-
-if __name__ == "__main__":
-    _d = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if _d not in sys.path:
-        sys.path.insert(0, _d)
-
+from dataclasses import dataclass
 from fused_test.result import TestSuite, TestResult
+
+
+@dataclass
+class WorkerResult:
+    ops: int
+    errors: int
 
 
 def run(fused: str, image: str, mount: str, logs: str,
@@ -72,14 +73,14 @@ def run(fused: str, image: str, mount: str, logs: str,
         for future in concurrent.futures.as_completed(futures):
             name = futures[future]
             try:
-                ops, errors = future.result()
-                if ops == 0 and errors > 0:
+                r = future.result()
+                if r.ops == 0 and r.errors > 0:
                     suite.add(TestResult(name=f"stress-{name}", passed=False,
-                                         detail=f"0 ops, {errors} errors (daemon unresponsive)"))
+                                         detail=f"0 ops, {r.errors} errors (daemon unresponsive)"))
                 else:
-                    detail = f"{ops} ops"
-                    if errors:
-                        detail += f", {errors} transient errors"
+                    detail = f"{r.ops} ops"
+                    if r.errors:
+                        detail += f", {r.errors} transient errors"
                     suite.add(TestResult(name=f"stress-{name}", passed=True, detail=detail))
             except Exception as e:
                 suite.add(TestResult(name=f"stress-{name}", passed=False, detail=str(e)))
@@ -97,7 +98,7 @@ def run(fused: str, image: str, mount: str, logs: str,
     return suite
 
 
-def _reader_worker(mount: str, duration: int) -> tuple[int, int]:
+def _reader_worker(mount: str, duration: int) -> WorkerResult:
     end = time.monotonic() + duration
     ops = 0
     errors = 0
@@ -112,10 +113,10 @@ def _reader_worker(mount: str, duration: int) -> tuple[int, int]:
                     errors += 1
                 time.sleep(0.01)
         time.sleep(0.2)
-    return ops, errors
+    return WorkerResult(ops=ops, errors=errors)
 
 
-def _writer_worker(mount: str, duration: int) -> tuple[int, int]:
+def _writer_worker(mount: str, duration: int) -> WorkerResult:
     end = time.monotonic() + duration
     ops = 0
     errors = 0
@@ -134,7 +135,7 @@ def _writer_worker(mount: str, duration: int) -> tuple[int, int]:
         except Exception:
             errors += 1
         time.sleep(0.05)
-    return ops, errors
+    return WorkerResult(ops=ops, errors=errors)
 
 
 if __name__ == "__main__":

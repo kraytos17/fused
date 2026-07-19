@@ -40,7 +40,7 @@ journal_seq_next :: proc(master: ^Master_Record) -> Journal_Seq {
 }
 
 @private
-intent_log_read :: proc(vol: ^Volume) -> (intent_log: Intent_Log, ok: bool) {
+_intent_log_read :: proc(vol: ^Volume) -> (intent_log: Intent_Log, ok: bool) {
 	raw: [SECTOR_SIZE]u8
 	if !sector_read(vol, intent_log_sector(&vol.master), raw[:]) {
 		return {}, false
@@ -61,7 +61,7 @@ intent_log_read :: proc(vol: ^Volume) -> (intent_log: Intent_Log, ok: bool) {
 }
 
 @private
-intent_log_write :: proc(vol: ^Volume, log: ^Intent_Log) -> bool {
+_intent_log_write :: proc(vol: ^Volume, log: ^Intent_Log) -> bool {
 	raw: [SECTOR_SIZE]u8
 	dst := (^Intent_Log)(&raw[0])
 	dst^ = log^
@@ -80,7 +80,7 @@ intent_log_begin :: proc(vol: ^Volume) -> bool {
 		seq   = u64(seq),
 		count = 0,
 	}
-	return intent_log_write(vol, &log)
+	return _intent_log_write(vol, &log)
 }
 
 intent_log_commit :: proc(vol: ^Volume, entries: []Intent_Log_Entry) -> bool {
@@ -95,7 +95,7 @@ intent_log_commit :: proc(vol: ^Volume, entries: []Intent_Log_Entry) -> bool {
 		for i in 0 ..< min(len(entries), MAX_JOURNAL_ENTRIES_v6) {
 			log.entries[i] = entries[i]
 		}
-		if !intent_log_write(vol, &log) {
+		if !_intent_log_write(vol, &log) {
 			return false
 		}
 	}
@@ -119,7 +119,7 @@ write_master_record :: proc(vol: ^Volume) -> bool {
 }
 
 intent_log_recover :: proc(vol: ^Volume) {
-	intent_log, ok := intent_log_read(vol)
+	intent_log, ok := _intent_log_read(vol)
 	if !ok || intent_log.magic != JOURNAL_MAGIC {
 		return
 	}
@@ -130,7 +130,7 @@ intent_log_recover :: proc(vol: ^Volume) {
 	table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 	for i in 0 ..< int(intent_log.count) {
 		entry := intent_log.entries[i]
-		if !read_cluster_entry_table(vol, Cluster(entry.cluster), &table) {
+		if read_cluster_entry_table(vol, Cluster(entry.cluster), &table) != .None {
 			log.warnf("  entry %d: cluster %d — CE table not readable (may be corrupted)", i, entry.cluster)
 			continue
 		}
@@ -303,7 +303,7 @@ journal_v2_recover :: proc(vol: ^Volume) {
 
 				je := rec.entries[ei]
 				table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-				if !read_cluster_entry_table(vol, Cluster(je.cluster), &table) {
+				if read_cluster_entry_table(vol, Cluster(je.cluster), &table) != .None {
 					continue
 				}
 				if int(je.ce_index) >= len(table) {
@@ -322,7 +322,7 @@ journal_v2_recover :: proc(vol: ^Volume) {
 					next_cluster      = je.next_cluster,
 					next_sector_index = je.next_sector_index,
 				}
-				write_cluster_entry_table(vol, Cluster(je.cluster), &table)
+				_ = write_cluster_entry_table(vol, Cluster(je.cluster), &table)
 				replayed += 1
 			}
 		}
@@ -330,6 +330,7 @@ journal_v2_recover :: proc(vol: ^Volume) {
 			W = hdr.seq + 1
 		}
 	}
+
 	journal_v2_set_watermark(&vol.master, W)
 	if replayed > 0 || W > journal_v2_watermark(&vol.master) {
 		write_master_record(vol)

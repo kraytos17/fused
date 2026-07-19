@@ -1,13 +1,11 @@
 build/
 fused.img
 tmp/
-docs/
 mnt/
 logs/
 *.img
 *.bin
 __pycache__/
-ROADMAP.md
-journaling-architecture-plan.md
-fused-further-refactor.md
-fused-python-test-infra-refactor.md
+.pytest_cache/
+.venv/
+tests/test_bin

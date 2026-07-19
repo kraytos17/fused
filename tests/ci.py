@@ -6,32 +6,21 @@
 #
 # Orchestrates all phases: static analysis, unit tests, tool tests, FUSE smoke.
 
-from fused_test.result import TestSuite
-
 import argparse
 import os
 import subprocess
 import sys
 
+from fused_test.result import TestSuite
+
 _tests_dir = os.path.dirname(os.path.abspath(__file__))
 if _tests_dir not in sys.path:
     sys.path.insert(0, _tests_dir)
-
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 BUILD = os.path.join(ROOT, "build")
 LOGS = os.path.join(ROOT, "logs")
 MOUNT = os.path.join(ROOT, "mnt")
-
-
-def phase(label: str, suites: list[TestSuite]) -> tuple[int, int]:
-    print(f"== {label} ==")
-    total_p = total_f = 0
-    for s in suites:
-        s.print_summary()
-        total_p += s.passed
-        total_f += s.failed
-    return total_p, total_f
 
 
 def make_suite(name, cmd, cwd=None):
@@ -44,17 +33,25 @@ def make_suite(name, cmd, cwd=None):
 
 
 def phase_static():
-    return phase("Phase 1: Build + static analysis", [
+    suites = [
         make_suite("struct sizes", ["make", "check"]),
         make_suite("context audit", ["make", "audit"]),
         make_suite("vet", ["make", "vet"]),
-    ])
+    ]
+    print("== Phase 1: Build + static analysis ==")
+    total_p = total_f = 0
+    for s in suites:
+        s.print_summary()
+        total_p += s.passed
+        total_f += s.failed
+    return total_p, total_f
 
 
 def phase_unit():
-    return phase("Phase 2: Unit tests", [
-        make_suite("odin test", ["make", "test"]),
-    ])
+    print("== Phase 2: Unit tests ==")
+    s = make_suite("odin test", ["make", "test"])
+    s.print_summary()
+    return s.passed, s.failed
 
 
 def phase_tools(skip=False):
@@ -62,18 +59,12 @@ def phase_tools(skip=False):
         print("== Phase 3: Tool integration tests ==")
         print("  (skipped)")
         return 0, 0
-    # Build required binaries first (skip if already done by Makefile)
-    if not os.path.isfile(os.path.join(BUILD, "disker")):
-        subprocess.run(["make", "disker", "imgdump"], cwd=ROOT)
-    s = TestSuite(name="Tool integration")
-    import fused_test.suites.disker as ds
-    disk_suite = ds.run(
-        os.path.join(BUILD, "disker"),
-        os.path.join(BUILD, "imgdump"),
-    )
-    for r in disk_suite.results:
-        s.results.append(r)
-    return phase("Phase 3: Tool integration tests", [s])
+    print("== Phase 3: Tool integration tests ==")
+    s = make_suite("tool tests",
+                   ["make", "pytest", "ARGS=-v -m tool --tb=short"],
+                   cwd=ROOT)
+    s.print_summary()
+    return s.passed, s.failed
 
 
 def phase_fuse(skip=False):
@@ -87,44 +78,31 @@ def phase_fuse(skip=False):
         print("  WARN: /dev/fuse or unshare missing — skipping FUSE tests")
         return 0, 0
 
-    # Build
-    subprocess.run(["make", "build", "run-disker"], cwd=ROOT, check=True)
+    # Build + create image
+    subprocess.run(["make", "build", "create-image"], cwd=ROOT, check=True)
 
     harness = os.path.join(ROOT, "tests", "run_in_namespace.sh")
-    total_p = total_f = 0
-    suites = [
-        ("basic", "smoke-basic", "60",
-         "python3", "-m", "fused_test.suites.basic"),
-        ("rw", "smoke-rw", "120",
-         "python3", "-m", "fused_test.suites.rw"),
-        ("errors", "smoke-errors", "60",
-         "python3", "-m", "fused_test.suites.errors"),
-        ("mt", "smoke-mt", "120",
-         "python3", "-m", "fused_test.suites.stress"),
-    ]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = _tests_dir + ":" + env.get("PYTHONPATH", "")
 
-    for label, result_name, timeout, *runner in suites:
-        env = os.environ.copy()
-        env["PYTHONPATH"] = _tests_dir + ":" + env.get("PYTHONPATH", "")
-        r = subprocess.run(
-            [harness, timeout] + runner +
-            ["--fused", os.path.join(BUILD, "fused"),
-             "--image", os.path.join(ROOT, "fused.img"),
-             "--mount", MOUNT,
-             "--logs", LOGS],
-            capture_output=True, text=True, env=env, cwd=ROOT,
-        )
-        sys.stdout.write(r.stdout)
-        if r.stderr:
-            sys.stderr.write(r.stderr)
-        s = TestSuite(name=label)
-        s.add_result(result_name, r.returncode == 0,
-                     detail=r.stdout.strip() if r.returncode != 0 else "")
-        s.print_summary()
-        total_p += s.passed
-        total_f += s.failed
+    print("== Phase 4: FUSE smoke tests ==")
 
-    return total_p, total_f
+    r = subprocess.run(
+        [harness, "120", "uv", "run", "pytest", "tests/", "-m", "fuse", "-v", "--tb=short",
+         "--fused", os.path.join(BUILD, "fused"),
+         "--image", os.path.join(ROOT, "fused.img"),
+         "--mount", MOUNT,
+         "--logs", LOGS],
+        capture_output=True, text=True, env=env, cwd=ROOT,
+    )
+    sys.stdout.write(r.stdout)
+    if r.stderr:
+        sys.stderr.write(r.stderr)
+    s = TestSuite(name="FUSE smoke")
+    s.add_result("fuse-smoke", r.returncode == 0,
+                 detail=r.stdout.strip() if r.returncode != 0 else "")
+    s.print_summary()
+    return s.passed, s.failed
 
 
 def main():

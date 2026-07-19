@@ -2,9 +2,10 @@
 #+build linux
 package fs
 
-resolve_extents :: proc(vol: ^Volume, start_cluster: Cluster, start_offset: Sector_Offset) -> (runs: [dynamic]Extent_Run, ok: bool) {
+// resolve_extents walks a cluster-entry chain and returns a flat list of extent runs.
+resolve_extents :: proc(vol: ^Volume, start_cluster: Cluster, start_offset: Sector_Offset) -> (runs: [dynamic]Extent_Run, err: FS_Error) {
 	if start_cluster == 0 {
-		return {}, false
+		return {}, .Entry_Not_Found
 	}
 
 	stack_buf: [32]Extent_Run
@@ -14,10 +15,10 @@ resolve_extents :: proc(vol: ^Volume, start_cluster: Cluster, start_offset: Sect
 	cluster_size := u64(vol.master.cluster_size)
 	max_steps := int(vol.master.cluster_map_size) + 1
 	for guard in 0 ..< max_steps {
-		entry, ec, step := chain_step(vol, &cursor, guard, max_steps)
+		entry, ec, step := _chain_step(vol, &cursor, guard, max_steps)
 		if step == .Corrupted {
 			if on_heap { delete(runs) }
-			return {}, false
+			return {}, .Entry_Not_Found
 		}
 
 		er := Extent_Run{
@@ -42,5 +43,5 @@ resolve_extents :: proc(vol: ^Volume, start_cluster: Cluster, start_offset: Sect
 		runs = make([dynamic]Extent_Run, n, n, context.temp_allocator)
 		copy(runs[:], stack_buf[:n])
 	}
-	return runs, true
+	return runs, .None
 }

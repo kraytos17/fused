@@ -1,14 +1,15 @@
 // main.odin — fused read-only FUSE mounter.
 //
 // Opens a fused disk image, validates the MasterRecord, wires the
-// FUSE callbacks from ops.odin, and calls fuse3.run.
+// FUSE callbacks from the mounter package (core.odin, create.odin, dir.odin,
+// read.odin, write.odin, misc.odin), and calls fuse3.run.
 //
 // Usage: fused [--log-file=<path>] [--log-level=<level>] [--log-format=<format>] <image-path> [fuse-options...] <mountpoint>
 // Example: fused --log-file=fused.log --log-level=warn fused.img -f mnt
 // Levels: debug, info, warn, error (default: debug)
 // Formats: long (default, with date/time/location), short (level only), full (level + thread id)
 #+build linux
-package main
+package mounter
 
 import "base:runtime"
 import "core:c"
@@ -29,7 +30,7 @@ usage :: proc() {
 	fmt.println("         -f (foreground, default), -d (FUSE debug), -s (single-threaded)")
 }
 
-main :: proc() {
+run :: proc() {
 	context = runtime.default_context()
 	for arg in os.args[1:] {
 		if arg == "--help" || arg == "-h" {

@@ -2,6 +2,7 @@
 #+build linux
 package fs
 
+// Resolved_Entry bundles a resolved Directory_Entry with its disk location.
 Resolved_Entry :: struct {
 	entry:       Directory_Entry,
 	cluster:     Cluster,
@@ -9,6 +10,9 @@ Resolved_Entry :: struct {
 	entry_index: int,
 }
 
+// resolve_path walks a path string through the directory tree and returns the final entry.
+// It handles both short names and LFNs, uses manual component parsing (no heap alloc),
+// and returns false if any intermediate path component is missing or not a directory.
 resolve_path :: proc(vol: ^Volume, path: string, allocator := context.allocator) -> (res: Resolved_Entry, ok: bool) {
 	if path == "/" || len(path) == 0 {
 		res.entry = Directory_Entry{
@@ -16,6 +20,7 @@ resolve_path :: proc(vol: ^Volume, path: string, allocator := context.allocator)
 			sector_index   = vol.master.root_sector_index,
 			stored_cluster = vol.master.root_cluster,
 		}
+
 		res.cluster = Cluster(vol.master.root_cluster)
 		res.offset  = Sector_Offset(vol.master.root_sector_index)
 		return res, true
@@ -47,9 +52,9 @@ resolve_path :: proc(vol: ^Volume, path: string, allocator := context.allocator)
 	for comp_idx in 0 ..< n_comps {
 		target  := path[comps[comp_idx].start:comps[comp_idx].end]
 		is_last := comp_idx == n_comps - 1
-		dirs, dirs_ok := read_directory_entries(vol, current_cluster, current_offset)
+		dirs, dirs_err := read_directory_entries(vol, current_cluster, current_offset)
 		defer delete(dirs)
-		if !dirs_ok { return {}, false }
+		if dirs_err != .None { return {}, false }
 
 		found := false
 		for &d, didx in dirs {

@@ -8,6 +8,7 @@ import "core:os"
 import "core:testing"
 import "src:fs"
 
+// test_alloc_fresh — allocates sectors from scratch
 @test
 test_alloc_fresh :: proc(t: ^testing.T) {
 	vol, vol_ok := open_test_volume()
@@ -17,8 +18,8 @@ test_alloc_fresh :: proc(t: ^testing.T) {
 	fc, fo, err := fs.allocate_sectors(&vol, 0, 0, 10, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
 
-	runs, runs_ok := fs.resolve_extents(&vol, fc, fo)
-	testing.expect(t, runs_ok, "resolve_extents")
+	runs, ext_err := fs.resolve_extents(&vol, fc, fo)
+	testing.expectf(t, ext_err == .None, "resolve_extents")
 
 	total: u64
 	for r in runs {total += u64(r.count)}
@@ -28,6 +29,7 @@ test_alloc_fresh :: proc(t: ^testing.T) {
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
+// test_alloc_no_overlap — verifies multiple allocations don't overlap
 @test
 test_alloc_no_overlap :: proc(t: ^testing.T) {
 	vol, vol_ok := open_test_volume()
@@ -46,7 +48,7 @@ test_alloc_no_overlap :: proc(t: ^testing.T) {
 	defer delete(bitmap)
 	for c in 0 ..< vol.master.cluster_map_size {
 		table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
-		if !fs.read_cluster_entry_table(&vol, fs.Cluster(c), &table) {continue}
+		if fs.read_cluster_entry_table(&vol, fs.Cluster(c), &table) != .None {continue}
 		for &e in table {
 			if .Allocated not_in e.state {continue}
 			run_sector := u64(c) * vol.master.cluster_size + u64(e.sector_start)
@@ -63,6 +65,7 @@ test_alloc_no_overlap :: proc(t: ^testing.T) {
 	}
 }
 
+// test_alloc_free_reuse — verifies freed space is reused
 @test
 test_alloc_free_reuse :: proc(t: ^testing.T) {
 	vol, vol_ok := open_test_volume()
@@ -86,6 +89,7 @@ test_alloc_free_reuse :: proc(t: ^testing.T) {
 	testing.expect_value(t, derr2, fs.FS_Error.None)
 }
 
+// test_alloc_free_loop — rapid allocate/deallocate cycle
 @test
 test_alloc_free_loop :: proc(t: ^testing.T) {
 	vol, vol_ok := open_test_volume()
@@ -103,6 +107,7 @@ test_alloc_free_loop :: proc(t: ^testing.T) {
 	}
 }
 
+// test_full_flag — verifies the FULL flag is set/cleared
 @test
 test_full_flag :: proc(t: ^testing.T) {
 	vol, vol_ok := open_test_volume()
@@ -121,6 +126,7 @@ test_full_flag :: proc(t: ^testing.T) {
 	testing.expect(t, .Full not_in cme2.flags, "FULL flag cleared")
 }
 
+// test_chain_consistency — verifies chain length after allocation
 @test
 test_chain_consistency :: proc(t: ^testing.T) {
 	vol, vol_ok := open_test_volume()
@@ -130,15 +136,15 @@ test_chain_consistency :: proc(t: ^testing.T) {
 	fc, fo, err := fs.allocate_sectors(&vol, 0, 0, vol.master.cluster_size + 4, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
 
-	_, runs_ok := fs.resolve_extents(&vol, fc, fo)
-	testing.expect(t, runs_ok, "resolve_extents")
+	_, ext_err := fs.resolve_extents(&vol, fc, fo)
+	testing.expectf(t, ext_err == .None, "resolve_extents")
 
 	tt: u64
 	current_c := fc
 	current_o := fo
 	for {
-		entry, entry_ok := fs.find_cluster_entry(&vol, current_c, current_o)
-		testing.expect(t, entry_ok, "chain link dead")
+		entry, entry_err := fs.find_cluster_entry(&vol, current_c, current_o)
+		testing.expectf(t, entry_err == .None, "chain link dead")
 		tt += u64(entry.allocation_size)
 		if entry.next_cluster == 0 {break}
 
@@ -151,6 +157,7 @@ test_chain_consistency :: proc(t: ^testing.T) {
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
+// test_extension — verifies extending an existing allocation
 @test
 test_extension :: proc(t: ^testing.T) {
 	vol, vol_ok := open_test_volume()
@@ -173,6 +180,7 @@ test_extension :: proc(t: ^testing.T) {
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
+// test_alloc_cache_stress — alloc/dealloc with bitmap cache
 @test
 test_alloc_cache_stress :: proc(t: ^testing.T) {
 	fd, open_err := os.open("fused.img", {.Read, .Write})
@@ -198,9 +206,9 @@ test_alloc_cache_stress :: proc(t: ^testing.T) {
 		testing.expectf(t, aerr == .None, "alloc iteration %d: %v", i, aerr)
 		if aerr != .None {return}
 
-		runs, rok := fs.resolve_extents(&vol, fc, fo)
-		testing.expectf(t, rok, "resolve extents iteration %d", i)
-		if !rok {return}
+		runs, ext_err := fs.resolve_extents(&vol, fc, fo)
+		testing.expectf(t, ext_err == .None, "resolve extents iteration %d", i)
+		if ext_err != .None {return}
 		tt: u64; for r in runs {tt += u64(r.count)}
 		testing.expectf(t, tt == 1, "iteration %d: expected 1 sector, got %d", i, tt)
 
@@ -208,7 +216,7 @@ test_alloc_cache_stress :: proc(t: ^testing.T) {
 		testing.expectf(t, derr == .None, "dealloc iteration %d: %v", i, derr)
 		if derr != .None {return}
 
-		_, rok2 := fs.resolve_extents(&vol, fc, fo)
-		testing.expectf(t, !rok2, "iteration %d: extents should be empty after dealloc", i)
+		_, ext_err2 := fs.resolve_extents(&vol, fc, fo)
+		testing.expectf(t, ext_err2 != .None, "iteration %d: extents should be empty after dealloc", i)
 	}
 }

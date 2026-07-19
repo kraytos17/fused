@@ -15,6 +15,7 @@ EXPECTED_DEMO := [?]u8{
 	0x06, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc8, 0x00, 0x5b,
 }
 
+// test_fs_core — opens the image, validates MasterRecord, finds Kernel file, verifies content
 @test
 test_fs_core :: proc(t: ^testing.T) {
 	vol, vol_ok := open_test_volume()
@@ -27,18 +28,18 @@ test_fs_core :: proc(t: ^testing.T) {
 	root_cluster := fs.Cluster(vol.master.root_cluster)
 	root_offset  := fs.Sector_Offset(vol.master.root_sector_index)
 
-	cme, ok_cme := fs.read_cluster_map_entry(&vol, root_cluster)
-	testing.expect(t, ok_cme, "cluster map entry")
+	cme, cme_err := fs.read_cluster_map_entry(&vol, root_cluster)
+	testing.expectf(t, cme_err == .None, "cluster map entry")
 	testing.expect(t, .Allocated in cme.flags, "root cluster allocated")
 
-	rd_ce, ok_rd := fs.find_cluster_entry(&vol, root_cluster, root_offset)
-	testing.expect(t, ok_rd, "root dir ClusterEntry")
+	rd_ce, rd_err := fs.find_cluster_entry(&vol, root_cluster, root_offset)
+	testing.expectf(t, rd_err == .None, "root dir ClusterEntry")
 	testing.expect(t, .Directory in rd_ce.state, "root dir is directory")
 
-	dirs, ok_dir := fs.read_directory_entries(&vol, root_cluster, fs.Sector_Offset(rd_ce.sector_start))
+	dirs, dirs_err := fs.read_directory_entries(&vol, root_cluster, fs.Sector_Offset(rd_ce.sector_start))
 	defer delete(dirs)
 
-	testing.expect(t, ok_dir, "read_directory_entries")
+	testing.expectf(t, dirs_err == .None, "read_directory_entries")
 	testing.expect(t, len(dirs) >= 1, "at least one entry")
 
 	kernel: fs.Directory_Entry
@@ -54,9 +55,9 @@ test_fs_core :: proc(t: ^testing.T) {
 	testing.expect(t, found, "Kernel entry")
 	kernel_cluster := fs.Cluster(kernel.stored_cluster)
 	kernel_offset  := fs.Sector_Offset(kernel.sector_index)
-	runs, ok_runs := fs.resolve_extents(&vol, kernel_cluster, kernel_offset)
+	runs, ext_err := fs.resolve_extents(&vol, kernel_cluster, kernel_offset)
 
-	testing.expect(t, ok_runs, "resolve_extents")
+	testing.expectf(t, ext_err == .None, "resolve_extents")
 	testing.expect(t, len(runs) > 0, "extents not empty")
 
 	total := u64(kernel.file_size)
@@ -86,6 +87,7 @@ test_fs_core :: proc(t: ^testing.T) {
 	}
 }
 
+// test_validate_master_error_paths — tests every error code from validate_master
 @test
 test_validate_master_error_paths :: proc(t: ^testing.T) {
 	m := fs.Master_Record {
@@ -127,6 +129,7 @@ test_validate_master_error_paths :: proc(t: ^testing.T) {
 	testing.expect_value(t, fs.validate_master(&m2, img_size), fs.FS_Error.Corrupt_Master_Record)
 }
 
+// test_display_flag_str_functions — tests cme_flags_str, ce_state_str, dir_flags_str
 @test
 test_display_flag_str_functions :: proc(t: ^testing.T) {
 	buf: [128]u8
@@ -153,6 +156,7 @@ test_display_flag_str_functions :: proc(t: ^testing.T) {
 	testing.expect_value(t, s6, "0")
 }
 
+// test_sector_read_write_bulk — tests sector_read_bulk/sector_write_bulk round-trip
 @test
 test_sector_read_write_bulk :: proc(t: ^testing.T) {
 	fd, open_err := os.open("fused.img", {.Read, .Write})
@@ -166,8 +170,8 @@ test_sector_read_write_bulk :: proc(t: ^testing.T) {
 	fs.alloc_cache_init(&vol.cache, &vol.master)
 	defer fs.alloc_cache_destroy(&vol.cache)
 
-	kernel_ce, ce_ok := fs.find_cluster_entry(&vol, fs.Cluster(master.root_cluster), fs.Sector_Offset(2))
-	testing.expect(t, ce_ok, "find_cluster_entry for Kernel")
+	kernel_ce, ce_err := fs.find_cluster_entry(&vol, fs.Cluster(master.root_cluster), fs.Sector_Offset(2))
+	testing.expectf(t, ce_err == .None, "find_cluster_entry for Kernel")
 	abs_sector := fs.Sector(u64(master.root_cluster) * master.cluster_size + u64(kernel_ce.sector_start))
 
 	orig := make([]u8, fs.SECTOR_SIZE)
@@ -201,6 +205,7 @@ test_sector_read_write_bulk :: proc(t: ^testing.T) {
 	fs.sector_write_bulk(&vol, abs_sector, orig)
 }
 
+// test_deallocate_sectors_edge_cases — tests dealledge cases (nil, allocate-then-deallocate)
 @test
 test_deallocate_sectors_edge_cases :: proc(t: ^testing.T) {
 	fd, open_err := os.open("fused.img", {.Read, .Write})
@@ -223,15 +228,15 @@ test_deallocate_sectors_edge_cases :: proc(t: ^testing.T) {
 	err = fs.deallocate_sectors(&vol, c, o)
 	testing.expect_value(t, err, fs.FS_Error.None)
 
-	_, found := fs.find_cluster_entry(&vol, c, o)
-	testing.expect(t, !found, "CE should be gone after dealloc")
+	_, find_err := fs.find_cluster_entry(&vol, c, o)
+	testing.expectf(t, find_err != .None, "CE should be gone after dealloc")
 
-	rce, rce_ok := fs.find_cluster_entry(&vol, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
-	testing.expect(t, rce_ok, "root cluster entry")
-	testing.expect(t, fs.write_cluster_entry_at(&vol, fs.Cluster(master.root_cluster), 0, &rce), "write_cluster_entry_at")
+	rce, rce_err := fs.find_cluster_entry(&vol, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+	testing.expectf(t, rce_err == .None, "root cluster entry")
+	testing.expectf(t, fs.write_cluster_entry_at(&vol, fs.Cluster(master.root_cluster), 0, &rce) == .None, "write_cluster_entry_at")
 
-	read_rce, read_ok := fs.find_cluster_entry(&vol, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
-	testing.expect(t, read_ok, "read back CE after write_cluster_entry_at")
+	read_rce, read_err := fs.find_cluster_entry(&vol, fs.Cluster(master.root_cluster), fs.Sector_Offset(master.root_sector_index))
+	testing.expectf(t, read_err == .None, "read back CE after write_cluster_entry_at")
 	testing.expect_value(t, read_rce.sector_start, rce.sector_start)
 	testing.expect_value(t, read_rce.allocation_size, rce.allocation_size)
 }

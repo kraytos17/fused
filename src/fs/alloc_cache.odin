@@ -6,11 +6,13 @@ import "core:container/bit_array"
 import "core:container/lru"
 
 @private
+// Alloc_Cache_Entry struct holding a cached bitmap and its used count
 Alloc_Cache_Entry :: struct {
 	bitmap: bit_array.Bit_Array,
 	used:   u16,
 }
 
+// Cluster_Bitmap_Cache LRU cache for cluster bitmaps
 Cluster_Bitmap_Cache :: struct {
 	lru:        lru.Cache(u64, Alloc_Cache_Entry),
 	hint:       u64,
@@ -18,36 +20,40 @@ Cluster_Bitmap_Cache :: struct {
 }
 
 @private
-alloc_cache_on_remove :: proc(key: u64, val: Alloc_Cache_Entry, user_data: rawptr) {
+_alloc_cache_on_remove :: proc(key: u64, val: Alloc_Cache_Entry, user_data: rawptr) {
 	b := val.bitmap
 	bit_array.destroy(&b)
 }
 
 ALLOC_CACHE_CAPACITY :: 1024
 
+// alloc_cache_init initializes the bitmap cache
 alloc_cache_init :: proc(cache: ^Cluster_Bitmap_Cache, master: ^Master_Record) {
 	cache.cache_size = int(master.cluster_size)
 	cache.hint = 0
 	lru.init(&cache.lru, ALLOC_CACHE_CAPACITY, context.allocator, context.allocator)
-	cache.lru.on_remove = alloc_cache_on_remove
+	cache.lru.on_remove = _alloc_cache_on_remove
 }
 
+// alloc_cache_destroy destroys the bitmap cache and frees entries
 alloc_cache_destroy :: proc(cache: ^Cluster_Bitmap_Cache) {
 	lru.destroy(&cache.lru, true)
 	cache^ = {}
 }
 
+// alloc_cache_invalidate removes a cluster's bitmap from cache
 alloc_cache_invalidate :: proc(cache: ^Cluster_Bitmap_Cache, cluster: u64) {
 	lru.remove(&cache.lru, cluster)
 }
 
 @private
-cache_bitmap :: #force_inline proc(cache: ^Cluster_Bitmap_Cache) -> bit_array.Bit_Array {
+_cache_bitmap :: #force_inline proc(cache: ^Cluster_Bitmap_Cache) -> bit_array.Bit_Array {
 	ba: bit_array.Bit_Array
 	bit_array.init(&ba, cache.cache_size, 0)
 	return ba
 }
 
+// alloc_cache_ensure returns the bitmap for a cluster (from cache or builds it)
 alloc_cache_ensure :: proc(cache: ^Cluster_Bitmap_Cache, vol: ^Volume, cluster: u64) -> (bitmap: bit_array.Bit_Array, used: u16, ok: bool) {
 	if u64(cluster) >= vol.master.cluster_map_size {
 		return {}, 0, false
@@ -65,10 +71,11 @@ alloc_cache_ensure :: proc(cache: ^Cluster_Bitmap_Cache, vol: ^Volume, cluster: 
 }
 
 @private
+// _alloc_cache_build builds a bitmap by scanning the CE table on disk
 _alloc_cache_build :: proc(cache: ^Cluster_Bitmap_Cache, vol: ^Volume, cluster: Cluster) {
-	bitmap := cache_bitmap(cache)
-	cme, cme_ok := read_cluster_map_entry(vol, cluster)
-	if !cme_ok {
+	bitmap := _cache_bitmap(cache)
+	cme, cme_err := read_cluster_map_entry(vol, cluster)
+	if cme_err != .None {
 		if err := lru.set(&cache.lru, u64(cluster), Alloc_Cache_Entry{bitmap, 0}); err != nil {
 			bit_array.destroy(&bitmap)
 		}
@@ -78,7 +85,7 @@ _alloc_cache_build :: proc(cache: ^Cluster_Bitmap_Cache, vol: ^Volume, cluster: 
 	bit_array.unsafe_set(&bitmap, int(cme.sector_index))
 	used: u16 = 0
 	table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-	if !read_cluster_entry_table(vol, cluster, &table) {
+	if read_cluster_entry_table(vol, cluster, &table) != .None {
 		if err := lru.set(&cache.lru, u64(cluster), Alloc_Cache_Entry{bitmap, used}); err != nil {
 			bit_array.destroy(&bitmap)
 		}
@@ -97,6 +104,7 @@ _alloc_cache_build :: proc(cache: ^Cluster_Bitmap_Cache, vol: ^Volume, cluster: 
 	}
 }
 
+// alloc_cache_count_free counts free sectors across all clusters
 alloc_cache_count_free :: proc(vol: ^Volume) -> u64 {
 	free: u64 = 0
 	for ci in 0 ..< int(vol.master.cluster_map_size) {

@@ -7,7 +7,9 @@ package fs
 Sector        :: distinct u64 // absolute sector number on disk
 Cluster       :: distinct u64 // cluster index
 Sector_Offset :: distinct u16 // sector offset within a cluster
+// Journal_Seq distinct type for journal sequence numbers
 Journal_Seq   :: distinct u64 // journal transaction sequence number
+// Byte_Offset distinct type for byte positions/sizes
 Byte_Offset   :: distinct u64 // byte position or size in the image
 
 SECTOR_SIZE                :: 512

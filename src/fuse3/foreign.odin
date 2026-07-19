@@ -12,6 +12,8 @@ import "core:c"
 foreign import libfuse3 "system:fuse3"
 
 foreign libfuse3 {
+	// fuse_main_real_versioned is the real entry point for fuse_main (the
+	// C macro expands to this when versioned symbols are enabled).
 	@(link_name = "fuse_main_real_versioned")
 	fuse_main_real_versioned :: proc "c"(
 		argc:      c.int,
@@ -22,9 +24,13 @@ foreign libfuse3 {
 		user_data: rawptr,
 	) -> c.int ---
 
+	// fuse_version returns the libfuse3 version as an integer (major*100 + minor).
 	fuse_version    :: proc "c"() -> c.int   ---
+	// fuse_pkgversion returns the libfuse3 version as a string.
 	fuse_pkgversion :: proc "c"() -> cstring ---
 
+	// fuse_get_context returns a pointer to the current FUSE context (valid only
+	// during the callback).
 	@(link_name = "fuse_get_context")
 	fuse_get_context :: proc "c"() -> ^Context ---
 }

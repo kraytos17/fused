@@ -2,6 +2,7 @@
 #+build linux
 package fs
 
+// validate_master validates a Master_Record for signature, version range, features, cluster size, and geometry
 validate_master :: proc(master: ^Master_Record, image_size: Byte_Offset) -> FS_Error {
 	if master.sig != FUSED_SIG {
 		return .Invalid_Signature

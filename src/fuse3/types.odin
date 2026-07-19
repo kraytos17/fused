@@ -1,3 +1,6 @@
+// types.odin — Cross-FFI struct types for the libfuse3 C API.
+// Every struct carries a compile-time #assert(size_of(T) == N)
+// to catch ABI drift between Odin and libfuse3.
 #+build linux
 package fuse3
 
@@ -179,48 +182,91 @@ Fill_Dir_Proc :: proc "c"(
 	flags: c.int,
 ) -> c.int
 
+// Operations maps 1:1 to libfuse3's fuse_operations struct.
+// Callbacks set to nil are silently skipped by libfuse3 (optional).
 Operations :: struct {
+	// required — path-based. Return attrs for the given path.
 	getattr:     proc "c"(path: cstring, stbuf: ^Stat, fi: ^File_Info) -> c.int,
+	// optional — read a symlink target. Return 0 on success, -errno on error.
 	readlink:    proc "c"(path: cstring, buf: [^]c.char, size: c.size_t) -> c.int,
+	// optional — create a device node. Return -ENOSYS to fall back.
 	mknod:       proc "c"(path: cstring, mode: posix.mode_t, rdev: posix.dev_t) -> c.int,
+	// required for writable — create a directory.
 	mkdir:       proc "c"(path: cstring, mode: posix.mode_t) -> c.int,
+	// required for writable — remove a file.
 	unlink:      proc "c"(path: cstring) -> c.int,
+	// required for writable — remove a directory.
 	rmdir:       proc "c"(path: cstring) -> c.int,
+	// optional — create a symbolic link.
 	symlink:     proc "c"(target: cstring, linkpath: cstring) -> c.int,
+	// required for writable — rename (cross-directory supported).
 	rename:      proc "c"(oldpath: cstring, newpath: cstring, flags: c.uint) -> c.int,
+	// optional — hard link. Return -ENOSYS if unsupported.
 	link:        proc "c"(oldpath: cstring, newpath: cstring) -> c.int,
+	// required — change file permissions.
 	chmod:       proc "c"(path: cstring, mode: posix.mode_t, fi: ^File_Info) -> c.int,
+	// required — change file ownership.
 	chown:       proc "c"(path: cstring, uid: posix.uid_t, gid: posix.gid_t, fi: ^File_Info) -> c.int,
+	// required — truncate or extend a file.
 	truncate:    proc "c"(path: cstring, size: posix.off_t, fi: ^File_Info) -> c.int,
+	// required — open a file. Set fi.fh for read/release.
 	open:        proc "c"(path: cstring, fi: ^File_Info) -> c.int,
+	// required for readable — read data. Return number of bytes read.
 	read:        proc "c"(path: cstring, buf: [^]c.char, size: c.size_t, off: posix.off_t, fi: ^File_Info) -> c.int,
+	// required for writable — write data. Return number of bytes written.
 	write:       proc "c"(path: cstring, buf: [^]c.char, size: c.size_t, off: posix.off_t, fi: ^File_Info) -> c.int,
+	// optional — filesystem statistics. Used by df.
 	statfs:      proc "c"(path: cstring, stbuf: ^posix.statvfs_t) -> c.int,
+	// optional — flush pending data. Called on every close(2).
 	flush:       proc "c"(path: cstring, fi: ^File_Info) -> c.int,
+	// required — release an open file. Cleanup happens here.
 	release:     proc "c"(path: cstring, fi: ^File_Info) -> c.int,
+	// optional — synchronise file contents.
 	fsync:       proc "c"(path: cstring, isdatasync: c.int, fi: ^File_Info) -> c.int,
+	// optional — set extended attribute.
 	setxattr:    proc "c"(path: cstring, name: cstring, value: [^]c.char, size: c.size_t, flags: c.int) -> c.int,
+	// optional — get extended attribute.
 	getxattr:    proc "c"(path: cstring, name: cstring, value: [^]c.char, size: c.size_t) -> c.int,
+	// optional — list extended attribute names.
 	listxattr:   proc "c"(path: cstring, list: [^]c.char, size: c.size_t) -> c.int,
+	// optional — remove extended attribute.
 	removexattr: proc "c"(path: cstring, name: cstring) -> c.int,
+	// required — open a directory for readdir.
 	opendir:     proc "c"(path: cstring, fi: ^File_Info) -> c.int,
+	// required for listing — fill directory entries via filler.
 	readdir:     proc "c"(path: cstring, buf: rawptr, filler: Fill_Dir_Proc, off: posix.off_t, fi: ^File_Info, flags: c.int) -> c.int,
+	// required — release a directory handle.
 	releasedir:  proc "c"(path: cstring, fi: ^File_Info) -> c.int,
+	// optional — synchronise directory contents.
 	fsyncdir:    proc "c"(path: cstring, isdatasync: c.int, fi: ^File_Info) -> c.int,
+	// required — initialise filesystem. Returns user_data pointer.
 	init:        proc "c"(conn: ^Conn_Info, cfg: ^Config) -> rawptr,
+	// optional — cleanup on unmount.
 	destroy:     proc "c"(private_data: rawptr),
+	// required — check file access permissions.
 	access:      proc "c"(path: cstring, mask: c.int) -> c.int,
+	// required for writable — create and open a new file.
 	create:      proc "c"(path: cstring, mode: posix.mode_t, fi: ^File_Info) -> c.int,
-	lock:        proc "c"(path: cstring, fi: ^File_Info, cmd: c.int, lock: rawptr) -> c.int, // struct flock*
+	// optional — lock a file region. struct flock* passed as raw lock arg.
+	lock:        proc "c"(path: cstring, fi: ^File_Info, cmd: c.int, lock: rawptr) -> c.int,
+	// optional — set file timestamps.
 	utimens:     proc "c"(path: cstring, tv: [^]posix.timespec, fi: ^File_Info) -> c.int,
+	// optional — map file blocks (not commonly implemented).
 	bmap:        proc "c"(path: cstring, blocksize: c.size_t, idx: ^c.uint64_t) -> c.int,
-	// FUSE_USE_VERSION 318 < 35 ⇒ int cmd; if we ever bump, change to c.uint.
+	// optional — device I/O control.
+	// FUSE_USE_VERSION 318 < 35 ⇒ cmd is c.int; if we ever bump to 35+ change to c.uint.
 	ioctl:       proc "c"(path: cstring, cmd: c.int, arg: rawptr, fi: ^File_Info, flags: c.uint, data: rawptr) -> c.int,
+	// optional — poll for I/O events.
 	poll:        proc "c"(path: cstring, fi: ^File_Info, ph: ^Pollhandle, reventsp: ^c.uint) -> c.int,
+	// required for zero-copy — write from a buffer vector.
 	write_buf:   proc "c"(path: cstring, buf: ^Bufvec, off: posix.off_t, fi: ^File_Info) -> c.int,
+	// required for zero-copy — read into a buffer vector.
 	read_buf:    proc "c"(path: cstring, bufp: ^^Bufvec, size: c.size_t, off: posix.off_t, fi: ^File_Info) -> c.int,
+	// optional — flock-style file locking.
 	flock:       proc "c"(path: cstring, fi: ^File_Info, op: c.int) -> c.int,
+	// required — pre-allocate or punch a hole in a file.
 	fallocate:   proc "c"(path: cstring, mode: c.int, off: posix.off_t, length: posix.off_t, fi: ^File_Info) -> c.int,
+	// optional — copy a range of bytes between two files.
 	copy_file_range: proc "c"(
 		path_in: cstring,
 		fi_in: ^File_Info,
@@ -231,7 +277,9 @@ Operations :: struct {
 		size: c.size_t,
 		flags: c.int,
 	) -> c.ssize_t,
+	// required — seek with SEEK_HOLE/SEEK_DATA support.
 	lseek:       proc "c"(path: cstring, off: posix.off_t, whence: c.int, fi: ^File_Info) -> posix.off_t,
+	// optional — extended stat for newer kernels.
 	statx:       proc "c"(path: cstring, flags: c.int, mask: c.int, stxbuf: rawptr, fi: ^File_Info) -> c.int,
 }
 

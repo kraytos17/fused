@@ -4,11 +4,11 @@ package main
 
 import "base:runtime"
 import "core:flags"
-import "core:fmt"
 import "core:log"
 import "core:os"
 import "src:fs"
 
+// Flags holds the CLI flags for the image dumper.
 Flags :: struct {
 	path:     string `args:"pos=0,required" usage:"Path to the fused disk image (.img file)"`,
 	json:     bool   `args:"name=json" usage:"Output as JSON (machine-readable)"`,
@@ -18,6 +18,8 @@ Flags :: struct {
 	overflow: [dynamic]string `args:"hidden"`,
 }
 
+// main is the CLI entry point for the dumper. It opens the image, parses
+// flags, and dispatches to text or JSON output.
 main :: proc() {
 	context = runtime.default_context()
 
@@ -48,15 +50,12 @@ main :: proc() {
 		return
 	}
 
-	needs_comma: bool
 	if f.json {
-		fmt.print(`{`)
+		print_json(&vol)
+		return
 	}
 
-	print_master(&vol, f.json, &needs_comma)
-	print_cluster_map(&vol, f.json, &needs_comma, f.all)
-	print_directory_tree(&vol, f.json, &needs_comma)
-	if f.json {
-		fmt.println(`}`)
-	}
+	print_master(&vol, false, nil)
+	print_cluster_map(&vol, false, nil, f.all)
+	print_directory_tree(&vol, false, nil)
 }

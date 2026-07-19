@@ -51,12 +51,12 @@ test_cache_bitmap_matches_disk :: proc(t: ^testing.T) {
 		if !bok {continue}
 
 		table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
-		if !fs.read_cluster_entry_table(&vol, fs.Cluster(ci), &table) {continue}
+		if fs.read_cluster_entry_table(&vol, fs.Cluster(ci), &table) != .None {continue}
 
 		expected_bitmap: bit_array.Bit_Array
 		bit_array.init(&expected_bitmap, vol.cache.cache_size, 0, context.temp_allocator)
-		cme, cme_ok := fs.read_cluster_map_entry(&vol, fs.Cluster(ci))
-		if cme_ok {
+		cme, cme_err := fs.read_cluster_map_entry(&vol, fs.Cluster(ci))
+		if cme_err == .None {
 			bit_array.unsafe_set(&expected_bitmap, int(cme.sector_index))
 		}
 		for &e in table {
@@ -98,7 +98,7 @@ test_cache_used_matches_disk :: proc(t: ^testing.T) {
 
 		expected_used: u16 = 0
 		table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
-		if !fs.read_cluster_entry_table(&vol, fs.Cluster(ci), &table) {continue}
+		if fs.read_cluster_entry_table(&vol, fs.Cluster(ci), &table) != .None {continue}
 		for &e in table {
 			if .Allocated in e.state {
 				expected_used += e.allocation_size
@@ -186,8 +186,8 @@ test_cache_allocate_matches_nil :: proc(t: ^testing.T) {
 	fc_c, fo_c, err_c := fs.allocate_sectors(&vol, 0, 0, 3, .File_Content)
 	testing.expect_value(t, err_c, fs.FS_Error.None)
 
-	runs_c, rok_c := fs.resolve_extents(&vol, fc_c, fo_c)
-	testing.expect(t, rok_c, "resolve_extents (cached)")
+	runs_c, ext_err_c := fs.resolve_extents(&vol, fc_c, fo_c)
+	testing.expectf(t, ext_err_c == .None, "resolve_extents (cached)")
 	tt_c: u64; for r in runs_c {tt_c += u64(r.count)}
 	testing.expect_value(t, tt_c, u64(3))
 
@@ -238,8 +238,8 @@ test_cache_stress_multi_cluster :: proc(t: ^testing.T) {
 	fc, fo, err := fs.allocate_sectors(&vol, 0, 0, needed, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
 
-	runs, rok := fs.resolve_extents(&vol, fc, fo)
-	testing.expect(t, rok, "resolve_extents")
+	runs, ext_err := fs.resolve_extents(&vol, fc, fo)
+	testing.expectf(t, ext_err == .None, "resolve_extents")
 	tt: u64
 	for r in runs {tt += u64(r.count)}
 	testing.expect_value(t, tt, needed)
@@ -254,7 +254,7 @@ test_cache_stress_multi_cluster :: proc(t: ^testing.T) {
 
 		expected_used: u16 = 0
 		table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
-		if !fs.read_cluster_entry_table(&vol, fs.Cluster(ci), &table) {continue}
+		if fs.read_cluster_entry_table(&vol, fs.Cluster(ci), &table) != .None {continue}
 		for &e in table {
 			if .Allocated in e.state {
 				expected_used += e.allocation_size
@@ -317,8 +317,8 @@ test_cache_many_small_alloc_free :: proc(t: ^testing.T) {
 		testing.expectf(t, err == .None, "alloc %d: expected None got %v", i, err)
 		if err != .None {return}
 
-		runs, rok := fs.resolve_extents(&vol, fc, fo)
-		testing.expect(t, rok, "resolve_extents")
+		runs, ext_err := fs.resolve_extents(&vol, fc, fo)
+		testing.expectf(t, ext_err == .None, "resolve_extents")
 		tt: u64; for r in runs {tt += u64(r.count)}
 		testing.expect_value(t, tt, u64(1))
 
@@ -330,7 +330,7 @@ test_cache_many_small_alloc_free :: proc(t: ^testing.T) {
 		_, used, bok := fs.alloc_cache_ensure(&vol.cache, &vol, u64(fc))
 		if !bok {continue}
 		table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
-		if !fs.read_cluster_entry_table(&vol, fc, &table) {continue}
+		if fs.read_cluster_entry_table(&vol, fc, &table) != .None {continue}
 		expected_used: u16 = 0
 		for &e in table {
 			if .Allocated in e.state {

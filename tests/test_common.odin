@@ -9,6 +9,7 @@ import "src:fs"
 TEST_IMG_SRC := "fused.img"
 TEST_IMG_DST := "/dev/shm/fused_test.img"
 
+// open_test_volume — opens test image and returns a Volume with initialized cache
 open_test_volume :: proc() -> (vol: fs.Volume, ok: bool) {
 	fd, fd_ok := open_test_image()
 	if !fd_ok { return {}, false }
@@ -27,12 +28,14 @@ open_test_volume :: proc() -> (vol: fs.Volume, ok: bool) {
 	return vol, true
 }
 
+// close_test_volume — closes a test Volume (destroys cache, closes fd)
 close_test_volume :: proc(vol: ^fs.Volume) {
 	fs.alloc_cache_destroy(&vol.cache)
 	os.close(vol.disk)
 	vol^ = {}
 }
 
+// open_test_image — returns a cached copy of the test image from /dev/shm
 open_test_image :: proc() -> (^os.File, bool) {
 	src_stale := true
 	src_fi, src_err := os.stat(TEST_IMG_SRC, context.temp_allocator)

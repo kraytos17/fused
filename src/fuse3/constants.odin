@@ -1,3 +1,4 @@
+// constants.odin — FUSE protocol constants and version markers.
 #+build linux
 package fuse3
 

@@ -3,7 +3,7 @@
 ## Overview
 
 fused is a FUSE filesystem daemon implemented in Odin. It provides a libfuse3
-FFI binding, a cluster-based on-disk format (rev 5 with feature flags), and
+FFI binding, a cluster-based on-disk format (rev 7 with feature flags), and
 read-write FUSE mounting (35 of 43 `fuse_operations` callbacks implemented).
 
 ```
@@ -21,24 +21,25 @@ read-write FUSE mounting (35 of 43 `fuse_operations` callbacks implemented).
 ### Packages
 
 | Package | Purpose | Depends on |
-|---|---|---|---|
+|---|---|---|
 | **`src/fuse3/`** | FFI binding to libfuse3. 43 `fuse_operations` callbacks, 12 cross-FFI structs with compile-time `#assert(size_of)`, 43 callback offsets verified against C ground truth. | `libfuse3.so` (system) |
-| **`src/fs/`** | Filesystem logic operating on raw disk images. No FUSE dependency. | `core:os` |
-| **`src/mounter/`** | FUSE callbacks (35 of 43 wired) that delegate to `src/fs/`. Translates `FS_Error` to negated errno. | `src/fs/`, `src/fuse3/` |
-| **`src/disker/`** | Standalone image formatter. Produces valid disk images without libfuse3. | `src/fs/` |
-| **`tools/imgdump/`** | Read-only image dumper. Walks the image structure and prints it in human-readable or JSON form. | `src/fs/` |
-| **`tests/`** | Odin unit tests, Python integration test suite (37 checks), struct-size cross-checks, context audit. | — |
+| **`src/fs/`** | Filesystem logic operating on raw disk images. No FUSE dependency. `Volume` struct bundles disk fd, master record, and alloc cache. | `core:os` |
+| **`src/mounter/`** | FUSE callbacks (35 of 43 wired) as `package mounter`. Each `fused_*` callback uses `begin_op()`/`end_op()` for locking. Translates `FS_Error` to negated errno via `fs_error_to_errno`. | `src/fs/`, `src/fuse3/` |
+| **`cmd/mount/`** | Binary entry point — `package main`, calls `mounter.run()`. | `src/mounter/` |
+| **`cmd/format/`** | Standalone image formatter. Produces valid disk images without libfuse3. | `src/fs/` |
+| **`cmd/dump/`** | Read-only image dumper. Walks the image structure and prints it in human-readable or JSON form. | `src/fs/` |
+| **`tests/`** | Odin unit tests (63), Python pytest integration (48), struct-size cross-checks, context audit. | — |
 
-## On-disk format (rev 5)
+## On-disk format (rev 7)
 
 ### MasterRecord (sector 0, 512 bytes)
 
 | Offset | Field | Type | Description |
 |---|---|---|---|
 | 0 | `sig` | `[7]u8` | Filesystem identifier: `"FUSED\0\0"` |
-| 7 | `rev_min` | `u8` | Minimum compatible format version (5). Rev 4 images had a single rev byte at offset 7 and can't be parsed by this layout. |
-| 8 | `rev_max` | `u8` | Format version written by formatter (5) |
-| 9 | `features` | `u64` | Feature flag bitmask (bit 0 = `.Uid_Gid`) |
+| 7 | `rev_min` | `u8` | Minimum compatible format version (6) |
+| 8 | `rev_max` | `u8` | Format version written by formatter (7) |
+| 9 | `features` | `Features` | `bit_set[Feature_Flag; u64]` — bit 0 = `.Uid_Gid`, bit 1 = `.Journal_V2` |
 | 17–22 | reserved | — | Zero |
 | 23 | `cluster_map_offset` | `u64` | Sector index of the first ClusterMapEntry (always 1) |
 | 31 | `cluster_map_size` | `u64` | Number of ClusterMapEntry records |
@@ -46,12 +47,14 @@ read-write FUSE mounting (35 of 43 `fuse_operations` callbacks implemented).
 | 47 | `root_sector_index` | `u16` | Sector offset within root_cluster for root directory data |
 | 49 | `root_cluster` | `u64` | Cluster index of the root directory |
 | 57–62 | reserved | — | Zero |
-| 63 | `resv` | `[447]u8` | Zero padding |
+| 63 | `resv` | `[453]u8` | Zero padding; sub-fields for journal seq, watermark, region size |
 | 510 | `end_sig` | `u16` | Magic sentinel: `0x0BB0` |
 
-**Feature flags** enable runtime dispatch. Setting `Uid_Gid` grows `Directory_Entry`
-from 48 to 56 bytes and drops `DIR_ENTRIES_PER_SECTOR` from 10 to 9. The mounter
-reads `master.features` and selects the correct entry size at runtime via
+**Feature flags** enable runtime dispatch. `.Uid_Gid` grows `Directory_Entry`
+from 48 to 56 bytes (9 entries/sector vs 10). `.Journal_V2` selects the
+physical redo-log WAL over the legacy intent log. The mounter reads
+`master.features` directly (it's a `bit_set` field, no transmute needed)
+and selects the correct entry size at runtime via
 `dir_entry_size()` / `dir_entries_per_sector()`.
 
 ### ClusterMapEntry (8 bytes, 64 per sector)
@@ -73,7 +76,7 @@ reads `master.features` and selects the correct entry size at runtime via
 | 13 | `sector_start` | `u16` | Sector offset within the cluster where this run begins |
 | 15 | `reserved` | `u8` | Zero |
 
-### DirectoryEntry (48–52 bytes, 10 or 9 per sector)
+### DirectoryEntry (48–56 bytes, 9–10 per sector)
 
 V4 format (no `Uid_Gid` feature): 48 bytes, 10 per sector.
 
@@ -111,7 +114,7 @@ Long filenames (>16 bytes) are stored in a bump-allocated data sector. The
 | 0 | `cluster` | `u64` |
 | 8 | `size` | `u32` |
 | 12 | `sector` | `u16` |
-| 14 | `_pad` | `u16` — byte offset within LFN data sector (0 for legacy) |
+| 14 | `_pad` | `u16` — byte offset within LFN data sector |
 
 ### Two-level indirection
 
@@ -150,18 +153,28 @@ At `cluster_size = N`, the metadata overhead is `1/N`.
 
 ### Design decisions
 
-**Format versioning with feature flags.** On-disk format rev 5. `validate_master`
+**Format versioning with feature flags.** On-disk format rev 6–7. `validate_master`
 checks `rev_max < SUPPORTED_REV_MIN` (too old), `rev_min > SUPPORTED_REV_MAX` (too new),
-and validates feature flags (no unknown bits set). `SUPPORTED_REV_MIN = SUPPORTED_REV_MAX = 5`.
-Rev 4 images can't be read by this layout (the MasterRecord struct changed between rev 4 and 5).
+and validates feature flags (no unknown bits set). `SUPPORTED_REV_MIN = 6`,
+`SUPPORTED_REV_MAX = 7`. Rev 4 images can't be read by this layout (the
+MasterRecord struct changed between rev 4 and 5).
 
 **`bit_set` for flag fields.** `ClusterMapEntry.flags`, `ClusterEntry.state`,
 and `DirectoryEntry.flags` use `bit_set[Enum; uN]`. The compiler enforces
-correct bit positions. No magic number typos.
+correct bit positions. No magic number typos. `MasterRecord.features` is a
+`Features` bit_set directly — no transmute needed at use sites.
 
 **`distinct` types for disk addressing.** `Sector :: distinct u64`,
-`Cluster :: distinct u64`, `Sector_Offset :: distinct u16`. Assigning a
-`Cluster` to a `Sector` is a compile-time type error.
+`Cluster :: distinct u64`, `Sector_Offset :: distinct u16`, `Journal_Seq :: distinct u64`,
+`Byte_Offset :: distinct u64`. Assigning a `Cluster` to a `Sector` is a compile-time type error.
+
+**`bit_field` for packed FFI values.** `File_Handle :: bit_field u64` packs
+`dir_cluster | 32`, `dir_offset | 16`, `entry_index | 16` — no manual
+shift-and-mask pack/unpack functions needed.
+
+**Volume struct centralizes I/O.** `src/fs/` has no `(disk, master, cache)`
+parameter threading. Every procedure takes `^Volume` as its first parameter,
+enabling `vol->method(...)` call syntax.
 
 **High-level FUSE API.** The binding exposes `fuse_operations` (path-based
 callbacks). Low-level `fuse_lowlevel_ops` (inode-based) is deferred.
@@ -178,8 +191,9 @@ releases the mutex after path resolution, before the I/O phase, to reduce
 contention with concurrent writers.
 
 **Stack-local scratch buffers.** All procedures use stack-local `[SECTOR_SIZE]u8`
-arrays and fixed-capacity inline arrays (`[dynamic; 32]Extent_Run`) instead of
-heap-backed dynamic arrays. Zero runtime allocation in the common case.
+arrays and fixed-capacity stack buffers (`[32]Extent_Run`) instead of
+heap-backed dynamic arrays for the common case. Falls back to
+`context.temp_allocator` for heavily fragmented chains.
 
 **Zero-copy I/O.** `fused_read_buf` returns a `fuse_bufvec` with
 `FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK` pointing directly to the backing file fd.
@@ -193,20 +207,24 @@ fd to the disk fd for the write side.
   `core:container/lru`. Eliminates redundant cluster-entry table reads. ~19 KB
   at default cluster size regardless of filesystem size.
 
-- **Path-resolution cache** (`src/mounter/ops.odin`): LRU cache (128 entries).
+- **Path-resolution cache** (`src/mounter/core.odin`): LRU cache (128 entries).
   Avoids tree walks on repeated `getattr`/`open`/`readdir` calls. Invalidated
-  on mutations.
+  on all mutations.
 
 ### Error handling
 
 `src/fs/` defines `FS_Error :: enum { None, Cluster_Not_Found, No_Space, ... }`.
-Public procedures return either `(T, bool)` or `(T, FS_Error)`. At the FUSE
-boundary, `FS_Error` is translated to negated errno via `fuse3.nix(.ENOENT)`.
+Every I/O procedure returns `FS_Error` (or `(T, FS_Error)`) consistently.
+Within `package fs`, `or_return`/`or_continue` propagates errors automatically.
+At the FUSE boundary, `fs_error_to_errno` translates `FS_Error` to negated
+errno via a `#partial switch`.
 
 ### Memory management
 
-Functions producing variable-length results return `[dynamic]T`. Callers own the
-allocation. `src/mounter/main.odin` wraps the mount lifecycle in a
+Functions producing variable-length results return `[dynamic]T` allocated on
+`context.temp_allocator`. Callers own the allocation but don't need explicit
+`delete` — the temp allocator is reset per FUSE callback via `free_all` in
+`begin_op`. `cmd/mount/main.odin` wraps the mount lifecycle in a
 `mem.Tracking_Allocator` guarded behind `when ODIN_DEBUG` — zero overhead in
 release builds. Leaked allocations are reported at unmount time.
 
@@ -230,38 +248,36 @@ release builds. Leaked allocations are reported at unmount time.
 
 ```
 tests/
-  fused_test/              Python test package
-    suites/
-      basic.py             18 FUSE smoke tests (ls, stat, read, write, subdirs, max-filename, statvfs, log-format)
-      rw.py                37 read-write tests (cp, dd, mkdir, symlink, chmod, fallocate, copy_file_range, chown, deep-nest, fsync, truncate, utimens, stat-fields)
-      errors.py            10 FUSE error path tests (ENOTDIR, ENOTEMPTY, EACCES, ENOENT, EEXIST, ENOSYS, access)
-      stress.py            Multi-threaded stress test (reader + writer, 15s)
-      disker.py            7 disker CLI tests + 19 imgdump validation tests
-      imgdump.py           JSON/text/hex output validation (6 test suites + 2 corrupted image tests)
-      audit_context.py     Audits 35 `proc "c"` callbacks for context+logger restoration
-      audit_sizes.py       Cross-checks 11 C struct sizes against Odin bindings
-    mount.py               FUSE mount context manager
-    result.py              TestSuite/TestResult dataclasses with check_errno/check_ok helpers
-  ci.py                    CI orchestrator (8 phases)
-  run_in_namespace.sh      Thin shell: `exec unshare -rUm timeout "$@"`
-  *.odin                   57 Odin unit tests (allocation, cache, directory, write, fs, validate, display, LFN)
-  c_assert.c / size_check.odin  C + Odin ground truth for struct size cross-check
+├── fused_test/                    Python test package
+│   ├── suites/
+│   │   └── stress.py              Multi-threaded stress test (reader + writer workers)
+│   ├── mount.py                   FUSE mount context manager (contextlib.contextmanager)
+│   ├── io.py                      Shared read(path)/write(path, data) helpers
+│   └── result.py                  TestSuite/TestResult dataclasses
+├── conftest.py                    Pytest fixtures: mounted_fs, fused_bin, disker_bin, imgdump_bin
+├── pyproject.toml                 Pytest markers: tool, fuse
+├── test_errors.py                 7 FUSE error path tests (pytest)
+├── test_disker.py                 7 format tool CLI tests (pytest)
+├── test_imgdump.py                10 imgdump tool tests (pytest)
+├── test_basic.py                  11 FUSE smoke tests (pytest)
+├── test_rw.py                     13 read-write tests (pytest)
+├── ci.py                          CI orchestrator (calls make + pytest)
+├── run_in_namespace.sh            Thin shell: exec unshare -rUm timeout "$@"
+├── test_common.odin               Shared Odin test helpers
+└── *.odin                         63 Odin unit tests (allocation, cache, directory, write,
+                                    fs, validate, display, LFN, struct sizes)
 ```
 
-### CI pipeline (8 phases, all passing)
+### CI pipeline
 
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `odin test` (57 tests) |
-| 3. Tool integration | Disker CLI tests + imgdump JSON/text/hex validation (29 suite tests) |
-| 4. FUSE basic | `suites/basic.py` inside `unshare -rUm` (18 assertions) |
-| 5. FUSE read-write | `suites/rw.py` inside `unshare -rUm` (37 assertions) |
-| 6. FUSE errors | `suites/errors.py` inside `unshare -rUm` (10 assertions) |
-| 7. FUSE stress | `suites/stress.py` inside `unshare -rUm` (3 assertions) |
-
-Total: 37 suite-level tests + 57 Odin unit tests + 11 struct cross-checks + 35
-context audits + 3 log-format CLI checks = 143 passing checks. Zero memory leaks.
+| 2. Unit tests | `make test` (63 Odin tests) |
+| 3. Tool integration | `make pytest -m tool` (17 format + imgdump tests) |
+| 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
+| 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |
+| 6. FUSE stress | `make smoke-mt` inside `unshare -rUm` (stress.py) |
 
 ### Test isolation
 
@@ -275,3 +291,9 @@ the only shell script that survives; everything else is Python or Odin.
 **imgdump --json** produces valid JSON even with corrupted or garbage directory
 entries. Entry names with non-printable bytes are escaped as `\uXXXX`. The JSON
 master record includes `rev_min`, `rev_max`, and `features` fields.
+
+## Remaining work
+
+8 of 43 `fuse_operations` callbacks are not yet wired:
+`lock`, `flock`, `bmap`, `poll`, `setxattr`, `getxattr`, `listxattr`,
+`removexattr`.

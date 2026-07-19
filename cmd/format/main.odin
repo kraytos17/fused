@@ -15,6 +15,7 @@ import "core:strconv"
 import "core:time"
 import "src:fs"
 
+// DEMO_CONTENT is the embedded demo file content (a small binary blob).
 DEMO_CONTENT := [?]u8{
 	0x82, 0x00, 0x0d, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x81,
 	0x00, 0x06, 0x4b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x82, 0x03,
@@ -23,6 +24,7 @@ DEMO_CONTENT := [?]u8{
 	0x06, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc8, 0x00, 0x5b,
 }
 
+// Flags holds the CLI flags for the formatter.
 Flags :: struct {
 	size_str:     string `args:"name=size" usage:"Image size (e.g. 1M, 256M, 1G; default: 1M)"`,
 	cluster_str:  string `args:"name=cluster-size" usage:"Sectors per cluster (default: 16)"`,
@@ -35,16 +37,19 @@ Flags :: struct {
 	overflow: [dynamic]string `args:"hidden"`,
 }
 
+// Writer is a sequential sector writer that tracks the current position.
 Writer :: struct {
 	fd:  ^os.File,
 	pos: i64,
 }
 
+// writer_init initializes the writer with the given file descriptor.
 writer_init :: proc(w: ^Writer, fd: ^os.File) {
 	w.fd = fd
 	w.pos = 0
 }
 
+// writer_write writes a byte buffer at the current position and advances.
 writer_write :: proc(w: ^Writer, data: []u8) -> bool {
 	_, err := os.write_at(w.fd, data, w.pos)
 	if err != nil {
@@ -55,6 +60,8 @@ writer_write :: proc(w: ^Writer, data: []u8) -> bool {
 	return true
 }
 
+// main formats a disk image: parses flags, writes master record, cluster map,
+// journal region, root directory, and an optional demo file.
 main :: proc() {
 	context = runtime.default_context()
 
@@ -273,6 +280,7 @@ main :: proc() {
 	}
 }
 
+// parse_size parses size strings with K, M, or G suffix (e.g. "1M", "256K", "1G").
 parse_size :: proc(s: string) -> (u64, bool) {
 	last := s[len(s)-1]
 	switch last {

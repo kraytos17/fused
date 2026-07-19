@@ -1,0 +1,7 @@
+[tool.pytest.ini_options]
+markers = [
+    "fuse: requires a real FUSE mount (needs /dev/fuse + unshare)",
+    "static: static analysis / struct-size / context audits",
+    "tool: disker/imgdump CLI integration",
+]
+testpaths = ["tests"]
