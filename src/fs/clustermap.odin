@@ -2,45 +2,33 @@
 #+build linux
 package fs
 
-import "core:os"
-
-read_cluster_map_entry :: proc(
-	disk: ^os.File,
-	master: ^Master_Record,
-	cluster: Cluster,
-) -> (entry: Cluster_Map_Entry, ok: bool) {
-	if u64(cluster) >= master.cluster_map_size {
+read_cluster_map_entry :: proc(vol: ^Volume, cluster: Cluster) -> (entry: Cluster_Map_Entry, ok: bool) {
+	if u64(cluster) >= vol.master.cluster_map_size {
 		return {}, false
 	}
 
-	entry_sector := Sector(master.cluster_map_offset + u64(cluster) / CLUSTER_MAP_ENTRIES_PER_SECTOR)
+	entry_sector := Sector(vol.master.cluster_map_offset + u64(cluster) / CLUSTER_MAP_ENTRIES_PER_SECTOR)
 	entry_index  := u64(cluster) % CLUSTER_MAP_ENTRIES_PER_SECTOR
 	buf: [SECTOR_SIZE]u8
-	if !sector_read(disk, entry_sector, buf[:]) {
+	if !sector_read(vol, entry_sector, buf[:]) {
 		return {}, false
 	}
-
 	entries := (^[CLUSTER_MAP_ENTRIES_PER_SECTOR]Cluster_Map_Entry)(&buf[0])
 	return entries[entry_index], true
 }
 
-read_cluster_entry_table :: proc(
-	disk: ^os.File,
-	master: ^Master_Record,
-	cluster: Cluster,
-	table: ^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry,
-) -> bool {
-	cme := read_cluster_map_entry(disk, master, cluster) or_return
+read_cluster_entry_table :: proc(vol: ^Volume, cluster: Cluster, table: ^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry) -> bool {
+	cme := read_cluster_map_entry(vol, cluster) or_return
 	if .Allocated not_in cme.flags {
 		return false
 	}
-	if u64(cme.sector_index) >= master.cluster_size {
+	if u64(cme.sector_index) >= vol.master.cluster_size {
 		return false
 	}
 
-	table_sector := Sector(u64(cluster) * master.cluster_size + u64(cme.sector_index))
+	table_sector := Sector(u64(cluster) * vol.master.cluster_size + u64(cme.sector_index))
 	buf: [SECTOR_SIZE]u8
-	if !sector_read(disk, table_sector, buf[:]) {
+	if !sector_read(vol, table_sector, buf[:]) {
 		return false
 	}
 
@@ -52,16 +40,13 @@ read_cluster_entry_table :: proc(
 }
 
 find_cluster_entry :: proc(
-	disk: ^os.File,
-	master: ^Master_Record,
-	cluster: Cluster,
-	sector_offset: Sector_Offset,
+	vol: ^Volume, cluster: Cluster, sector_offset: Sector_Offset,
 	table: ^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry = nil,
 	index: ^int = nil,
 ) -> (entry: Cluster_Entry, ok: bool) {
 	t: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 	tp := table if table != nil else &t
-	if !read_cluster_entry_table(disk, master, cluster, tp) {
+	if !read_cluster_entry_table(vol, cluster, tp) {
 		return {}, false
 	}
 	for &e, i in tp[:] {
@@ -75,94 +60,76 @@ find_cluster_entry :: proc(
 	return {}, false
 }
 
-write_cluster_map_entry :: proc(
-	disk: ^os.File, master: ^Master_Record, cluster: Cluster,
-	entry: ^Cluster_Map_Entry,
-	cache: ^Cluster_Bitmap_Cache = nil,
-) -> bool {
-	if u64(cluster) >= master.cluster_map_size {
+write_cluster_map_entry :: proc(vol: ^Volume, cluster: Cluster, entry: ^Cluster_Map_Entry) -> bool {
+	if u64(cluster) >= vol.master.cluster_map_size {
 		return false
 	}
 
-	entry_sector := Sector(master.cluster_map_offset + u64(cluster) / CLUSTER_MAP_ENTRIES_PER_SECTOR)
+	entry_sector := Sector(vol.master.cluster_map_offset + u64(cluster) / CLUSTER_MAP_ENTRIES_PER_SECTOR)
 	entry_index  := u64(cluster) % CLUSTER_MAP_ENTRIES_PER_SECTOR
 	buf: [SECTOR_SIZE]u8
-	if !sector_read(disk, entry_sector, buf[:]) {
+	if !sector_read(vol, entry_sector, buf[:]) {
 		return false
 	}
 
 	entries := (^[CLUSTER_MAP_ENTRIES_PER_SECTOR]Cluster_Map_Entry)(&buf[0])
 	entries[entry_index] = entry^
-	ok := sector_write(disk, entry_sector, buf[:])
-	if ok && cache != nil {
-		alloc_cache_invalidate(cache, u64(cluster))
+	ok := sector_write(vol, entry_sector, buf[:])
+	if ok {
+		alloc_cache_invalidate(&vol.cache, u64(cluster))
 	}
 	return ok
 }
 
-write_cluster_entry_table :: proc(
-	disk: ^os.File, master: ^Master_Record, cluster: Cluster,
-	table: ^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry,
-	cache: ^Cluster_Bitmap_Cache = nil,
-) -> bool {
-	cme := read_cluster_map_entry(disk, master, cluster) or_return
+write_cluster_entry_table :: proc(vol: ^Volume, cluster: Cluster, table: ^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry) -> bool {
+	cme := read_cluster_map_entry(vol, cluster) or_return
 	if .Allocated not_in cme.flags {
 		return false
 	}
 
-	table_sector := Sector(u64(cluster) * master.cluster_size + u64(cme.sector_index))
+	table_sector := Sector(u64(cluster) * vol.master.cluster_size + u64(cme.sector_index))
 	buf: [SECTOR_SIZE]u8
 	dst := (^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry)(&buf[0])
 	#unroll for i in 0 ..< CLUSTER_ENTRIES_PER_SECTOR {
 		dst[i] = table[i]
 	}
 
-	ok := sector_write(disk, table_sector, buf[:])
-	if ok && cache != nil {
-		alloc_cache_invalidate(cache, u64(cluster))
+	ok := sector_write(vol, table_sector, buf[:])
+	if ok {
+		alloc_cache_invalidate(&vol.cache, u64(cluster))
 	}
 	return ok
 }
 
-write_cluster_entry_at :: proc(
-	disk: ^os.File, master: ^Master_Record,
-	cluster: Cluster, entry_index: int, entry: ^Cluster_Entry,
-	cache: ^Cluster_Bitmap_Cache = nil,
-) -> bool {
+write_cluster_entry_at :: proc(vol: ^Volume, cluster: Cluster, entry_index: int, entry: ^Cluster_Entry) -> bool {
 	table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-	if !read_cluster_entry_table(disk, master, cluster, &table) {
+	if !read_cluster_entry_table(vol, cluster, &table) {
 		return false
 	}
 	table[entry_index] = entry^
-	return write_cluster_entry_table(disk, master, cluster, &table, cache)
+	return write_cluster_entry_table(vol, cluster, &table)
 }
 
-// Chain walk helper — advances a cursor through a Cluster_Entry chain.
-// Used by resolve_extents, allocate_sectors, resolve_lfn to avoid
-// duplicating the guard-check + find + advance pattern.
+@private
 Chain_Cursor :: struct {
 	cluster: Cluster,
 	offset:  Sector_Offset,
 }
 
+@private
 Chain_Step :: enum {
-	Advance,   // entry is valid, cursor advanced to link
-	At_End,    // entry is valid, this is the last link (next_cluster == 0)
-	Corrupted, // chain too long or entry not found / zero-size
+	Advance,
+	At_End,
+	Corrupted,
 }
 
-chain_step :: proc(
-	disk: ^os.File,
-	master: ^Master_Record,
-	cursor: ^Chain_Cursor,
-	guard: int,
-	max_guards: int,
-) -> (ce: Cluster_Entry, entry_cluster: Cluster, step: Chain_Step) {
+@private
+chain_step :: proc(vol: ^Volume, cursor: ^Chain_Cursor, guard: int, max_guards: int) -> (ce: Cluster_Entry, entry_cluster: Cluster, step: Chain_Step) {
 	if guard >= max_guards {
 		return {}, {}, .Corrupted
 	}
 
-	found_ce, found_ok := find_cluster_entry(disk, master, cursor.cluster, cursor.offset)
+	found_ce, found_ok := find_cluster_entry(vol, cursor.cluster, cursor.offset)
 	if !found_ok || found_ce.allocation_size == 0 {
 		return {}, {}, .Corrupted
 	}

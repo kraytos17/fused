@@ -37,7 +37,8 @@ json_escape_name :: proc(sb: ^strings.Builder, name: string) {
 	}
 }
 
-print_master :: proc(fd: ^os.File, m: ^fs.Master_Record, json: bool, needs_comma: ^bool) {
+print_master :: proc(vol: ^fs.Volume, json: bool, needs_comma: ^bool) {
+	m := &vol.master
 	if json {
 		if needs_comma^ {
 			fmt.print(",")
@@ -69,7 +70,8 @@ print_master :: proc(fd: ^os.File, m: ^fs.Master_Record, json: bool, needs_comma
 	fmt.println()
 }
 
-print_cluster_map :: proc(fd: ^os.File, m: ^fs.Master_Record, json: bool, needs_comma: ^bool, show_all: bool) {
+print_cluster_map :: proc(vol: ^fs.Volume, json: bool, needs_comma: ^bool, show_all: bool) {
+	m := &vol.master
 	cm_sectors := (m.cluster_map_size + fs.CLUSTER_MAP_ENTRIES_PER_SECTOR - 1) / fs.CLUSTER_MAP_ENTRIES_PER_SECTOR
 	allocated: u64
 	if json {
@@ -81,7 +83,7 @@ print_cluster_map :: proc(fd: ^os.File, m: ^fs.Master_Record, json: bool, needs_
 	json_first := true
 	for sec_idx: u64; sec_idx < cm_sectors; sec_idx += 1 {
 		buf: [fs.SECTOR_SIZE]u8
-		if !fs.sector_read(fd, fs.Sector(m.cluster_map_offset + sec_idx), buf[:]) {
+		if !fs.sector_read(vol, fs.Sector(m.cluster_map_offset + sec_idx), buf[:]) {
 			break
 		}
 
@@ -124,7 +126,7 @@ print_cluster_map :: proc(fd: ^os.File, m: ^fs.Master_Record, json: bool, needs_
 				}
 				if .Allocated in cme.flags {
 					table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
-					if fs.read_cluster_entry_table(fd, m, fs.Cluster(ci), &table) {
+					if fs.read_cluster_entry_table(vol, fs.Cluster(ci), &table) {
 						for i in 0 ..< fs.CLUSTER_ENTRIES_PER_SECTOR {
 							e := table[i]
 							if .Allocated in e.state {
@@ -157,18 +159,19 @@ print_cluster_map :: proc(fd: ^os.File, m: ^fs.Master_Record, json: bool, needs_
 	}
 }
 
-print_directory_tree :: proc(fd: ^os.File, m: ^fs.Master_Record, json: bool, needs_comma: ^bool) {
+print_directory_tree :: proc(vol: ^fs.Volume, json: bool, needs_comma: ^bool) {
+	m := &vol.master
 	if json {
 		if needs_comma^ { fmt.print(",") }
 		needs_comma^ = true
 		fmt.print(`"root":`)
 	}
 	if !json { fmt.println("=== Directory Tree ===") }
-	print_directory(fd, m, fs.Cluster(m.root_cluster), fs.Sector_Offset(m.root_sector_index), "", true, json)
+	print_directory(vol, fs.Cluster(m.root_cluster), fs.Sector_Offset(m.root_sector_index), "", true, json)
 }
 
-print_directory :: proc(fd: ^os.File, m: ^fs.Master_Record, cluster: fs.Cluster, offset: fs.Sector_Offset, prefix: string, is_root: bool, json: bool) {
-	runs, rok := fs.resolve_extents(fd, m, cluster, offset)
+print_directory :: proc(vol: ^fs.Volume, cluster: fs.Cluster, offset: fs.Sector_Offset, prefix: string, is_root: bool, json: bool) {
+	runs, rok := fs.resolve_extents(vol, cluster, offset)
 	if !rok {
 		if json { fmt.print(`null`) }
 		return
@@ -183,9 +186,9 @@ print_directory :: proc(fd: ^os.File, m: ^fs.Master_Record, cluster: fs.Cluster,
 		for si in 0 ..< n {
 			sec := fs.Sector(u64(run.sector) + u64(si))
 			buf: [fs.SECTOR_SIZE]u8
-			if !fs.sector_read(fd, sec, buf[:]) { break }
+			if !fs.sector_read(vol, sec, buf[:]) { break }
 
-			features := transmute(fs.Features)m.features
+			features := vol.master.features
 			des := int(fs.dir_entry_size(features))
 			depc := int(fs.dir_entries_per_sector(features))
 
@@ -203,7 +206,7 @@ print_directory :: proc(fd: ^os.File, m: ^fs.Master_Record, cluster: fs.Cluster,
 
 				name := fs.entry_short_name(&e)
 				if .LFN in e.flags {
-					if lfn, lfn_ok := fs.resolve_lfn(fd, m, &e); lfn_ok {
+					if lfn, lfn_ok := fs.resolve_lfn(vol, &e); lfn_ok {
 						name = lfn
 					}
 				}
@@ -215,7 +218,7 @@ print_directory :: proc(fd: ^os.File, m: ^fs.Master_Record, cluster: fs.Cluster,
 
 				target: string
 				if .Link in e.flags {
-					target = resolve_symlink_target(fd, m, &e, context.temp_allocator)
+					target = resolve_symlink_target(vol, &e, context.temp_allocator)
 				}
 
 				connector := "├── "
@@ -257,10 +260,7 @@ print_directory :: proc(fd: ^os.File, m: ^fs.Master_Record, cluster: fs.Cluster,
 					}
 					if .Directory in e.flags {
 						fmt.print(`,"children":`)
-						print_directory(fd, m,
-							fs.Cluster(e.stored_cluster),
-							fs.Sector_Offset(e.sector_index),
-							"", false, true)
+						print_directory(vol, fs.Cluster(e.stored_cluster), fs.Sector_Offset(e.sector_index), "", false, true)
 					}
 					fmt.print(`}`)
 				} else {
@@ -292,10 +292,7 @@ print_directory :: proc(fd: ^os.File, m: ^fs.Master_Record, cluster: fs.Cluster,
 						strings.builder_init(&sb3, context.temp_allocator)
 						fmt.sbprintf(&sb3, "%s  ", prefix)
 						child_prefix := strings.to_string(sb3)
-						print_directory(fd, m,
-							fs.Cluster(e.stored_cluster),
-							fs.Sector_Offset(e.sector_index),
-							child_prefix, false, false)
+						print_directory(vol, fs.Cluster(e.stored_cluster), fs.Sector_Offset(e.sector_index), child_prefix, false, false)
 					}
 				}
 				entry_count += 1
@@ -305,8 +302,8 @@ print_directory :: proc(fd: ^os.File, m: ^fs.Master_Record, cluster: fs.Cluster,
 	if json { fmt.print(`}`) }
 }
 
-print_hex_by_path :: proc(fd: ^os.File, m: ^fs.Master_Record, path: string) {
-	entry, _, _, _, ok := resolve_file(fd, m, path)
+print_hex_by_path :: proc(vol: ^fs.Volume, path: string) {
+	entry, _, _, _, ok := resolve_file(vol, path)
 	if !ok {
 		log.errorf("path not found: %s", path)
 		os.exit(1)
@@ -316,7 +313,7 @@ print_hex_by_path :: proc(fd: ^os.File, m: ^fs.Master_Record, path: string) {
 		os.exit(1)
 	}
 
-	runs, rok := fs.resolve_extents(fd, m, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index))
+	runs, rok := fs.resolve_extents(vol, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index))
 	if !rok { log.errorf("resolve_extents failed"); os.exit(1) }
 
 	sb: strings.Builder
@@ -333,7 +330,7 @@ print_hex_by_path :: proc(fd: ^os.File, m: ^fs.Master_Record, path: string) {
 
 			sec := fs.Sector(u64(run.sector) + si)
 			sec_buf: [fs.SECTOR_SIZE]u8
-			if !fs.sector_read(fd, sec, sec_buf[:]) { return }
+			if !fs.sector_read(vol, sec, sec_buf[:]) { return }
 
 			n := min(remaining, fs.SECTOR_SIZE)
 			off := file_off

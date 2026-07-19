@@ -9,9 +9,30 @@ import "src:fs"
 TEST_IMG_SRC := "fused.img"
 TEST_IMG_DST := "/dev/shm/fused_test.img"
 
-// open_test_image returns a read-write copy of fused.img.
-// Reuses the cached copy if it is up to date with the source AND
-// has a compatible on-disk format version (rev >= 4).
+open_test_volume :: proc() -> (vol: fs.Volume, ok: bool) {
+	fd, fd_ok := open_test_image()
+	if !fd_ok { return {}, false }
+
+	master, mok := fs.read_master_record(fd)
+	if !mok {
+		os.close(fd)
+		return {}, false
+	}
+
+	vol = fs.Volume{
+		disk   = fd,
+		master = master,
+	}
+	fs.alloc_cache_init(&vol.cache, &vol.master)
+	return vol, true
+}
+
+close_test_volume :: proc(vol: ^fs.Volume) {
+	fs.alloc_cache_destroy(&vol.cache)
+	os.close(vol.disk)
+	vol^ = {}
+}
+
 open_test_image :: proc() -> (^os.File, bool) {
 	src_stale := true
 	src_fi, src_err := os.stat(TEST_IMG_SRC, context.temp_allocator)

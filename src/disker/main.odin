@@ -151,7 +151,7 @@ main :: proc() {
 	master.sig = fs.FUSED_SIG
 	master.rev_min = 7
 	master.rev_max = 7
-	master.features = u64(fs.Features{.Uid_Gid, .Journal_V2})
+	master.features = fs.Features{.Uid_Gid, .Journal_V2}
 	master.cluster_map_offset = 1
 	master.cluster_map_size = total_clusters
 	master.cluster_size = cluster_size

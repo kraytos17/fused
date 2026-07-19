@@ -35,31 +35,16 @@ main :: proc() {
 	}
 
 	context.logger = log.create_console_logger(log_level)
-	fd, open_err := os.open(f.path, {.Read})
-	if open_err != nil {
-		log.errorf("cannot open %s: %v", f.path, open_err)
+	vol, verr := fs.volume_open(f.path)
+	if verr != .None {
+		log.errorf("cannot open %s: %v", f.path, verr)
 		os.exit(1)
 	}
-	defer os.close(fd)
+	defer fs.volume_close(&vol)
 
-	master, ok := fs.read_master_record(fd)
-	if !ok {
-		log.errorf("failed to read MasterRecord")
-		os.exit(1)
-    }
-
-	fi, stat_err := os.stat(f.path, context.temp_allocator)
-	image_size: u64 = 0
-	if stat_err == nil {
-		image_size = u64(fi.size)
-	}
-	if err := fs.validate_master(&master, image_size); err != .None {
-		log.errorf("validation failed: %v", err)
-		os.exit(1)
-	}
 	if f.hex_path != "" {
 		hex_path := f.hex_path
-		print_hex_by_path(fd, &master, hex_path)
+		print_hex_by_path(&vol, hex_path)
 		return
 	}
 
@@ -68,9 +53,9 @@ main :: proc() {
 		fmt.print(`{`)
 	}
 
-	print_master(fd, &master, f.json, &needs_comma)
-	print_cluster_map(fd, &master, f.json, &needs_comma, f.all)
-	print_directory_tree(fd, &master, f.json, &needs_comma)
+	print_master(&vol, f.json, &needs_comma)
+	print_cluster_map(&vol, f.json, &needs_comma, f.all)
+	print_directory_tree(&vol, f.json, &needs_comma)
 	if f.json {
 		fmt.println(`}`)
 	}

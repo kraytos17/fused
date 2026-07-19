@@ -12,43 +12,37 @@ import "core:log"
 import "core:mem"
 import "core:os"
 
-// intent_log_sector returns the absolute sector of the intent log.
-// It sits right after the CME table, inside the reserved cluster area.
 intent_log_sector :: proc(master: ^Master_Record) -> Sector {
 	cme_ps := u64(CLUSTER_MAP_ENTRIES_PER_SECTOR)
 	cm_secs := (master.cluster_map_size + cme_ps - 1) / cme_ps
 	return Sector(master.cluster_map_offset + cm_secs)
 }
 
-// journal_seq_get reads the persistent journal sequence from Master_Record.resv.
-journal_seq_get :: proc(master: ^Master_Record) -> u64 {
-	seq: u64
-	mem.copy(&seq, &master.resv[JOURNAL_SEQ_OFFSET], size_of(u64))
+journal_seq_get :: proc(master: ^Master_Record) -> Journal_Seq {
+	seq: Journal_Seq
+	mem.copy(&seq, &master.resv[JOURNAL_SEQ_OFFSET], size_of(Journal_Seq))
 	return seq
 }
 
-// journal_seq_set writes the persistent journal sequence into Master_Record.resv.
-journal_seq_set :: proc(master: ^Master_Record, seq: u64) {
+journal_seq_set :: proc(master: ^Master_Record, seq: Journal_Seq) {
 	s := seq
-	mem.copy(&master.resv[JOURNAL_SEQ_OFFSET], &s, size_of(u64))
+	mem.copy(&master.resv[JOURNAL_SEQ_OFFSET], &s, size_of(Journal_Seq))
 }
 
-// journal_seq_init initializes the journal sequence to 1 during format.
 journal_seq_init :: proc(master: ^Master_Record) {
 	journal_seq_set(master, 1)
 }
 
-// journal_seq_next reads, increments, and returns the next seq number.
-journal_seq_next :: proc(master: ^Master_Record) -> u64 {
+journal_seq_next :: proc(master: ^Master_Record) -> Journal_Seq {
 	seq := journal_seq_get(master)
 	if seq == 0 { seq = 1 }
 	return seq
 }
 
-// intent_log_read reads the intent log sector and verifies its checksum.
-intent_log_read :: proc(disk: ^os.File, master: ^Master_Record) -> (intent_log: Intent_Log, ok: bool) {
+@private
+intent_log_read :: proc(vol: ^Volume) -> (intent_log: Intent_Log, ok: bool) {
 	raw: [SECTOR_SIZE]u8
-	if !sector_read(disk, intent_log_sector(master), raw[:]) {
+	if !sector_read(vol, intent_log_sector(&vol.master), raw[:]) {
 		return {}, false
 	}
 
@@ -66,74 +60,66 @@ intent_log_read :: proc(disk: ^os.File, master: ^Master_Record) -> (intent_log: 
 	return intent_log, true
 }
 
-// intent_log_write writes a populated intent log to disk and fsyncs.
-intent_log_write :: proc(disk: ^os.File, master: ^Master_Record, log: ^Intent_Log) -> bool {
+@private
+intent_log_write :: proc(vol: ^Volume, log: ^Intent_Log) -> bool {
 	raw: [SECTOR_SIZE]u8
 	dst := (^Intent_Log)(&raw[0])
 	dst^ = log^
 	dst.crc = hash.crc32(raw[:SECTOR_SIZE - 4])
-	if !sector_write(disk, intent_log_sector(master), raw[:]) {
+	if !sector_write(vol, intent_log_sector(&vol.master), raw[:]) {
 		return false
 	}
-	os.sync(disk)
+	os.sync(vol.disk)
 	return true
 }
 
-// intent_log_begin starts a new journal transaction.
-intent_log_begin :: proc(disk: ^os.File, master: ^Master_Record) -> bool {
-	seq := journal_seq_next(master)
+intent_log_begin :: proc(vol: ^Volume) -> bool {
+	seq := journal_seq_next(&vol.master)
 	log := Intent_Log{
 		magic = JOURNAL_MAGIC,
-		seq   = seq,
+		seq   = u64(seq),
 		count = 0,
 	}
-	return intent_log_write(disk, master, &log)
+	return intent_log_write(vol, &log)
 }
 
-// intent_log_commit finalizes a journal transaction.
-// If entries has data, the populated log is written first (with fsync),
-// then cleared — recording exactly which CE writes were performed.
-// If entries is empty, the log is just cleared (transaction abort or no-op).
-intent_log_commit :: proc(disk: ^os.File, master: ^Master_Record, entries: []Intent_Log_Entry) -> bool {
+intent_log_commit :: proc(vol: ^Volume, entries: []Intent_Log_Entry) -> bool {
 	if entries != nil && len(entries) > 0 {
-		seq := journal_seq_get(master)
+		seq := journal_seq_get(&vol.master)
 		log := Intent_Log{
 			magic = JOURNAL_MAGIC,
-			seq   = seq,
+			seq   = u64(seq),
 			count = u16(len(entries)),
 		}
 
 		for i in 0 ..< min(len(entries), MAX_JOURNAL_ENTRIES_v6) {
 			log.entries[i] = entries[i]
 		}
-		if !intent_log_write(disk, master, &log) {
+		if !intent_log_write(vol, &log) {
 			return false
 		}
 	}
 
 	zero: [SECTOR_SIZE]u8
-	if !sector_write(disk, intent_log_sector(master), zero[:]) {
+	if !sector_write(vol, intent_log_sector(&vol.master), zero[:]) {
 		return false
 	}
 
-	journal_seq_set(master, journal_seq_get(master) + 1)
-	if !write_master_record(disk, master) {
+	journal_seq_set(&vol.master, journal_seq_get(&vol.master) + 1)
+	if !write_master_record(vol) {
 		return false
 	}
 	return true
 }
 
-// write_master_record writes the current Master_Record to sector 0.
-// Used by intent_log_commit to persist the journal sequence number.
-write_master_record :: proc(disk: ^os.File, master: ^Master_Record) -> bool {
+write_master_record :: proc(vol: ^Volume) -> bool {
 	buf: [SECTOR_SIZE]u8
-	(^Master_Record)(&buf[0])^ = master^
-	return sector_write(disk, Sector(0), buf[:])
+	(^Master_Record)(&buf[0])^ = vol.master
+	return sector_write(vol, Sector(0), buf[:])
 }
 
-// intent_log_recover checks for a dirty intent log on mount and warns.
-intent_log_recover :: proc(disk: ^os.File, master: ^Master_Record) {
-	intent_log, ok := intent_log_read(disk, master)
+intent_log_recover :: proc(vol: ^Volume) {
+	intent_log, ok := intent_log_read(vol)
 	if !ok || intent_log.magic != JOURNAL_MAGIC {
 		return
 	}
@@ -144,7 +130,7 @@ intent_log_recover :: proc(disk: ^os.File, master: ^Master_Record) {
 	table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 	for i in 0 ..< int(intent_log.count) {
 		entry := intent_log.entries[i]
-		if !read_cluster_entry_table(disk, master, Cluster(entry.cluster), &table) {
+		if !read_cluster_entry_table(vol, Cluster(entry.cluster), &table) {
 			log.warnf("  entry %d: cluster %d — CE table not readable (may be corrupted)", i, entry.cluster)
 			continue
 		}
@@ -156,19 +142,35 @@ intent_log_recover :: proc(disk: ^os.File, master: ^Master_Record) {
 	}
 
 	log.warnf("clearing intent log — run fsck --fix for full consistency check")
-	if !intent_log_commit(disk, master, nil) {
+	if !intent_log_commit(vol, nil) {
 		log.errorf("failed to clear intent log — mount may be unstable")
 	}
 }
 
-// Journal_Txn holds the state of an in-progress journal v2 transaction.
 Journal_Txn :: struct {
-	seq:     u64,
+	seq:     Journal_Seq,
 	entries: [MAX_JOURNAL_ENTRIES_v6]Journal_Entry,
 	count:   int,
 }
 
-// journal_v2_region_size returns the number of sectors in the journal region.
+Intent_Txn :: struct {
+	entries: [MAX_JOURNAL_ENTRIES_v6]Intent_Log_Entry,
+	count:   int,
+}
+
+intent_txn_add :: proc(txn: ^Intent_Txn, cluster_idx: u64, free_idx: int, take: u16, state: u8) -> bool {
+	if txn.count >= MAX_JOURNAL_ENTRIES_v6 { return false }
+	txn.entries[txn.count] = {
+		cluster       = cluster_idx,
+		sector_offset = 0,
+		ce_index      = u8(free_idx),
+		alloc_size    = take,
+		state         = state,
+	}
+	txn.count += 1
+	return true
+}
+
 journal_v2_region_size :: proc(master: ^Master_Record) -> u64 {
 	n: u64
 	mem.copy(&n, &master.resv[JOURNAL_REGION_OFFSET], size_of(u64))
@@ -176,33 +178,27 @@ journal_v2_region_size :: proc(master: ^Master_Record) -> u64 {
 	return n
 }
 
-// journal_v2_set_region_size stores the journal region size.
 journal_v2_set_region_size :: proc(master: ^Master_Record, n: u64) {
 	s := n
 	mem.copy(&master.resv[JOURNAL_REGION_OFFSET], &s, size_of(u64))
 }
 
-// journal_v2_watermark returns the last_applied_seq watermark.
 journal_v2_watermark :: proc(master: ^Master_Record) -> u64 {
 	w: u64
 	mem.copy(&w, &master.resv[JOURNAL_WATERMARK_OFFSET], size_of(u64))
 	return w
 }
 
-// journal_v2_set_watermark stores the last_applied_seq watermark.
 journal_v2_set_watermark :: proc(master: ^Master_Record, w: u64) {
 	s := w
 	mem.copy(&master.resv[JOURNAL_WATERMARK_OFFSET], &s, size_of(u64))
 }
 
-// journal_v2_begin starts a new transaction. No disk I/O.
 journal_v2_begin :: proc(master: ^Master_Record, txn: ^Journal_Txn) {
 	txn.seq = journal_seq_get(master)
 	txn.count = 0
 }
 
-// journal_v2_add_entry appends a CE-table write to the transaction.
-// Returns false if the transaction is full (should not happen in practice).
 journal_v2_add_entry :: proc(txn: ^Journal_Txn, entry: Journal_Entry) -> bool {
 	if txn.count >= JOURNAL_ENTRIES_PER_RECORD {
 		log.errorf("journal_v2: transaction full (%d entries)", txn.count)
@@ -214,14 +210,12 @@ journal_v2_add_entry :: proc(txn: ^Journal_Txn, entry: Journal_Entry) -> bool {
 	return true
 }
 
-// journal_v2_commit writes the transaction to the ring buffer and fsyncs.
-// After this returns, the transaction is durably recorded and can be replayed.
-journal_v2_commit :: proc(disk: ^os.File, master: ^Master_Record, txn: ^Journal_Txn) -> bool {
+journal_v2_commit :: proc(vol: ^Volume, txn: ^Journal_Txn) -> bool {
 	if txn.count == 0 { return true }
 
-	J := intent_log_sector(master)
-	M := journal_v2_region_size(master)
-	pos := J + Sector(txn.seq % M)
+	J := intent_log_sector(&vol.master)
+	M := journal_v2_region_size(&vol.master)
+	pos := J + Sector(u64(txn.seq) % M)
 	rec_secs := u16((txn.count + JOURNAL_ENTRIES_PER_RECORD - 1) / JOURNAL_ENTRIES_PER_RECORD)
 
 	for ri in 0 ..< rec_secs {
@@ -233,16 +227,15 @@ journal_v2_commit :: proc(disk: ^os.File, master: ^Master_Record, txn: ^Journal_
 			if idx >= txn.count { break }
 			rec.entries[ei] = txn.entries[idx]
 		}
-		if !sector_write(disk, pos + Sector(ri) + 1, rec_buf[:]) {
+		if !sector_write(vol, pos + Sector(ri) + 1, rec_buf[:]) {
 			return false
 		}
 	}
 
-	os.sync(disk)
-	// Write header with committed=1
+	os.sync(vol.disk)
 	hdr := Jv2_Header{
 		magic       = Jv2_MAGIC,
-		seq         = txn.seq,
+		seq         = u64(txn.seq),
 		rec_count   = u16(txn.count),
 		rec_sectors = rec_secs,
 		committed   = 1,
@@ -253,33 +246,31 @@ journal_v2_commit :: proc(disk: ^os.File, master: ^Master_Record, txn: ^Journal_
 	(^Jv2_Header)(&hdr_buf[0])^ = hdr
 	hdr.header_crc = hash.crc32(hdr_buf[:24])
 	(^Jv2_Header)(&hdr_buf[0])^ = hdr
-	if !sector_write(disk, pos, hdr_buf[:]) {
+	if !sector_write(vol, pos, hdr_buf[:]) {
 		return false
 	}
-	os.sync(disk)
+	os.sync(vol.disk)
 	return true
 }
 
-// journal_v2_finish advances the seq and watermark after the CE writes are done.
-journal_v2_finish :: proc(disk: ^os.File, master: ^Master_Record, seq: u64) {
-	journal_seq_set(master, seq + 1)
-	journal_v2_set_watermark(master, seq)
-	write_master_record(disk, master)
+journal_v2_finish :: proc(vol: ^Volume, seq: Journal_Seq) {
+	journal_seq_set(&vol.master, Journal_Seq(u64(seq) + 1))
+	journal_v2_set_watermark(&vol.master, u64(seq))
+	write_master_record(vol)
 }
 
-// journal_v2_recover scans the ring buffer and replays any un-applied transactions.
-journal_v2_recover :: proc(disk: ^os.File, master: ^Master_Record) {
-	if .Journal_V2 not_in transmute(Features)master.features { return }
+journal_v2_recover :: proc(vol: ^Volume) {
+	if .Journal_V2 not_in vol.master.features { return }
 
-	J := intent_log_sector(master)
-	M := journal_v2_region_size(master)
-	W := journal_v2_watermark(master)
+	J := intent_log_sector(&vol.master)
+	M := journal_v2_region_size(&vol.master)
+	W := journal_v2_watermark(&vol.master)
 
 	replayed: int
 	for i: u64; i < M; i += 1 {
 		pos := J + Sector(i)
 		hdr_buf: [SECTOR_SIZE]u8
-		if !sector_read(disk, pos, hdr_buf[:]) { continue }
+		if !sector_read(vol, pos, hdr_buf[:]) { continue }
 
 		hdr := (^Jv2_Header)(&hdr_buf[0])^
 		if hdr.magic != Jv2_MAGIC { continue }
@@ -299,7 +290,7 @@ journal_v2_recover :: proc(disk: ^os.File, master: ^Master_Record) {
 		replay_ok := true
 		for ri: u16; ri < hdr.rec_sectors; ri += 1 {
 			rec_buf: [SECTOR_SIZE]u8
-			if !sector_read(disk, pos + Sector(ri) + 1, rec_buf[:]) {
+			if !sector_read(vol, pos + Sector(ri) + 1, rec_buf[:]) {
 				log.warnf("journal: can't read record sector %d — aborting replay", ri)
 				replay_ok = false
 				break
@@ -312,7 +303,7 @@ journal_v2_recover :: proc(disk: ^os.File, master: ^Master_Record) {
 
 				je := rec.entries[ei]
 				table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-				if !read_cluster_entry_table(disk, master, Cluster(je.cluster), &table) {
+				if !read_cluster_entry_table(vol, Cluster(je.cluster), &table) {
 					continue
 				}
 				if int(je.ce_index) >= len(table) {
@@ -320,12 +311,10 @@ journal_v2_recover :: proc(disk: ^os.File, master: ^Master_Record) {
 				}
 
 				ce := table[je.ce_index]
-				// If the entry is already in the expected state, skip (idempotent).
 				if .Allocated in ce.state && transmute(u8)ce.state == je.state {
 					continue
 				}
 
-				// Re-apply the entry
 				table[je.ce_index] = Cluster_Entry{
 					state             = transmute(Cluster_Entry_State)je.state,
 					allocation_size   = je.alloc_size,
@@ -333,7 +322,7 @@ journal_v2_recover :: proc(disk: ^os.File, master: ^Master_Record) {
 					next_cluster      = je.next_cluster,
 					next_sector_index = je.next_sector_index,
 				}
-				write_cluster_entry_table(disk, master, Cluster(je.cluster), &table, nil)
+				write_cluster_entry_table(vol, Cluster(je.cluster), &table)
 				replayed += 1
 			}
 		}
@@ -341,10 +330,9 @@ journal_v2_recover :: proc(disk: ^os.File, master: ^Master_Record) {
 			W = hdr.seq + 1
 		}
 	}
-	// Write the updated watermark
-	journal_v2_set_watermark(master, W)
-	if replayed > 0 || W > journal_v2_watermark(master) {
-		write_master_record(disk, master)
+	journal_v2_set_watermark(&vol.master, W)
+	if replayed > 0 || W > journal_v2_watermark(&vol.master) {
+		write_master_record(vol)
 	}
 	if replayed > 0 {
 		log.infof("journal: replayed %d entries", replayed)

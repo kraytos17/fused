@@ -2,7 +2,7 @@
 #+build linux
 package fs
 
-validate_master :: proc(master: ^Master_Record, image_size: u64) -> FS_Error {
+validate_master :: proc(master: ^Master_Record, image_size: Byte_Offset) -> FS_Error {
 	if master.sig != FUSED_SIG {
 		return .Invalid_Signature
 	}
@@ -13,7 +13,7 @@ validate_master :: proc(master: ^Master_Record, image_size: u64) -> FS_Error {
 		return .Version_Too_New
 	}
 
-	unknown := transmute(Features)(master.features) & ~ALL_SUPPORTED_FEATURES
+	unknown := master.features & ~ALL_SUPPORTED_FEATURES
 	if unknown != {} {
 		return .Feature_Not_Supported
 	}
@@ -27,7 +27,7 @@ validate_master :: proc(master: ^Master_Record, image_size: u64) -> FS_Error {
 		return .Corrupt_Master_Record
 	}
 
-	sector_count := image_size / SECTOR_SIZE
+	sector_count := u64(image_size) / SECTOR_SIZE
 	if u64(master.cluster_map_offset) >= sector_count {
 		return .Corrupt_Master_Record
 	}

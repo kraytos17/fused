@@ -1,17 +1,8 @@
 // allocate.odin — Sector allocator.
-//
-// allocate_sectors scans the cluster map for free space, creates
-// ClusterEntry runs, chains them, and writes everything back to disk.
-// deallocate_sectors walks a chain and frees every entry.
-//
-// Uses an explicit Cluster_Bitmap_Cache to avoid re-reading cluster
-// entry tables from disk on every scan. Pass nil to use a stack-local
-// fallback (no caching).
 #+build linux
 package fs
 
 import "core:container/bit_array"
-import "core:os"
 import "core:log"
 
 @private
@@ -65,26 +56,8 @@ cluster_entry_state_for :: proc(kind: Allocation_Kind) -> Cluster_Entry_State {
 	return {}
 }
 
-@private
-get_bitmap_fallback :: proc(bitmap: ^bit_array.Bit_Array, master: ^Master_Record, disk: ^os.File, cluster: Cluster, cme: ^Cluster_Map_Entry) {
-	bit_array.clear(bitmap)
-	bit_array.unsafe_set(bitmap, int(cme.sector_index))
-	table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-	if read_cluster_entry_table(disk, master, cluster, &table) {
-		for &e in table {
-			if .Allocated in e.state {
-				for off in 0 ..< e.allocation_size {
-					bit_array.unsafe_set(bitmap, int(e.sector_start + off))
-				}
-			}
-		}
-	}
-}
-
 allocate_sectors :: proc(
-	master:         ^Master_Record,
-	disk:           ^os.File,
-	cache:          ^Cluster_Bitmap_Cache,
+	vol:            ^Volume,
 	start_cluster:  Cluster,
 	start_offset:   Sector_Offset,
 	sectors_needed: u64,
@@ -96,7 +69,7 @@ allocate_sectors :: proc(
 
 	additional_needed: u64 = sectors_needed
 	if start_cluster != 0 {
-		existing, ext_ok := resolve_extents(disk, master, start_cluster, start_offset)
+		existing, ext_ok := resolve_extents(vol, start_cluster, start_offset)
 		defer delete(existing)
 		if !ext_ok {
 			return 0, 0, .Entry_Not_Found
@@ -119,59 +92,31 @@ allocate_sectors :: proc(
 	prev_entry:   Cluster_Entry
 	prev_has_prev := false
 
-	// Journal: determine which journaling path to use.
-	is_v2 := .Journal_V2 in transmute(Features)master.features
-
-	jrnl_entries_v6: [MAX_JOURNAL_ENTRIES_v6]Intent_Log_Entry
-	jrnl_count := 0
+	is_v2 := .Journal_V2 in vol.master.features
+	jrnl_txn_v6: Intent_Txn
 	jrnl_ok := false
 	jrnl_v2_txn: Journal_Txn
 
 	if is_v2 {
-		journal_v2_begin(master, &jrnl_v2_txn)
+		journal_v2_begin(&vol.master, &jrnl_v2_txn)
 	} else {
-		if !intent_log_begin(disk, master) {
+		if !intent_log_begin(vol) {
 			return 0, 0, .Sector_Write_Error
 		}
 	}
 	defer if !jrnl_ok {
 		if is_v2 {
-			journal_v2_commit(disk, master, &jrnl_v2_txn)
-			journal_v2_finish(disk, master, jrnl_v2_txn.seq)
+			journal_v2_commit(vol, &jrnl_v2_txn)
+			journal_v2_finish(vol, jrnl_v2_txn.seq)
 		} else {
-			intent_log_commit(disk, master, nil)
+			intent_log_commit(vol, nil)
 		}
 	}
 
-	// Track a CE-table write in the journal.
-	journal_add_ce_v6 :: proc(entries: ^[MAX_JOURNAL_ENTRIES_v6]Intent_Log_Entry, count: ^int, cluster_idx: u64, free_idx: int, take: u16, state: u8) {
-		if count^ >= MAX_JOURNAL_ENTRIES_v6 { return }
-		entries[count^] = Intent_Log_Entry{
-			cluster       = cluster_idx,
-			ce_index      = u8(free_idx),
-			alloc_size    = take,
-			state         = state,
-		}
-		count^ += 1
-	}
-	journal_add_ce_v2 :: proc(txn: ^Journal_Txn, cluster_idx: u64, free_idx: int, take: u16, sector_start: u16, state: u8, next_cluster: u64, next_si: u16) {
-		journal_v2_add_entry(txn, Journal_Entry{
-			cluster           = cluster_idx,
-			ce_index          = u8(free_idx),
-			state             = state,
-			sector_start      = sector_start,
-			alloc_size        = take,
-			next_cluster      = next_cluster,
-			next_sector_index = next_si,
-		})
-	}
-
-	cache_init := cache != nil
-	start_hint := cache.hint if cache_init else 0
-	for iter in 0 ..< master.cluster_map_size {
-		cluster_idx := (start_hint + iter) %
-		master.cluster_map_size if cache_init else iter
-		cme := read_cluster_map_entry(disk, master, Cluster(cluster_idx)) or_continue
+	start_hint := vol.cache.hint
+	for iter in 0 ..< vol.master.cluster_map_size {
+		cluster_idx := (start_hint + iter) % vol.master.cluster_map_size
+		cme := read_cluster_map_entry(vol, Cluster(cluster_idx)) or_continue
 		if .Reserved in cme.flags || .Full in cme.flags {
 			continue
 		}
@@ -180,36 +125,27 @@ allocate_sectors :: proc(
 		if is_fresh {
 			cme.flags += {.Allocated}
 			cme.sector_index   = 0
-			if !write_cluster_map_entry(disk, master, Cluster(cluster_idx), &cme, cache) {
+			if !write_cluster_map_entry(vol, Cluster(cluster_idx), &cme) {
 				return 0, 0, .Sector_Write_Error
 			}
 
 			zero_buf: [SECTOR_SIZE]u8
-			table_sector := Sector(cluster_idx * master.cluster_size + u64(cme.sector_index))
-			if !sector_write(disk, table_sector, zero_buf[:]) {
+			table_sector := Sector(cluster_idx * vol.master.cluster_size + u64(cme.sector_index))
+			if !sector_write(vol, table_sector, zero_buf[:]) {
 				return 0, 0, .Sector_Write_Error
 			}
 		}
 
-		bitmap: bit_array.Bit_Array
-		used: u16 = 0
-		if cache_init {
-			var_bitmap, var_used, var_ok := alloc_cache_ensure(cache, master, disk, cluster_idx)
-			if !var_ok {
-				continue
-			}
-			bitmap = var_bitmap
-			used = var_used
-		} else {
-			bit_array.init(&bitmap, int(master.cluster_size), 0, context.temp_allocator)
-			get_bitmap_fallback(&bitmap, master, disk, Cluster(cluster_idx), &cme)
+		bitmap, used, var_ok := alloc_cache_ensure(&vol.cache, vol, cluster_idx)
+		if !var_ok {
+			continue
 		}
 
-		free_start, free_avail, free_ok := find_contiguous_free(&bitmap, master.cluster_size, u16(min(remaining, 65535)))
+		free_start, free_avail, free_ok := find_contiguous_free(&bitmap, vol.master.cluster_size, u16(min(remaining, 65535)))
 		if !free_ok {
 			if .Full not_in cme.flags {
 				cme.flags += {.Full}
-				if !write_cluster_map_entry(disk, master, Cluster(cluster_idx), &cme, cache) {
+				if !write_cluster_map_entry(vol, Cluster(cluster_idx), &cme) {
 					return 0, 0, .Sector_Write_Error
 				}
 			}
@@ -222,16 +158,8 @@ allocate_sectors :: proc(
 		}
 
 		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-		if !read_cluster_entry_table(disk, master, Cluster(cluster_idx), &table) {
+		if !read_cluster_entry_table(vol, Cluster(cluster_idx), &table) {
 			continue
-		}
-		if !cache_init {
-			used = 0
-			for &e in table {
-				if .Allocated in e.state {
-					used += e.allocation_size
-				}
-			}
 		}
 
 		free_idx := -1
@@ -253,14 +181,21 @@ allocate_sectors :: proc(
 		}
 
 		table[free_idx] = new_entry
-		if !write_cluster_entry_table(disk, master, Cluster(cluster_idx), &table, cache) {
+		if !write_cluster_entry_table(vol, Cluster(cluster_idx), &table) {
 			return 0, 0, .Sector_Write_Error
 		}
-
 		if is_v2 {
-			journal_add_ce_v2(&jrnl_v2_txn, cluster_idx, free_idx, take, free_start, transmute(u8)new_entry.state, new_entry.next_cluster, new_entry.next_sector_index)
+			journal_v2_add_entry(&jrnl_v2_txn, Journal_Entry{
+				cluster           = cluster_idx,
+				ce_index          = u8(free_idx),
+				state             = transmute(u8)new_entry.state,
+				sector_start      = free_start,
+				alloc_size        = take,
+				next_cluster      = new_entry.next_cluster,
+				next_sector_index = new_entry.next_sector_index,
+			})
 		} else {
-			journal_add_ce_v6(&jrnl_entries_v6, &jrnl_count, cluster_idx, free_idx, take, transmute(u8)new_entry.state)
+			intent_txn_add(&jrnl_txn_v6, cluster_idx, free_idx, take, transmute(u8)new_entry.state)
 		}
 		if is_first {
 			first_cluster = Cluster(cluster_idx)
@@ -270,20 +205,28 @@ allocate_sectors :: proc(
 			prev_entry.next_cluster       = u64(cluster_idx)
 			prev_entry.next_sector_index  = u16(free_start)
 			prev_table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-			if read_cluster_entry_table(disk, master, prev_cluster, &prev_table) {
+			if read_cluster_entry_table(vol, prev_cluster, &prev_table) {
 				for &e in prev_table {
 					if e.sector_start == u16(prev_offset) && .Allocated in e.state {
 						e = prev_entry
 						break
 					}
 				}
-				if !write_cluster_entry_table(disk, master, prev_cluster, &prev_table, cache) {
+				if !write_cluster_entry_table(vol, prev_cluster, &prev_table) {
 					return 0, 0, .Sector_Write_Error
 				}
 				if is_v2 {
-					journal_add_ce_v2(&jrnl_v2_txn, u64(prev_cluster), int(prev_offset), prev_entry.allocation_size, prev_entry.sector_start, transmute(u8)prev_entry.state, prev_entry.next_cluster, prev_entry.next_sector_index)
+					journal_v2_add_entry(&jrnl_v2_txn, Journal_Entry{
+						cluster           = u64(prev_cluster),
+						ce_index          = u8(prev_offset),
+						state             = transmute(u8)prev_entry.state,
+						sector_start      = prev_entry.sector_start,
+						alloc_size        = prev_entry.allocation_size,
+						next_cluster      = prev_entry.next_cluster,
+						next_sector_index = prev_entry.next_sector_index,
+					})
 				} else {
-					journal_add_ce_v6(&jrnl_entries_v6, &jrnl_count, u64(prev_cluster), int(prev_offset), prev_entry.allocation_size, transmute(u8)prev_entry.state)
+					intent_txn_add(&jrnl_txn_v6, u64(prev_cluster), int(prev_offset), prev_entry.allocation_size, transmute(u8)prev_entry.state)
 				}
 			}
 		}
@@ -293,10 +236,10 @@ allocate_sectors :: proc(
 		prev_entry = new_entry
 		prev_has_prev = true
 		remaining -= u64(take)
-		if used + take >= u16(master.cluster_size) {
+		if used + take >= u16(vol.master.cluster_size) {
 			if .Full not_in cme.flags {
 				cme.flags += {.Full}
-				if !write_cluster_map_entry(disk, master, Cluster(cluster_idx), &cme, cache) {
+				if !write_cluster_map_entry(vol, Cluster(cluster_idx), &cme) {
 					return 0, 0, .Sector_Write_Error
 				}
 			}
@@ -311,9 +254,9 @@ allocate_sectors :: proc(
 	}
 	if start_cluster != 0 && !is_first {
 		cursor := Chain_Cursor{start_cluster, start_offset}
-		max_steps := int(master.cluster_map_size) + 1
+		max_steps := int(vol.master.cluster_map_size) + 1
 		for guard in 0 ..< max_steps {
-			tail, tc, step := chain_step(disk, master, &cursor, guard, max_steps)
+			tail, tc, step := chain_step(vol, &cursor, guard, max_steps)
 			if step == .Corrupted {
 				log.errorf("allocate: tail chain too long (corrupted)")
 				return 0, 0, .Entry_Not_Found
@@ -322,53 +265,46 @@ allocate_sectors :: proc(
 				tail.next_cluster = u64(first_cluster)
 				tail.next_sector_index = u16(first_offset)
 				tail_table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-				if read_cluster_entry_table(disk, master, tc, &tail_table) {
+				if read_cluster_entry_table(vol, tc, &tail_table) {
 					for &e in tail_table {
 						if e.sector_start == u16(cursor.offset) && .Allocated in e.state {
 							e = tail
 							break
 						}
 					}
-					if !write_cluster_entry_table(disk, master, tc, &tail_table, cache) {
+					if !write_cluster_entry_table(vol, tc, &tail_table) {
 						return 0, 0, .Sector_Write_Error
 					}
 				}
 				break
 			}
 		}
-		if cache_init {
-			cache.hint = (u64(first_cluster) + 1) % master.cluster_map_size
-		}
 
+		vol.cache.hint = (u64(first_cluster) + 1) % vol.master.cluster_map_size
 		jrnl_ok = true
 		if is_v2 {
-			journal_v2_commit(disk, master, &jrnl_v2_txn)
-			journal_v2_finish(disk, master, jrnl_v2_txn.seq)
+			journal_v2_commit(vol, &jrnl_v2_txn)
+			journal_v2_finish(vol, jrnl_v2_txn.seq)
 		} else {
-			intent_log_commit(disk, master, jrnl_entries_v6[:jrnl_count])
+			intent_log_commit(vol, jrnl_txn_v6.entries[:jrnl_txn_v6.count])
 		}
 		return start_cluster, start_offset, .None
 	}
 
 	log.debugf("allocate: ok — %d sectors across %d clusters", sectors_needed, first_cluster)
-	if cache_init {
-		cache.hint = (u64(first_cluster) + 1) % master.cluster_map_size
-	}
-
+	vol.cache.hint = (u64(first_cluster) + 1) % vol.master.cluster_map_size
 	jrnl_ok = true
 	if is_v2 {
-		journal_v2_commit(disk, master, &jrnl_v2_txn)
-		journal_v2_finish(disk, master, jrnl_v2_txn.seq)
+		journal_v2_commit(vol, &jrnl_v2_txn)
+		journal_v2_finish(vol, jrnl_v2_txn.seq)
 	} else {
-		intent_log_commit(disk, master, jrnl_entries_v6[:jrnl_count])
+		intent_log_commit(vol, jrnl_txn_v6.entries[:jrnl_txn_v6.count])
 	}
 	return first_cluster, first_offset, .None
 }
 
 deallocate_sectors :: proc(
-	master:        ^Master_Record,
-	disk:          ^os.File,
-	cache:         ^Cluster_Bitmap_Cache,
+	vol:           ^Volume,
 	start_cluster: Cluster,
 	start_offset:  Sector_Offset,
 ) -> FS_Error {
@@ -378,35 +314,35 @@ deallocate_sectors :: proc(
 
 	dj_entries: [MAX_JOURNAL_ENTRIES_v6]Intent_Log_Entry
 	dj_count := 0
-	if !intent_log_begin(disk, master) {
+	if !intent_log_begin(vol) {
 		return .Sector_Write_Error
 	}
-	defer intent_log_commit(disk, master, dj_entries[:dj_count])
+	defer intent_log_commit(vol, dj_entries[:dj_count])
 
 	current_cluster := start_cluster
 	current_offset  := start_offset
-	for guard in 0 ..< int(master.cluster_map_size) + 1 {
-		if guard == int(master.cluster_map_size) {
+	for guard in 0 ..< int(vol.master.cluster_map_size) + 1 {
+		if guard == int(vol.master.cluster_map_size) {
 			log.errorf("deallocate: chain too long (corrupted)")
 			return .Entry_Not_Found
 		}
 
-		entry, ok := find_cluster_entry(disk, master, current_cluster, current_offset)
+		entry, ok := find_cluster_entry(vol, current_cluster, current_offset)
 		if !ok {
 			return .Entry_Not_Found
 		}
 
 		entry.state -= {.Allocated}
-		cme, cme_ok := read_cluster_map_entry(disk, master, current_cluster)
+		cme, cme_ok := read_cluster_map_entry(vol, current_cluster)
 		if cme_ok && .Full in cme.flags {
 			cme.flags -= {.Full}
-			if !write_cluster_map_entry(disk, master, current_cluster, &cme, cache) {
+			if !write_cluster_map_entry(vol, current_cluster, &cme) {
 				return .Sector_Write_Error
 			}
 		}
 
 		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-		if !read_cluster_entry_table(disk, master, current_cluster, &table) {
+		if !read_cluster_entry_table(vol, current_cluster, &table) {
 			return .Sector_Read_Error
 		}
 
@@ -421,12 +357,13 @@ deallocate_sectors :: proc(
 		if freed_idx < 0 {
 			return .Entry_Not_Found
 		}
-		if !write_cluster_entry_table(disk, master, current_cluster, &table, cache) {
+		if !write_cluster_entry_table(vol, current_cluster, &table) {
 			return .Sector_Write_Error
 		}
 		if dj_count < MAX_JOURNAL_ENTRIES_v6 {
 			dj_entries[dj_count] = Intent_Log_Entry{
 				cluster    = u64(current_cluster),
+				sector_offset = 0,
 				ce_index   = u8(freed_idx),
 				alloc_size = 0,
 				state      = 0,

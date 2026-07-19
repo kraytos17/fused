@@ -7,6 +7,8 @@ package fs
 Sector        :: distinct u64 // absolute sector number on disk
 Cluster       :: distinct u64 // cluster index
 Sector_Offset :: distinct u16 // sector offset within a cluster
+Journal_Seq   :: distinct u64 // journal transaction sequence number
+Byte_Offset   :: distinct u64 // byte position or size in the image
 
 SECTOR_SIZE                :: 512
 CLUSTER_ENTRIES_PER_SECTOR :: 32
@@ -115,7 +117,7 @@ Master_Record :: struct #packed #all_or_none {
 	sig:                [7]u8,
 	rev_min:            u8,
 	rev_max:            u8,
-	features:           u64,
+	features:           Features,
 	cluster_map_offset: u64,
 	cluster_map_size:   u64,
 	cluster_size:       u64,

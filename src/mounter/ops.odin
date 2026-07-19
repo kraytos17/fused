@@ -20,44 +20,54 @@ import "core:time"
 import "src:fuse3"
 import "src:fs"
 
-get_dir_entry :: #force_inline proc(buf: []u8, index: int, features: u64) -> ^fs.Directory_Entry {
-	des := int(fs.dir_entry_size(transmute(fs.Features)features))
+get_dir_entry :: #force_inline proc(buf: []u8, index: int, features: fs.Features) -> ^fs.Directory_Entry {
+	des := int(fs.dir_entry_size(features))
 	return (^fs.Directory_Entry)(mem.ptr_offset(&buf[0], index * des))
 }
 
-dir_entries_per_buf :: #force_inline proc(features: u64) -> int {
-	return int(fs.dir_entries_per_sector(transmute(fs.Features)features))
+dir_entries_per_buf :: #force_inline proc(features: fs.Features) -> int {
+	return int(fs.dir_entries_per_sector(features))
 }
 
 // FS is the per-mount filesystem state, passed as fuse user_data.
 FS :: struct {
-	disk:        ^os.File,
+	vol:         fs.Volume,
 	disk_raw_fd: c.int,
-	master:      fs.Master_Record,
 	logger:      log.Logger,
-	image_size:  u64,
 	mu:          sync.Mutex,
 	path_cache:  lru.Cache(string, Path_Cache_Value),
 	lfn_cache:   lru.Cache(u64, string),
-	alloc_cache: fs.Cluster_Bitmap_Cache,
-	lfn_bump:    LFN_Bump,
-}
-
-// LFN_Bump is a bump allocator for long filename data sectors.
-// LFNs are append-only (filenames never change) and never freed
-// individually, so a bump allocator avoids the fragmentation that
-// a general-purpose per-sector allocation would incur — each sector
-// packs ~25 names sequentially instead of one name per sector.
-LFN_Bump :: struct {
-	active:     bool,
-	cluster:    fs.Cluster,
-	offset:     fs.Sector_Offset,
-	sector:     fs.Sector,
-	next_byte:  u16,
 }
 
 get_fs :: #force_inline proc "contextless" () -> ^FS {
 	return (^FS)(fuse3.fuse_get_context().private_data)
+}
+
+begin_op :: proc () -> ^FS {
+	fsys := get_fs()
+	free_all(context.temp_allocator)
+	context.logger = fsys.logger
+	sync.mutex_lock(&fsys.mu)
+	return fsys
+}
+
+end_op :: proc (fsys: ^FS) {
+	sync.mutex_unlock(&fsys.mu)
+}
+
+// fs_error_to_errno translates an FS_Error to a POSIX errno value.
+// Unknown errors fall through to EIO.
+fs_error_to_errno :: proc(err: fs.FS_Error) -> c.int {
+	#partial switch err {
+	case .None:                return 0
+	case .Entry_Not_Found:     return -c.int(posix.ENOENT)
+	case .Not_A_Directory:     return -c.int(posix.ENOTDIR)
+	case .Name_Too_Long:       return -c.int(posix.ENAMETOOLONG)
+	case .No_Space:            return -c.int(posix.ENOSPC)
+	case .Sector_Read_Error,
+	     .Sector_Write_Error:  return -c.int(posix.EIO)
+	case:                     return -c.int(posix.EIO)
+	}
 }
 
 UTIME_NOW  :: 1073741822
@@ -107,35 +117,28 @@ _set_time_fields_now :: proc(year: ^u16, dt: ^fs.Packed_Date_Time) {
 	dt^ = fs.Packed_Date_Time{month = u32(int(mo)), date = u32(d), hour = u32(h), minute = u32(m), second = u32(s)}
 }
 
-unpack_fh :: proc(fh: u64) -> (fs.Cluster, fs.Sector_Offset, int) {
-	return fs.Cluster(fh >> 32), fs.Sector_Offset((fh >> 16) & 0xFFFF), int(fh & 0xFFFF)
-}
-
 read_entry_from_fh :: proc(fsys: ^FS, fh: u64) -> (fs.Directory_Entry, fs.Cluster, fs.Sector_Offset, bool) {
-	pc, po, idx := unpack_fh(fh)
-	if idx < 0 {
-		return {}, 0, 0, false
-	}
+	fh_packed := transmute(fs.File_Handle)(fh)
 
-	runs, runs_ok := fs.resolve_extents(fsys.disk, &fsys.master, pc, po)
+	runs, runs_ok := fs.resolve_extents(&fsys.vol,fs.Cluster(fh_packed.dir_cluster), fs.Sector_Offset(fh_packed.dir_offset))
 	defer delete(runs)
 	if !runs_ok {
 		return {}, 0, 0, false
 	}
 
-	depc := dir_entries_per_buf(fsys.master.features)
-	remaining := idx
+	depc := dir_entries_per_buf(fsys.vol.master.features)
+	remaining := int(fh_packed.entry_index)
 	buf: [fs.SECTOR_SIZE]u8
 	for run in runs {
 		n := int(run.count)
 		for si in 0 ..< n {
 			if remaining < depc {
 				sec := fs.Sector(u64(run.sector) + u64(si))
-				if !fs.sector_read(fsys.disk, sec, buf[:]) {
+				if !fs.sector_read(&fsys.vol, sec, buf[:]) {
 					return {}, 0, 0, false
 				}
 
-				e := get_dir_entry(buf[:], remaining, fsys.master.features)^
+				e := get_dir_entry(buf[:], remaining, fsys.vol.master.features)^
 				if .Exists not_in e.flags {
 					return {}, 0, 0, false
 				}
@@ -194,11 +197,11 @@ resolve_path_cached :: proc(fsys: ^FS, path: string, allocator := context.alloca
 		return val.entry, val.cluster, val.offset, val.entry_index, true
 	}
 
-	entry, cluster, offset, entry_index, ok = resolve_path(fsys, path, allocator)
-	if ok {
-		path_cache_put(fsys, path, {entry, cluster, offset, entry_index})
+	res, res_ok := fs.resolve_path(&fsys.vol, path, allocator)
+	if res_ok {
+		path_cache_put(fsys, path, {res.entry, res.cluster, res.offset, res.entry_index})
 	}
-	return entry, cluster, offset, entry_index, ok
+	return res.entry, res.cluster, res.offset, res.entry_index, res_ok
 }
 
 resolve_path :: proc(fsys: ^FS, path: string, allocator := context.allocator) -> (
@@ -208,88 +211,14 @@ resolve_path :: proc(fsys: ^FS, path: string, allocator := context.allocator) ->
 	entry_index: int,
 	ok:          bool,
 ) {
-	if path == "/" || len(path) == 0 {
-		entry = fs.Directory_Entry{
-			flags          = fs.Dir_Flags{.Allocated, .Directory, .Exists},
-			sector_index   = fsys.master.root_sector_index,
-			stored_cluster = fsys.master.root_cluster,
-		}
-		return entry, fs.Cluster(fsys.master.root_cluster), fs.Sector_Offset(fsys.master.root_sector_index), 0, true
-	}
-
-	Component :: struct {
-		start, end: int,
-	}
-
-	comps: [16]Component
-	n_comps := 0
-	start := 1
-	i := start
-	for i <= len(path) {
-		if i == len(path) || path[i] == '/' {
-			if i > start {
-				if n_comps >= len(comps) {
-					return {}, {}, {}, 0, false
-				}
-
-				comps[n_comps] = Component{start, i}
-				n_comps += 1
-			}
-			start = i + 1
-		}
-		i += 1
-	}
-	if n_comps == 0 {
-		return resolve_path(fsys, "/")
-	}
-
-	current_cluster := fs.Cluster(fsys.master.root_cluster)
-	current_offset := fs.Sector_Offset(fsys.master.root_sector_index)
-	for comp_idx in 0 ..< n_comps {
-		target := path[comps[comp_idx].start:comps[comp_idx].end]
-		is_last := comp_idx == n_comps - 1
-		dirs, dirs_ok := fs.read_directory_entries(fsys.disk, &fsys.master, current_cluster, current_offset)
-		defer delete(dirs)
-
-		if !dirs_ok {
-			return {}, {}, {}, 0, false
-		}
-
-		found := false
-		for &d, didx in dirs {
-			if fs.entry_short_name(&d) == target {
-				found = true
-			}
-			if !found && .LFN in d.flags {
-				lfn_name, lfn_ok := fs.resolve_lfn(fsys.disk, &fsys.master, &d, context.temp_allocator)
-				if lfn_ok && lfn_name == target {
-					found = true
-				}
-			}
-			if found {
-				if is_last {
-					return d, current_cluster, current_offset, didx, true
-				}
-				if .Directory not_in d.flags {
-					return {}, {}, {}, 0, false
-				}
-
-				current_cluster = fs.Cluster(d.stored_cluster)
-				current_offset = fs.Sector_Offset(d.sector_index)
-				break
-			}
-		}
-		if !found {
-			return {}, {}, {}, 0, false
-		}
-	}
-	return {}, {}, {}, 0, false
+	res, res_ok := fs.resolve_path(&fsys.vol, path, allocator)
+	return res.entry, res.cluster, res.offset, res.entry_index, res_ok
 }
 
 @(private)
 write_entry_back :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, cluster: fs.Cluster, offset: fs.Sector_Offset, index: int) -> bool {
-	depc := dir_entries_per_buf(fsys.master.features)
-	runs, runs_ok := fs.resolve_extents(fsys.disk, &fsys.master, cluster, offset)
+	depc := dir_entries_per_buf(fsys.vol.master.features)
+	runs, runs_ok := fs.resolve_extents(&fsys.vol,cluster, offset)
 	defer delete(runs)
 	if !runs_ok {
 		return false
@@ -300,11 +229,8 @@ write_entry_back :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, cluster: fs.Clus
 		n := int(run.count)
 		for si in 0 ..< n {
 			if remaining < depc {
-				dsec := fs.Sector_Offset(u64(run.sector) + u64(si) - u64(cluster) * fsys.master.cluster_size)
-				return fs.write_directory_entry_at(
-					fsys.disk, &fsys.master,
-					cluster, dsec,
-					remaining, entry)
+				dsec := fs.Sector_Offset(u64(run.sector) + u64(si) - u64(cluster) * fsys.vol.master.cluster_size)
+				return fs.write_directory_entry_at(&fsys.vol,cluster, dsec, remaining, entry)
 			}
 			remaining -= depc
 		}
@@ -316,8 +242,8 @@ write_entry_back :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, cluster: fs.Clus
 // free slot found by scanning the directory's extent chain.
 // Returns ok=false when no free slot exists (caller should extend the chain).
 find_free_slot_in_extent :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Sector_Offset) -> (dcluster: fs.Cluster, dsec: fs.Sector_Offset, didx: int, ok: bool) {
-	depc := dir_entries_per_buf(fsys.master.features)
-	dir_runs, dir_ok := fs.resolve_extents(fsys.disk, &fsys.master, dir_cluster, dir_offset)
+	depc := dir_entries_per_buf(fsys.vol.master.features)
+	dir_runs, dir_ok := fs.resolve_extents(&fsys.vol, dir_cluster, dir_offset)
 	defer delete(dir_runs)
 	if !dir_ok {
 		return {}, 0, 0, false
@@ -328,14 +254,14 @@ find_free_slot_in_extent :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset:
 		n := int(run.count)
 		for si in 0 ..< n {
 			sec := fs.Sector(u64(run.sector) + u64(si))
-			if !fs.sector_read(fsys.disk, sec, scan_buf[:]) {
+			if !fs.sector_read(&fsys.vol, sec, scan_buf[:]) {
 				return {}, 0, 0, false
 			}
 			for i in 0 ..< depc {
 				zero_flags: fs.Dir_Flags
-				if get_dir_entry(scan_buf[:], i, fsys.master.features).flags == zero_flags {
-					cluster := u64(sec) / fsys.master.cluster_size
-					dsec = fs.Sector_Offset(u64(sec) - cluster * fsys.master.cluster_size)
+				if get_dir_entry(scan_buf[:], i, fsys.vol.master.features).flags == zero_flags {
+					cluster := u64(sec) / fsys.vol.master.cluster_size
+					dsec = fs.Sector_Offset(u64(sec) - cluster * fsys.vol.master.cluster_size)
 					return fs.Cluster(cluster), dsec, i, true
 				}
 			}
@@ -352,7 +278,7 @@ find_or_extend_dir :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Se
 		return
 	}
 
-	current_runs, cr_ok := fs.resolve_extents(fsys.disk, &fsys.master, dir_cluster, dir_offset)
+	current_runs, cr_ok := fs.resolve_extents(&fsys.vol, dir_cluster, dir_offset)
 	defer delete(current_runs)
 	if !cr_ok {
 		return {}, {}, 0, false
@@ -363,31 +289,31 @@ find_or_extend_dir :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Se
 		current_count += u64(r.count)
 	}
 
-	_, _, ext_err := fs.allocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, dir_cluster, dir_offset, current_count + 1, .Directory)
+	_, _, ext_err := fs.allocate_sectors(&fsys.vol, dir_cluster, dir_offset, current_count + 1, .Directory)
 	if ext_err != .None {
 		return {}, {}, 0, false
 	}
 
-	dir_runs, dir_ok := fs.resolve_extents(fsys.disk, &fsys.master, dir_cluster, dir_offset)
+	dir_runs, dir_ok := fs.resolve_extents(&fsys.vol, dir_cluster, dir_offset)
 	defer delete(dir_runs)
 	if !dir_ok {
 		return {}, {}, 0, false
 	}
 
-	depc := dir_entries_per_buf(fsys.master.features)
+	depc := dir_entries_per_buf(fsys.vol.master.features)
 	last_run := dir_runs[len(dir_runs) - 1]
 	last_sec := fs.Sector(u64(last_run.sector) + u64(last_run.count) - 1)
 	ext_buf: [fs.SECTOR_SIZE]u8
-	if !fs.sector_read(fsys.disk, last_sec, ext_buf[:]) {
+	if !fs.sector_read(&fsys.vol, last_sec, ext_buf[:]) {
 		return {}, {}, 0, false
 	}
 
 	zero_flags: fs.Dir_Flags
 	for i in 0 ..< depc {
-		if get_dir_entry(ext_buf[:], i, fsys.master.features).flags == zero_flags {
-			dlc := u64(last_sec) / fsys.master.cluster_size
+		if get_dir_entry(ext_buf[:], i, fsys.vol.master.features).flags == zero_flags {
+			dlc := u64(last_sec) / fsys.vol.master.cluster_size
 			dcluster = fs.Cluster(dlc)
-			dsec = fs.Sector_Offset(u64(last_sec) - dlc * fsys.master.cluster_size)
+			dsec = fs.Sector_Offset(u64(last_sec) - dlc * fsys.vol.master.cluster_size)
 			didx = i
 			ok = true
 			return
@@ -398,8 +324,8 @@ find_or_extend_dir :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Se
 
 // check_name_exists scans the directory for a name collision.
 check_name_exists :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Sector_Offset, name: string) -> bool {
-	depc := dir_entries_per_buf(fsys.master.features)
-	dir_runs, dir_ok := fs.resolve_extents(fsys.disk, &fsys.master, dir_cluster, dir_offset)
+	depc := dir_entries_per_buf(fsys.vol.master.features)
+	dir_runs, dir_ok := fs.resolve_extents(&fsys.vol, dir_cluster, dir_offset)
 	defer delete(dir_runs)
 	if !dir_ok {
 		return false
@@ -410,12 +336,12 @@ check_name_exists :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Sec
 		n := int(run.count)
 		for si in 0 ..< n {
 			sec := fs.Sector(u64(run.sector) + u64(si))
-			if !fs.sector_read(fsys.disk, sec, scan_buf[:]) {
+			if !fs.sector_read(&fsys.vol, sec, scan_buf[:]) {
 				return false
 			}
 			for i in 0 ..< depc {
-				if .Exists in get_dir_entry(scan_buf[:], i, fsys.master.features).flags {
-					if fs.entry_short_name(get_dir_entry(scan_buf[:], i, fsys.master.features)) == name {
+				if .Exists in get_dir_entry(scan_buf[:], i, fsys.vol.master.features).flags {
+					if fs.entry_short_name(get_dir_entry(scan_buf[:], i, fsys.vol.master.features)) == name {
 						return true
 					}
 				}
@@ -438,50 +364,17 @@ set_entry_name :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> b
 	if .LFN in entry.flags {
 		ptr := (^fs.LFN_Pointer)(&entry.file_name[0])
 		if ptr.cluster != 0 {
-			if derr := fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, fs.Cluster(ptr.cluster), fs.Sector_Offset(ptr.sector)); derr != .None {
+			if derr := fs.deallocate_sectors(&fsys.vol,fs.Cluster(ptr.cluster), fs.Sector_Offset(ptr.sector)); derr != .None {
 				return false
 			}
 		}
 		entry.flags -= {.LFN}
 	}
 	if len(name) > 16 {
-		needed := u16(len(name))
-		if !fsys.lfn_bump.active || fsys.lfn_bump.next_byte + needed > fs.SECTOR_SIZE {
-			new_c, new_o, lerr := fs.allocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, 0, 0, 1, .LFN)
-			if lerr != .None {
-				return false
-			}
-
-			lfn_runs, lfn_ok := fs.resolve_extents(fsys.disk, &fsys.master, new_c, new_o)
-			defer delete(lfn_runs)
-			if !lfn_ok || len(lfn_runs) == 0 {
-				return false
-			}
-
-			fsys.lfn_bump.active = true
-			fsys.lfn_bump.cluster = new_c
-			fsys.lfn_bump.offset = new_o
-			fsys.lfn_bump.sector = lfn_runs[0].sector
-			fsys.lfn_bump.next_byte = 0
-		}
-
-		sector_buf: [fs.SECTOR_SIZE]u8
-		if !fs.sector_read(fsys.disk, fsys.lfn_bump.sector, sector_buf[:]) {
-			return false
-		}
-
-		copy(sector_buf[fsys.lfn_bump.next_byte:], transmute([]u8)(name))
-		if !fs.sector_write(fsys.disk, fsys.lfn_bump.sector, sector_buf[:]) {
-			return false
-		}
-
-		ptr := (^fs.LFN_Pointer)(&entry.file_name[0])
-		ptr.cluster = u64(fsys.lfn_bump.cluster)
-		ptr.size = u32(len(name))
-		ptr.sector = u16(fsys.lfn_bump.offset)
-		ptr._pad = fsys.lfn_bump.next_byte
+		ptr, pok := fs.lfn_bump_write(&fsys.vol, &fsys.vol.lfn_bump, name)
+		if !pok { return false }
+		(^fs.LFN_Pointer)(&entry.file_name[0])^ = ptr
 		entry.flags += {.LFN}
-		fsys.lfn_bump.next_byte += needed
 	} else {
 		copy(entry.file_name[:], name)
 		mem.zero_slice(entry.file_name[len(name):])
@@ -491,10 +384,8 @@ set_entry_name :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> b
 
 fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	fsys := begin_op()
+	defer end_op(fsys)
 
 	entry, _, _, _, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
 	if !ok {
@@ -584,7 +475,7 @@ fused_readdir :: proc "c" (
 	// We release the lock after resolving, since the directory's
 	// on-disk data is stable for the duration of the readdir call.
 	sync.mutex_lock(&fsys.mu)
-	depc := dir_entries_per_buf(fsys.master.features)
+	depc := dir_entries_per_buf(fsys.vol.master.features)
 	entry, _, _, _, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
 	if !ok || .Directory not_in entry.flags {
 		sync.mutex_unlock(&fsys.mu)
@@ -594,7 +485,7 @@ fused_readdir :: proc "c" (
 
 	dir_cluster := fs.Cluster(entry.stored_cluster)
 	dir_offset := fs.Sector_Offset(entry.sector_index)
-	dir_runs, dir_ok := fs.resolve_extents(fsys.disk, &fsys.master, dir_cluster, dir_offset)
+	dir_runs, dir_ok := fs.resolve_extents(&fsys.vol,dir_cluster, dir_offset)
 
 	defer delete(dir_runs)
 	sync.mutex_unlock(&fsys.mu)
@@ -615,21 +506,21 @@ fused_readdir :: proc "c" (
 		n := int(run.count)
 		for si in 0 ..< n {
 			sec := fs.Sector(u64(run.sector) + u64(si))
-			if !fs.sector_read(fsys.disk, sec, sector_buf[:]) {
+			if !fs.sector_read(&fsys.vol, sec, sector_buf[:]) {
 				log.debugf("readdir: %s → sector read failed at %d", path, sec)
 				break
 			}
 			for i in 0 ..< depc {
-				if .Exists in get_dir_entry(sector_buf[:], i, fsys.master.features).flags {
-					name := fs.entry_short_name(get_dir_entry(sector_buf[:], i, fsys.master.features))
-					if .LFN in get_dir_entry(sector_buf[:], i, fsys.master.features).flags {
+				if .Exists in get_dir_entry(sector_buf[:], i, fsys.vol.master.features).flags {
+					name := fs.entry_short_name(get_dir_entry(sector_buf[:], i, fsys.vol.master.features))
+					if .LFN in get_dir_entry(sector_buf[:], i, fsys.vol.master.features).flags {
 						// LFN cache is read-only after setup, safe without lock
-						sec_off := fs.Sector_Offset(u64(run.sector) + u64(si) - u64(dir_cluster) * fsys.master.cluster_size)
+						sec_off := fs.Sector_Offset(u64(run.sector) + u64(si) - u64(dir_cluster) * fsys.vol.master.cluster_size)
 						cache_k := lfn_cache_key(dir_cluster, sec_off, i)
 						if cached, hit := lru.get(&fsys.lfn_cache, cache_k); hit {
 							name = cached
 						} else {
-							lfn, l_ok := fs.resolve_lfn(fsys.disk, &fsys.master, get_dir_entry(sector_buf[:], i, fsys.master.features))
+							lfn, l_ok := fs.resolve_lfn(&fsys.vol, get_dir_entry(sector_buf[:], i, fsys.vol.master.features))
 							if l_ok {
 								name = lfn
 								c := strings.clone(name, context.allocator)
@@ -655,10 +546,8 @@ fused_readdir :: proc "c" (
 
 fused_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	fsys := begin_op()
+	defer end_op(fsys)
 
 	entry, parent_cluster, parent_offset, entry_idx, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
 	if !ok {
@@ -679,7 +568,7 @@ fused_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 		return fuse3.nix(.EACCES)
 	}
 
-	fi.fh = (u64(parent_cluster) << 32) | (u64(parent_offset) << 16) | u64(entry_idx)
+	fi.fh = transmute(u64)(fs.File_Handle{dir_cluster = u64(parent_cluster), dir_offset = u16(parent_offset), entry_index = u16(entry_idx)})
 	log.debugf("open: %s → ok", path)
 	return 0
 }
@@ -700,7 +589,7 @@ fused_read :: proc "c" (
 		return fuse3.nix(.ENOENT)
 	}
 
-	runs, runs_ok := fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
+	runs, runs_ok := fs.resolve_extents(&fsys.vol, data_cluster, data_offset)
 	defer delete(runs)
 	if !runs_ok {
 		return fuse3.nix(.ENOENT)
@@ -721,7 +610,7 @@ fused_read :: proc "c" (
 		byte_offset := skip_in_run % fs.SECTOR_SIZE
 		remaining_in_run := u64(run.sector) + u64(run.count) - start_sector
 		if byte_offset > 0 && remaining_in_run > 0 {
-			if !fs.sector_read(fsys.disk, fs.Sector(start_sector), sector_buf[:]) {break}
+			if !fs.sector_read(&fsys.vol, fs.Sector(start_sector), sector_buf[:]) {break}
 
 			avail := u64(len(sector_buf[byte_offset:]))
 			need := min(avail, u64(size) - bytes_read)
@@ -739,7 +628,7 @@ fused_read :: proc "c" (
 			aligned_sectors := need_bytes / fs.SECTOR_SIZE
 			if aligned_sectors > 0 {
 				bulk_buf := buf[bytes_read:bytes_read + aligned_sectors * fs.SECTOR_SIZE]
-				if !fs.sector_read(fsys.disk, fs.Sector(start_sector), bulk_buf) {break}
+				if !fs.sector_read(&fsys.vol, fs.Sector(start_sector), bulk_buf) {break}
 
 				bytes_read += aligned_sectors * fs.SECTOR_SIZE
 				pos_in_file += aligned_sectors * fs.SECTOR_SIZE
@@ -748,7 +637,7 @@ fused_read :: proc "c" (
 				if bytes_read >= u64(size) {break}
 			}
 			if remaining_in_run > 0 && bytes_read < u64(size) {
-				if !fs.sector_read(fsys.disk, fs.Sector(start_sector), sector_buf[:]) {break}
+				if !fs.sector_read(&fsys.vol, fs.Sector(start_sector), sector_buf[:]) {break}
 
 				need := min(u64(size) - bytes_read, fs.SECTOR_SIZE)
 				mem.copy(rawptr(buf[bytes_read:]), raw_data(sector_buf[:]), int(need))
@@ -782,7 +671,7 @@ fused_read_buf :: proc "c" (
 		return fuse3.nix(.ENOENT)
 	}
 
-	runs, runs_ok := fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
+	runs, runs_ok := fs.resolve_extents(&fsys.vol, data_cluster, data_offset)
 	defer delete(runs)
 	if !runs_ok {
 		return fuse3.nix(.ENOENT)
@@ -862,11 +751,9 @@ fused_write :: proc "c" (
 	fi:   ^fuse3.File_Info,
 ) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
+	fsys := begin_op()
 	write_start := time.now()
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	defer end_op(fsys)
 
 	entry, data_cluster, data_offset, ok := read_entry_from_fh(fsys, fi.fh)
 	if !ok {
@@ -874,8 +761,8 @@ fused_write :: proc "c" (
 		return fuse3.nix(.ENOENT)
 	}
 
-	entry_cluster, entry_offset, entry_idx := unpack_fh(fi.fh)
-	runs, runs_ok := fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
+	fh := transmute(fs.File_Handle)(fi.fh)
+	runs, runs_ok := fs.resolve_extents(&fsys.vol,data_cluster, data_offset)
 	defer delete(runs)
 
 	total_sectors := (u64(off) + u64(size) + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
@@ -886,8 +773,7 @@ fused_write :: proc "c" (
 		}
 	}
 	if total_sectors > current_sectors {
-		new_c, new_o, aerr := fs.allocate_sectors(
-			&fsys.master, fsys.disk, &fsys.alloc_cache,
+		new_c, new_o, aerr := fs.allocate_sectors(&fsys.vol,
 			data_cluster, data_offset,
 			total_sectors, .File_Content)
 		if aerr != .None {
@@ -901,7 +787,7 @@ fused_write :: proc "c" (
 			data_offset = new_o
 		}
 		delete(runs)
-		runs, runs_ok = fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
+		runs, runs_ok = fs.resolve_extents(&fsys.vol, data_cluster, data_offset)
 	}
 	if !runs_ok {
 		log.errorf("write: %s → extents failed", path)
@@ -909,7 +795,7 @@ fused_write :: proc "c" (
 	}
 
 	// fsync after metadata allocation — ensures CE table and chain are durable.
-	os.sync(fsys.disk)
+	os.sync(fsys.vol.disk)
 	log.debugf("write: %s → enter write loop (runs=%d)", path, len(runs))
 	pos_in_file: u64 = 0
 	bytes_written: u64 = 0
@@ -930,12 +816,12 @@ fused_write :: proc "c" (
 		byte_off := skip % fs.SECTOR_SIZE
 		remaining_in_run := u64(run.sector) + u64(run.count) - start_sec
 		if byte_off > 0 && remaining_in_run > 0 && remaining > 0 {
-			if !fs.sector_read(fsys.disk, fs.Sector(start_sec), sector_rw[:]) {break}
+			if !fs.sector_read(&fsys.vol, fs.Sector(start_sec), sector_rw[:]) {break}
 
 			avail := u64(len(sector_rw[byte_off:]))
 			take := min(avail, remaining)
 			mem.copy(raw_data(sector_rw[byte_off:]), rawptr(buf[bytes_written:]), int(take))
-			if !fs.sector_write(fsys.disk, fs.Sector(start_sec), sector_rw[:]) {break}
+			if !fs.sector_write(&fsys.vol, fs.Sector(start_sec), sector_rw[:]) {break}
 
 			bytes_written += take
 			remaining -= take
@@ -950,7 +836,7 @@ fused_write :: proc "c" (
 			if full_sectors > remaining_in_run {full_sectors = remaining_in_run}
 			if full_sectors > 0 {
 				bulk_buf := buf[bytes_written:bytes_written + full_sectors * fs.SECTOR_SIZE]
-				if !fs.sector_write_bulk(fsys.disk, fs.Sector(start_sec), bulk_buf) {
+				if !fs.sector_write_bulk(&fsys.vol, fs.Sector(start_sec), bulk_buf) {
 					break
 				}
 
@@ -963,9 +849,9 @@ fused_write :: proc "c" (
 			}
 		}
 		if remaining_in_run > 0 && remaining > 0 {
-			if !fs.sector_read(fsys.disk, fs.Sector(start_sec), sector_rw[:]) {break}
+			if !fs.sector_read(&fsys.vol, fs.Sector(start_sec), sector_rw[:]) {break}
 			mem.copy(raw_data(sector_rw[:]), rawptr(buf[bytes_written:]), int(remaining))
-			if !fs.sector_write(fsys.disk, fs.Sector(start_sec), sector_rw[:]) {break}
+			if !fs.sector_write(&fsys.vol, fs.Sector(start_sec), sector_rw[:]) {break}
 
 			last := remaining
 			pos_in_file += last
@@ -976,14 +862,11 @@ fused_write :: proc "c" (
 		pos_in_file = u64(run.sector + fs.Sector(run.count)) * fs.SECTOR_SIZE
 	}
 	if new_size != u64(entry.file_size) {
-		os.sync(fsys.disk)
+		os.sync(fsys.vol.disk)
 		set_entry_time_to_now(&entry)
 		entry.file_size = new_size
-		write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx)
-		os.sync(fsys.disk)
+		write_entry_back(fsys, &entry, fs.Cluster(fh.dir_cluster), fs.Sector_Offset(fh.dir_offset), int(fh.entry_index))
 	}
-
-	lru.remove(&fsys.path_cache, string(path))
 	log.debugf("write: %s off=%d size=%d → %d bytes (%v)", path, off, size, bytes_written, time.since(write_start))
 	return c.int(bytes_written)
 }
@@ -995,11 +878,9 @@ fused_write_buf :: proc "c" (
 	fi:   ^fuse3.File_Info,
 ) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
+	fsys := begin_op()
 	write_start := time.now()
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	defer end_op(fsys)
 
 	entry, data_cluster, data_offset, ok := read_entry_from_fh(fsys, fi.fh)
 	if !ok {
@@ -1014,8 +895,8 @@ fused_write_buf :: proc "c" (
 		total_size += u64(b.size)
 	}
 
-	entry_cluster, entry_offset, entry_idx := unpack_fh(fi.fh)
-	runs, runs_ok := fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
+	fh := transmute(fs.File_Handle)(fi.fh)
+	runs, runs_ok := fs.resolve_extents(&fsys.vol,data_cluster, data_offset)
 	defer delete(runs)
 
 	total_sectors := (u64(off) + total_size + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
@@ -1026,8 +907,7 @@ fused_write_buf :: proc "c" (
 		}
 	}
 	if total_sectors > current_sectors {
-		new_c, new_o, aerr := fs.allocate_sectors(
-			&fsys.master, fsys.disk, &fsys.alloc_cache,
+		new_c, new_o, aerr := fs.allocate_sectors(&fsys.vol,
 			data_cluster, data_offset,
 			total_sectors, .File_Content)
 		if aerr != .None {
@@ -1041,7 +921,7 @@ fused_write_buf :: proc "c" (
 			data_offset = new_o
 		}
 		delete(runs)
-		runs, runs_ok = fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
+		runs, runs_ok = fs.resolve_extents(&fsys.vol, data_cluster, data_offset)
 	}
 	if !runs_ok {
 		log.errorf("write_buf: %s → extents failed", path)
@@ -1071,7 +951,7 @@ fused_write_buf :: proc "c" (
 			b := bufs[buf_idx]
 			buf_remaining := u64(b.size)
 			if byte_off > 0 && remaining_in_run > 0 && buf_remaining > 0 {
-				if !fs.sector_read(fsys.disk, fs.Sector(start_sec), sector_rw[:]) {break}
+				if !fs.sector_read(&fsys.vol, fs.Sector(start_sec), sector_rw[:]) {break}
 
 				avail := u64(len(sector_rw[byte_off:]))
 				take := min(avail, buf_remaining)
@@ -1081,7 +961,7 @@ fused_write_buf :: proc "c" (
 					src := ([^]u8)(b.mem)[:b.size]
 					mem.copy(raw_data(sector_rw[byte_off:]), raw_data(src), int(take))
 				}
-				if !fs.sector_write(fsys.disk, fs.Sector(start_sec), sector_rw[:]) {
+				if !fs.sector_write(&fsys.vol, fs.Sector(start_sec), sector_rw[:]) {
 					break
 				}
 
@@ -1115,7 +995,7 @@ fused_write_buf :: proc "c" (
 					}
 				} else {
 					src := ([^]u8)(b.mem)[:bulk_len]
-					if !fs.sector_write_bulk(fsys.disk, fs.Sector(start_sec), src) {break}
+					if !fs.sector_write_bulk(&fsys.vol, fs.Sector(start_sec), src) {break}
 				}
 
 				bytes_written += bulk_len
@@ -1133,14 +1013,14 @@ fused_write_buf :: proc "c" (
 				continue
 			}
 			if remaining_in_run > 0 && buf_remaining > 0 {
-				if !fs.sector_read(fsys.disk, fs.Sector(start_sec), sector_rw[:]) {break}
+				if !fs.sector_read(&fsys.vol, fs.Sector(start_sec), sector_rw[:]) {break}
 				if b.flags & fuse3.FUSE_BUF_IS_FD != 0 {
 					panic("write_buf: fd-backed buf at partial sector tail not supported")
 				} else {
 					src := ([^]u8)(b.mem)[:buf_remaining]
 					mem.copy(raw_data(sector_rw[:]), raw_data(src), int(buf_remaining))
 				}
-				if !fs.sector_write(fsys.disk, fs.Sector(start_sec), sector_rw[:]) {break}
+				if !fs.sector_write(&fsys.vol, fs.Sector(start_sec), sector_rw[:]) {break}
 
 				bytes_written += buf_remaining
 				write_off += buf_remaining
@@ -1155,7 +1035,7 @@ fused_write_buf :: proc "c" (
 	if new_size != u64(entry.file_size) {
 		set_entry_time_to_now(&entry)
 		entry.file_size = new_size
-		write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx)
+		write_entry_back(fsys, &entry, fs.Cluster(fh.dir_cluster), fs.Sector_Offset(fh.dir_offset), int(fh.entry_index))
 	}
 
 	lru.remove(&fsys.path_cache, string(path))
@@ -1165,10 +1045,8 @@ fused_write_buf :: proc "c" (
 
 fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	fsys := begin_op()
+	defer end_op(fsys)
 
 	parent, name := os.split_path(string(path))
 	parent_entry, _, _, _, ok := resolve_path_cached(fsys, parent, context.temp_allocator)
@@ -1203,11 +1081,11 @@ fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 	if !write_entry_with_lfn(fsys, &new_entry, name) {
 		return fuse3.nix(.ENOSPC)
 	}
-	if !fs.write_directory_entry_at(fsys.disk, &fsys.master, dcluster, dsec, didx, &new_entry) {
+	if !fs.write_directory_entry_at(&fsys.vol, dcluster, dsec, didx, &new_entry) {
 		return fuse3.nix(.EIO)
 	}
 
-	fi.fh = (u64(dcluster) << 32) | (u64(dsec) << 16) | u64(didx)
+	fi.fh = transmute(u64)(fs.File_Handle{dir_cluster = u64(dcluster), dir_offset = u16(dsec), entry_index = u16(didx)})
 	path_cache_invalidate_all(fsys)
 	log.debugf("create: %s → ok", path)
 	return 0
@@ -1215,10 +1093,8 @@ fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 
 fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	fsys := begin_op()
+	defer end_op(fsys)
 
 	parent, name := os.split_path(string(path))
 	parent_entry, _, _, _, ok := resolve_path_cached(fsys, parent, context.temp_allocator)
@@ -1237,19 +1113,19 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 		return fuse3.nix(.ENOSPC)
 	}
 
-	new_cluster, new_offset, derr := fs.allocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, 0, 0, 1, .Directory)
+	new_cluster, new_offset, derr := fs.allocate_sectors(&fsys.vol, 0, 0, 1, .Directory)
 	if derr != .None {
 		return fuse3.nix(.ENOSPC)
 	}
 
-	dir_runs, dr_ok := fs.resolve_extents(fsys.disk, &fsys.master, new_cluster, new_offset)
+	dir_runs, dr_ok := fs.resolve_extents(&fsys.vol, new_cluster, new_offset)
 	defer delete(dir_runs)
 	if !dr_ok || len(dir_runs) == 0 {
 		return fuse3.nix(.EIO)
 	}
 
 	zero: [fs.SECTOR_SIZE]u8
-	if !fs.sector_write(fsys.disk, dir_runs[0].sector, zero[:]) {
+	if !fs.sector_write(&fsys.vol, dir_runs[0].sector, zero[:]) {
 		return fuse3.nix(.EIO)
 	}
 
@@ -1266,7 +1142,7 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 	if len(name) < 16 {
 		new_entry.file_name[len(name)] = 0
 	}
-	if !fs.write_directory_entry_at(fsys.disk, &fsys.master, dcluster, dsec, didx, &new_entry) {
+	if !fs.write_directory_entry_at(&fsys.vol, dcluster, dsec, didx, &new_entry) {
 		return fuse3.nix(.EIO)
 	}
 
@@ -1277,10 +1153,8 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 
 fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	fsys := begin_op()
+	defer end_op(fsys)
 
 	target_str := string(target)
 	parent, name := os.split_path(string(linkpath))
@@ -1301,13 +1175,13 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 	}
 
 	sectors_needed := (u64(len(target_str)) + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
-	new_c, new_o, aerr := fs.allocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, 0, 0, sectors_needed, .File_Content)
+	new_c, new_o, aerr := fs.allocate_sectors(&fsys.vol, 0, 0, sectors_needed, .File_Content)
 	if aerr != .None {
 		return fuse3.nix(.ENOSPC)
 	}
 
 	{
-		runs, rok := fs.resolve_extents(fsys.disk, &fsys.master, new_c, new_o)
+		runs, rok := fs.resolve_extents(&fsys.vol, new_c, new_o)
 		defer delete(runs)
 		if !rok || len(runs) == 0 {
 			return fuse3.nix(.EIO)
@@ -1315,7 +1189,7 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 
 		buf: [fs.SECTOR_SIZE]u8
 		copy(buf[:], transmute([]u8)(target_str))
-		if !fs.sector_write(fsys.disk, runs[0].sector, buf[:]) {
+		if !fs.sector_write(&fsys.vol, runs[0].sector, buf[:]) {
 			return fuse3.nix(.EIO)
 		}
 	}
@@ -1333,7 +1207,7 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 	if !write_entry_with_lfn(fsys, &new_entry, name) {
 		return fuse3.nix(.ENOSPC)
 	}
-	if !fs.write_directory_entry_at(fsys.disk, &fsys.master, dcluster, dsec, didx, &new_entry) {
+	if !fs.write_directory_entry_at(&fsys.vol, dcluster, dsec, didx, &new_entry) {
 		return fuse3.nix(.EIO)
 	}
 
@@ -1344,10 +1218,8 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 
 fused_unlink :: proc "c" (path: cstring) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	fsys := begin_op()
+	defer end_op(fsys)
 
 	entry, cluster, offset, idx, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
 	if !ok {
@@ -1359,8 +1231,8 @@ fused_unlink :: proc "c" (path: cstring) -> c.int {
 		return fuse3.nix(.EISDIR)
 	}
 	if entry.stored_cluster != 0 {
-		if derr := fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index)); derr != .None {
-			return fuse3.nix(.EIO)
+		if derr := fs.deallocate_sectors(&fsys.vol, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index)); derr != .None {
+			return fs_error_to_errno(derr)
 		}
 	}
 
@@ -1376,10 +1248,8 @@ fused_unlink :: proc "c" (path: cstring) -> c.int {
 
 fused_rmdir :: proc "c" (path: cstring) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	fsys := begin_op()
+	defer end_op(fsys)
 
 	entry, cluster, offset, idx, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
 	if !ok {
@@ -1390,7 +1260,7 @@ fused_rmdir :: proc "c" (path: cstring) -> c.int {
 		return fuse3.nix(.ENOTDIR)
 	}
 
-	dirs, _ := fs.read_directory_entries(fsys.disk, &fsys.master, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index))
+	dirs, _ := fs.read_directory_entries(&fsys.vol, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index))
 	defer delete(dirs)
 
 	for &d in dirs {
@@ -1400,8 +1270,8 @@ fused_rmdir :: proc "c" (path: cstring) -> c.int {
 		}
 	}
 	if entry.stored_cluster != 0 {
-		if derr := fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index)); derr != .None {
-			return fuse3.nix(.EIO)
+		if derr := fs.deallocate_sectors(&fsys.vol, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index)); derr != .None {
+			return fs_error_to_errno(derr)
 		}
 	}
 
@@ -1417,21 +1287,20 @@ fused_rmdir :: proc "c" (path: cstring) -> c.int {
 
 fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	fsys := begin_op()
+	defer end_op(fsys)
 
 	log.debugf("truncate: %s size=%d fi=%v", path, size, fi != nil)
 
 	entry: fs.Directory_Entry
 	data_cluster: fs.Cluster
 	data_offset: fs.Sector_Offset
+	entry_fh: fs.File_Handle
 	entry_cluster: fs.Cluster
 	entry_offset: fs.Sector_Offset
 	entry_idx: int
 	if fi != nil {
-		entry_cluster, entry_offset, entry_idx = unpack_fh(fi.fh)
+		entry_fh = transmute(fs.File_Handle)(fi.fh)
 		e, dc, ddo, ok := read_entry_from_fh(fsys, fi.fh)
 		if !ok {
 			log.debugf("truncate: %s → ENOENT (fh)", path)
@@ -1463,7 +1332,7 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 
 	new_sectors := (u64(size) + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
 	current_sectors: u64
-	runs, runs_ok := fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
+	runs, runs_ok := fs.resolve_extents(&fsys.vol, data_cluster, data_offset)
 	defer delete(runs)
 	if runs_ok {
 		for r in runs {
@@ -1476,7 +1345,7 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 		current_o := fs.Sector_Offset(entry.sector_index)
 		for {
 			ce_idx: int
-			ce, ce_ok := fs.find_cluster_entry(fsys.disk, &fsys.master, current_c, current_o, nil, &ce_idx)
+			ce, ce_ok := fs.find_cluster_entry(&fsys.vol, current_c, current_o, nil, &ce_idx)
 			if !ce_ok {
 				break
 			}
@@ -1488,11 +1357,11 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 				if needed == 0 {
 					nc := fs.Cluster(ce.next_cluster)
 					no := fs.Sector_Offset(ce.next_sector_index)
-					if derr := fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, current_c, current_o); derr != .None {
-						return fuse3.nix(.EIO)
+					if derr := fs.deallocate_sectors(&fsys.vol, current_c, current_o); derr != .None {
+						return fs_error_to_errno(derr)
 					}
 					if nc != 0 {
-						if derr := fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, nc, no); derr != .None {
+						if derr := fs.deallocate_sectors(&fsys.vol, nc, no); derr != .None {
 							return fuse3.nix(.EIO)
 						}
 					}
@@ -1500,7 +1369,7 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 					if ce.next_cluster != 0 {
 						nc := fs.Cluster(ce.next_cluster)
 						no := fs.Sector_Offset(ce.next_sector_index)
-						if derr := fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, nc, no); derr != .None {
+						if derr := fs.deallocate_sectors(&fsys.vol, nc, no); derr != .None {
 							return fuse3.nix(.EIO)
 						}
 						ce.next_cluster = 0
@@ -1508,7 +1377,7 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 					}
 
 					ce.allocation_size = u16(needed)
-					if !fs.write_cluster_entry_at(fsys.disk, &fsys.master, current_c, ce_idx, &ce, &fsys.alloc_cache) {
+					if !fs.write_cluster_entry_at(&fsys.vol,current_c, ce_idx, &ce) {
 						return fuse3.nix(.EIO)
 					}
 				}
@@ -1521,20 +1390,23 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 			current_o = fs.Sector_Offset(ce.next_sector_index)
 		}
 	} else if new_sectors > current_sectors {
-		_, _, aerr := fs.allocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index), new_sectors, .File_Content)
+		_, _, aerr := fs.allocate_sectors(&fsys.vol, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index), new_sectors, .File_Content)
 		if aerr != .None {
 			return fuse3.nix(.ENOSPC)
 		}
-		os.sync(fsys.disk)
+		os.sync(fsys.vol.disk)
 	}
 
 	set_entry_time_to_now(&entry)
 	entry.file_size = u64(size)
-	if !write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx) {
+	ec := entry_cluster if fi == nil else fs.Cluster(entry_fh.dir_cluster)
+	eo := entry_offset if fi == nil else fs.Sector_Offset(entry_fh.dir_offset)
+	ei := entry_idx if fi == nil else int(entry_fh.entry_index)
+	if !write_entry_back(fsys, &entry, ec, eo, ei) {
 		return fuse3.nix(.EIO)
 	}
 
-	os.sync(fsys.disk)
+	os.sync(fsys.vol.disk)
 	lru.remove(&fsys.path_cache, string(path))
 	log.debugf("truncate: %s → %d", path, size)
 	return 0
@@ -1543,7 +1415,7 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 zero_file_range :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, data_cluster: fs.Cluster, data_offset: fs.Sector_Offset, start: u64, end: u64) -> bool {
 	if start >= end {return true}
 
-	runs, rok := fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
+	runs, rok := fs.resolve_extents(&fsys.vol, data_cluster, data_offset)
 	defer delete(runs)
 	if !rok {return false}
 
@@ -1566,18 +1438,18 @@ zero_file_range :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, data_cluster: fs.
 			sec := fs.Sector(u64(run.sector) + si)
 			sector_buf: [fs.SECTOR_SIZE]u8
 			if sector_start >= start && sector_end <= end {
-				if !fs.sector_write(fsys.disk, sec, zero_sector[:]) {
+				if !fs.sector_write(&fsys.vol, sec, zero_sector[:]) {
 					return false
 				}
 			} else {
-				if !fs.sector_read(fsys.disk, sec, sector_buf[:]) {
+				if !fs.sector_read(&fsys.vol, sec, sector_buf[:]) {
 					return false
 				}
 
 				zero_begin := max(sector_start, start) - sector_start
 				zero_end := min(sector_end, end) - sector_start
 				mem.zero_slice(sector_buf[zero_begin:zero_end])
-				if !fs.sector_write(fsys.disk, sec, sector_buf[:]) {
+				if !fs.sector_write(&fsys.vol, sec, sector_buf[:]) {
 					return false
 				}
 			}
@@ -1589,10 +1461,8 @@ zero_file_range :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, data_cluster: fs.
 
 fused_fallocate :: proc "c" (path: cstring, mode: c.int, off: posix.off_t, length: posix.off_t, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	fsys := begin_op()
+	defer end_op(fsys)
 
 	if mode & (fuse3.FALLOC_FL_COLLAPSE_RANGE | fuse3.FALLOC_FL_INSERT_RANGE) != 0 {
 		return fuse3.nix(.EOPNOTSUPP)
@@ -1603,7 +1473,7 @@ fused_fallocate :: proc "c" (path: cstring, mode: c.int, off: posix.off_t, lengt
 		return fuse3.nix(.ENOENT)
 	}
 
-	entry_cluster, entry_offset, entry_idx := unpack_fh(fi.fh)
+	fh := transmute(fs.File_Handle)(fi.fh)
 	if .Directory in entry.flags {
 		return fuse3.nix(.EISDIR)
 	}
@@ -1612,7 +1482,7 @@ fused_fallocate :: proc "c" (path: cstring, mode: c.int, off: posix.off_t, lengt
 	alloc_len := u64(length)
 	total_sectors := (alloc_start + alloc_len + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
 	current_sectors: u64
-	runs, runs_ok := fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
+	runs, runs_ok := fs.resolve_extents(&fsys.vol, data_cluster, data_offset)
 	defer delete(runs)
 	if runs_ok {
 		for r in runs {
@@ -1627,15 +1497,14 @@ fused_fallocate :: proc "c" (path: cstring, mode: c.int, off: posix.off_t, lengt
 			return fuse3.nix(.EIO)
 		}
 		// Update file_size if needed (PUNCH_HOLE implies KEEP_SIZE)
-		if !write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx) {
+		if !write_entry_back(fsys, &entry, fs.Cluster(fh.dir_cluster), fs.Sector_Offset(fh.dir_offset), int(fh.entry_index)) {
 			return fuse3.nix(.EIO)
 		}
 		path_cache_invalidate_all(fsys)
 		return 0
 	}
 	if total_sectors > current_sectors {
-		new_c, new_o, aerr := fs.allocate_sectors(
-			&fsys.master, fsys.disk, &fsys.alloc_cache,
+		new_c, new_o, aerr := fs.allocate_sectors(&fsys.vol,
 			data_cluster, data_offset,
 			total_sectors, .File_Content)
 		if aerr != .None {
@@ -1654,7 +1523,7 @@ fused_fallocate :: proc "c" (path: cstring, mode: c.int, off: posix.off_t, lengt
 			if !zok {
 				return fuse3.nix(.EIO)
 			}
-			os.sync(fsys.disk)
+			os.sync(fsys.vol.disk)
 		}
 	}
 	if mode & fuse3.FALLOC_FL_KEEP_SIZE == 0 {
@@ -1664,10 +1533,10 @@ fused_fallocate :: proc "c" (path: cstring, mode: c.int, off: posix.off_t, lengt
 			entry.file_size = new_size
 		}
 	}
-	if !write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx) {
+	if !write_entry_back(fsys, &entry, fs.Cluster(fh.dir_cluster), fs.Sector_Offset(fh.dir_offset), int(fh.entry_index)) {
 		return fuse3.nix(.EIO)
 	}
-	os.sync(fsys.disk)
+	os.sync(fsys.vol.disk)
 
 	path_cache_invalidate_all(fsys)
 	log.debugf("fallocate: %s off=%d len=%d mode=%d", path, off, length, mode)
@@ -1676,17 +1545,18 @@ fused_fallocate :: proc "c" (path: cstring, mode: c.int, off: posix.off_t, lengt
 
 fused_utimens :: proc "c" (path: cstring, tv: [^]posix.timespec, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	fsys := begin_op()
+	defer end_op(fsys)
 
 	entry: fs.Directory_Entry
 	entry_cluster: fs.Cluster
 	entry_offset: fs.Sector_Offset
 	entry_idx: int
 	if fi != nil {
-		entry_cluster, entry_offset, entry_idx = unpack_fh(fi.fh)
+		fh := transmute(fs.File_Handle)(fi.fh)
+		entry_cluster = fs.Cluster(fh.dir_cluster)
+		entry_offset = fs.Sector_Offset(fh.dir_offset)
+		entry_idx = int(fh.entry_index)
 		e, _, _, ok := read_entry_from_fh(fsys, fi.fh)
 		if !ok {return fuse3.nix(.ENOENT)}
 		entry = e
@@ -1727,10 +1597,8 @@ fused_utimens :: proc "c" (path: cstring, tv: [^]posix.timespec, fi: ^fuse3.File
 
 fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	fsys := begin_op()
+	defer end_op(fsys)
 
 	if u32(flags) & u32(fuse3.RENAME_NOREPLACE) != 0 {
 		log.debugf("rename: RENAME_NOREPLACE not supported")
@@ -1757,7 +1625,7 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 		if dst_entry, _, _, dst_idx, dst_ok := resolve_path_cached(fsys, string(newpath), context.temp_allocator); dst_ok {
 			if .Directory not_in dst_entry.flags {
 				if dst_entry.stored_cluster != 0 {
-					if derr := fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, fs.Cluster(dst_entry.stored_cluster), fs.Sector_Offset(dst_entry.sector_index)); derr != .None {
+					if derr := fs.deallocate_sectors(&fsys.vol, fs.Cluster(dst_entry.stored_cluster), fs.Sector_Offset(dst_entry.sector_index)); derr != .None {
 						return fuse3.nix(.EIO)
 					}
 				}
@@ -1804,7 +1672,7 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 		dst_idx = dst_idx_resolved
 		if .Directory not_in dst_entry.flags {
 			if dst_entry.stored_cluster != 0 {
-				if derr := fs.deallocate_sectors(&fsys.master, fsys.disk, &fsys.alloc_cache, fs.Cluster(dst_entry.stored_cluster), fs.Sector_Offset(dst_entry.sector_index)); derr != .None {
+				if derr := fs.deallocate_sectors(&fsys.vol, fs.Cluster(dst_entry.stored_cluster), fs.Sector_Offset(dst_entry.sector_index)); derr != .None {
 					return fuse3.nix(.EIO)
 				}
 			}
@@ -1826,7 +1694,7 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	if !set_entry_name(fsys, &entry, new_name) {
 		return fuse3.nix(.ENOSPC)
 	}
-	if !fs.write_directory_entry_at(fsys.disk, &fsys.master, dst_cluster, dst_sec, dst_slot_idx, &entry) {
+	if !fs.write_directory_entry_at(&fsys.vol, dst_cluster, dst_sec, dst_slot_idx, &entry) {
 		return fuse3.nix(.EIO)
 	}
 
@@ -1842,10 +1710,8 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 
 fused_access :: proc "c" (path: cstring, mask: c.int) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	fsys := begin_op()
+	defer end_op(fsys)
 
 	entry, _, _, _, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
 	if !ok {
@@ -1870,10 +1736,8 @@ fused_access :: proc "c" (path: cstring, mask: c.int) -> c.int {
 
 fused_chmod :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	fsys := begin_op()
+	defer end_op(fsys)
 
 	entry: fs.Directory_Entry
 	entry_cluster: fs.Cluster
@@ -1886,7 +1750,10 @@ fused_chmod :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Info
 		}
 
 		entry = e
-		entry_cluster, entry_offset, entry_idx = unpack_fh(fi.fh)
+		fh := transmute(fs.File_Handle)(fi.fh)
+		entry_cluster = fs.Cluster(fh.dir_cluster)
+		entry_offset = fs.Sector_Offset(fh.dir_offset)
+		entry_idx = int(fh.entry_index)
 	} else {
 		e, c, o, i, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
 		if !ok {
@@ -1918,10 +1785,8 @@ fused_chmod :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Info
 
 fused_chown :: proc "c" (path: cstring, uid: posix.uid_t, gid: posix.gid_t, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	fsys := begin_op()
+	defer end_op(fsys)
 
 	entry: fs.Directory_Entry
 	entry_cluster: fs.Cluster
@@ -1931,14 +1796,17 @@ fused_chown :: proc "c" (path: cstring, uid: posix.uid_t, gid: posix.gid_t, fi: 
 		e, _, _, ok := read_entry_from_fh(fsys, fi.fh)
 		if !ok {return fuse3.nix(.ENOENT)}
 		entry = e
-		entry_cluster, entry_offset, entry_idx = unpack_fh(fi.fh)
+		fh := transmute(fs.File_Handle)(fi.fh)
+		entry_cluster = fs.Cluster(fh.dir_cluster)
+		entry_offset = fs.Sector_Offset(fh.dir_offset)
+		entry_idx = int(fh.entry_index)
 	} else {
 		e, c, o, i, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
 		if !ok {return fuse3.nix(.ENOENT)}
 		entry = e
 		entry_cluster, entry_offset, entry_idx = c, o, i
 	}
-
+	
 	uid_t_max :: posix.uid_t(0xFFFFFFFF)
 	gid_t_max :: posix.gid_t(0xFFFFFFFF)
 	if uid != uid_t_max {
@@ -1960,7 +1828,7 @@ fused_flush :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
-	os.sync(fsys.disk)
+	os.sync(fsys.vol.disk)
 	log.debugf("flush: %s → ok", path)
 	return 0
 }
@@ -1975,10 +1843,8 @@ fused_release :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 
 fused_readlink :: proc "c" (path: cstring, buf: [^]c.char, size: c.size_t) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	fsys := begin_op()
+	defer end_op(fsys)
 
 	entry, _, _, _, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
 	if !ok {
@@ -1991,14 +1857,14 @@ fused_readlink :: proc "c" (path: cstring, buf: [^]c.char, size: c.size_t) -> c.
 		return fuse3.nix(.EIO)
 	}
 
-	runs, rok := fs.resolve_extents(fsys.disk, &fsys.master, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index))
+	runs, rok := fs.resolve_extents(&fsys.vol, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index))
 	defer delete(runs)
 	if !rok {
 		return fuse3.nix(.EIO)
 	}
 
 	sector_buf: [fs.SECTOR_SIZE]u8
-	if !fs.sector_read(fsys.disk, runs[0].sector, sector_buf[:]) {
+	if !fs.sector_read(&fsys.vol, runs[0].sector, sector_buf[:]) {
 		return fuse3.nix(.EIO)
 	}
 
@@ -2033,11 +1899,9 @@ fused_copy_file_range :: proc "c" (
 	flags:    c.int,
 ) -> c.ssize_t {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
+	fsys := begin_op()
 	log.debugf("copy_file_range: path_in=%s size=%d off_in=%d off_out=%d", path_in, size, off_in, off_out)
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	defer end_op(fsys)
 
 	_, src_cluster, src_offset, src_ok := read_entry_from_fh(fsys, fi_in.fh)
 	if !src_ok {
@@ -2049,14 +1913,14 @@ fused_copy_file_range :: proc "c" (
 		return c.ssize_t(-int(fuse3.nix(.ENOENT)))
 	}
 
-	dst_cluster2, dst_offset2, dst_idx := unpack_fh(fi_out.fh)
-	src_runs, src_rok := fs.resolve_extents(fsys.disk, &fsys.master, src_cluster, src_offset)
+	dst_fh := transmute(fs.File_Handle)(fi_out.fh)
+	src_runs, src_rok := fs.resolve_extents(&fsys.vol,src_cluster, src_offset)
 	defer delete(src_runs)
 	if !src_rok {
 		return c.ssize_t(-int(fuse3.nix(.ENOENT)))
 	}
 
-	dst_runs, dst_rok := fs.resolve_extents(fsys.disk, &fsys.master, dst_cluster, dst_offset)
+	dst_runs, dst_rok := fs.resolve_extents(&fsys.vol, dst_cluster, dst_offset)
 	defer delete(dst_runs)
 	if !dst_rok {dst_runs = {}}
 
@@ -2066,8 +1930,7 @@ fused_copy_file_range :: proc "c" (
 	dst_current: u64
 	for r in dst_runs {dst_current += u64(r.count)}
 	if dst_total_sectors > dst_current {
-		new_c, new_o, aerr := fs.allocate_sectors(
-			&fsys.master, fsys.disk, &fsys.alloc_cache,
+		new_c, new_o, aerr := fs.allocate_sectors(&fsys.vol,
 			dst_cluster, dst_offset, dst_total_sectors, .File_Content)
 		if aerr != .None {return c.ssize_t(-int(fuse3.nix(.ENOSPC)))}
 		if dst_cluster == 0 {
@@ -2078,7 +1941,7 @@ fused_copy_file_range :: proc "c" (
 		}
 
 		delete(dst_runs)
-		dst_runs, dst_rok = fs.resolve_extents(fsys.disk, &fsys.master, dst_cluster, dst_offset)
+		dst_runs, dst_rok = fs.resolve_extents(&fsys.vol, dst_cluster, dst_offset)
 		if !dst_rok {return c.ssize_t(-int(fuse3.nix(.ENOENT)))}
 	}
 
@@ -2088,18 +1951,18 @@ fused_copy_file_range :: proc "c" (
 	for remaining > 0 {
 		src_sec, src_sec_off, src_found := find_sector_at_offset(src_runs[:], src_off)
 		if !src_found {break}
-		if !fs.sector_read(fsys.disk, src_sec, read_sector[:]) {break}
+		if !fs.sector_read(&fsys.vol, src_sec, read_sector[:]) {break}
 
 		take := min(remaining, fs.SECTOR_SIZE - src_sec_off)
 		dst_sec, dst_sec_off, dst_found := find_sector_at_offset(dst_runs[:], dst_off)
 		if !dst_found {break}
 		if dst_sec_off != 0 || take < fs.SECTOR_SIZE {
 			dst_buf: [fs.SECTOR_SIZE]u8
-			if !fs.sector_read(fsys.disk, dst_sec, dst_buf[:]) {break}
+			if !fs.sector_read(&fsys.vol, dst_sec, dst_buf[:]) {break}
 			copy(dst_buf[dst_sec_off:], read_sector[src_sec_off:][:take])
-			if !fs.sector_write(fsys.disk, dst_sec, dst_buf[:]) {break}
+			if !fs.sector_write(&fsys.vol, dst_sec, dst_buf[:]) {break}
 		} else {
-			if !fs.sector_write(fsys.disk, dst_sec, read_sector[src_sec_off:][:take]) {break}
+			if !fs.sector_write(&fsys.vol, dst_sec, read_sector[src_sec_off:][:take]) {break}
 		}
 
 		bytes_copied += take
@@ -2112,7 +1975,7 @@ fused_copy_file_range :: proc "c" (
 	if new_size != u64(dst_entry.file_size) {
 		set_entry_time_to_now(&dst_entry)
 		dst_entry.file_size = new_size
-		if !write_entry_back(fsys, &dst_entry, dst_cluster2, dst_offset2, dst_idx) {
+		if !write_entry_back(fsys, &dst_entry, fs.Cluster(dst_fh.dir_cluster), fs.Sector_Offset(dst_fh.dir_offset), int(dst_fh.entry_index)) {
 			return c.ssize_t(-int(fuse3.nix(.EIO)))
 		}
 	}
@@ -2140,16 +2003,14 @@ fused_fsync :: proc "c" (path: cstring, datasync: c.int, fi: ^fuse3.File_Info) -
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
-	os.sync(fsys.disk)
+	os.sync(fsys.vol.disk)
 	return 0
 }
 
 fused_lseek :: proc "c" (path: cstring, off: posix.off_t, whence: c.int, fi: ^fuse3.File_Info) -> posix.off_t {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
-	sync.mutex_lock(&fsys.mu)
-	defer sync.mutex_unlock(&fsys.mu)
+	fsys := begin_op()
+	defer end_op(fsys)
 
 	if whence != fuse3.SEEK_DATA && whence != fuse3.SEEK_HOLE {
 		return posix.off_t(-int(fuse3.nix(.ENOSYS)))
@@ -2160,7 +2021,7 @@ fused_lseek :: proc "c" (path: cstring, off: posix.off_t, whence: c.int, fi: ^fu
 		return posix.off_t(-int(fuse3.nix(.ENOENT)))
 	}
 
-	runs, rok := fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
+	runs, rok := fs.resolve_extents(&fsys.vol, data_cluster, data_offset)
 	defer delete(runs)
 	if !rok {
 		return posix.off_t(-int(fuse3.nix(.ENOENT)))
@@ -2208,17 +2069,17 @@ fused_statfs :: proc "c" (path: cstring, stbuf: ^posix.statvfs_t) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
-	total_sectors := fsys.image_size / fs.SECTOR_SIZE
-	free_sectors := fs.alloc_cache_count_free(&fsys.alloc_cache, &fsys.master, fsys.disk)
+	total_sectors := u64(fsys.vol.image_size) / fs.SECTOR_SIZE
+	free_sectors := fs.alloc_cache_count_free(&fsys.vol)
 	stbuf^ = {
 		f_bsize   = c.ulong(fs.SECTOR_SIZE),
 		f_frsize  = c.ulong(fs.SECTOR_SIZE),
 		f_blocks  = posix.fsblkcnt_t(total_sectors),
 		f_bfree   = posix.fsblkcnt_t(free_sectors),
 		f_bavail  = posix.fsblkcnt_t(free_sectors),
-		f_files   = posix.fsblkcnt_t(fsys.master.cluster_map_size * u64(dir_entries_per_buf(fsys.master.features))),
-		f_ffree   = posix.fsblkcnt_t(fsys.master.cluster_map_size * u64(dir_entries_per_buf(fsys.master.features))),
-		f_favail  = posix.fsblkcnt_t(fsys.master.cluster_map_size * u64(dir_entries_per_buf(fsys.master.features))),
+		f_files   = posix.fsblkcnt_t(fsys.vol.master.cluster_map_size * u64(dir_entries_per_buf(fsys.vol.master.features))),
+		f_ffree   = posix.fsblkcnt_t(fsys.vol.master.cluster_map_size * u64(dir_entries_per_buf(fsys.vol.master.features))),
+		f_favail  = posix.fsblkcnt_t(fsys.vol.master.cluster_map_size * u64(dir_entries_per_buf(fsys.vol.master.features))),
 		f_flag    = posix.VFS_Flags{},
 		f_namemax = c.ulong(255),
 	}
@@ -2232,7 +2093,7 @@ fused_init :: proc "c" (conn_info: ^fuse3.Conn_Info, cfg: ^fuse3.Config) -> rawp
 	conn_info.time_gran = 1
 	conn_info.max_background = 16
 	conn_info.congestion_threshold = 12
-	log.debugf("init: fused rev %d, cluster_size=%d", fsys.master.rev_max, fsys.master.cluster_size)
+	log.debugf("init: fused rev %d, cluster_size=%d", fsys.vol.master.rev_max, fsys.vol.master.cluster_size)
 	return fsys
 }
 
@@ -2247,7 +2108,7 @@ fused_fsyncdir :: proc "c" (path: cstring, datasync: c.int, fi: ^fuse3.File_Info
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
-	os.sync(fsys.disk)
+	os.sync(fsys.vol.disk)
 	return 0
 }
 

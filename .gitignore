@@ -9,3 +9,5 @@ logs/
 __pycache__/
 ROADMAP.md
 journaling-architecture-plan.md
+fused-further-refactor.md
+fused-python-test-infra-refactor.md

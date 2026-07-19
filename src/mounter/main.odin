@@ -89,11 +89,12 @@ main :: proc() {
 		log_fd, log_open_err := os.open(log_file_path, {.Create, .Write, .Append})
 		if log_open_err != nil {
 			log.errorf("cannot open log file %s: %v", log_file_path, log_open_err)
-		os.exit(1)
+			os.exit(1)
 		}
 
 		file_logger := log.create_file_logger(log_fd, log_level, log.Default_File_Logger_Opts)
 		defer log.destroy_file_logger(file_logger)
+
 		context.logger = log.create_multi_logger(file_logger)
 		fsys.logger = context.logger
 	} else {
@@ -108,46 +109,18 @@ main :: proc() {
 	}
 
 	image_path := fuse_args[0]
-	fd, open_err := os.open(image_path, {.Read, .Write})
-	if open_err != nil {
-		log.errorf("cannot open %s: %v", image_path, open_err)
+	vol, vol_err := fs.volume_open(image_path)
+	if vol_err != .None {
+		log.errorf("failed to open image: %v", vol_err)
 		os.exit(1)
 	}
-	defer os.close(fd)
+	defer fs.volume_close(&vol)
 
-	fsys.disk = fd
-	fsys.disk_raw_fd = c.int(os.fd(fd))
-	log.debugf("opened %s → fd=%d (raw=%d)", image_path, os.fd(fd), fsys.disk_raw_fd)
-	master, master_ok := fs.read_master_record(fd)
-	if !master_ok {
-		log.errorf("failed to read MasterRecord")
-		os.exit(1)
-	}
-
-	fi, stat_err := os.stat(image_path, context.temp_allocator)
-	image_size: u64 = 0
-	if stat_err == nil {
-		image_size = u64(fi.size)
-	}
-
-	err := fs.validate_master(&master, image_size)
-	if err != .None {
-		log.errorf("validation failed: %v", err)
-		os.exit(1)
-	}
-
-	if .Journal_V2 in transmute(fs.Features)master.features {
-		fs.journal_v2_recover(fd, &master)
-	} else {
-		fs.intent_log_recover(fd, &master)
-	}
-	fsys.master = master
-	fsys.image_size = image_size
-	fs.alloc_cache_init(&fsys.alloc_cache, &master)
-	defer fs.alloc_cache_destroy(&fsys.alloc_cache)
-
+	fsys.vol = vol
+	fsys.disk_raw_fd = c.int(os.fd(vol.disk))
+	log.debugf("opened %s → raw_fd=%d", image_path, fsys.disk_raw_fd)
 	log.infof("mounted: rev=%d cluster_size=%d clusters=%d root=%d",
-		master.rev_max, master.cluster_size, master.cluster_map_size, master.root_cluster)
+		vol.master.rev_max, vol.master.cluster_size, vol.master.cluster_map_size, vol.master.root_cluster)
 
 	ops := fuse3.Operations{
 		init       = fused_init,

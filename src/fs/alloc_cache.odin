@@ -1,15 +1,11 @@
 // alloc_cache.odin — In-memory bitmap cache for the sector allocator.
-//
-// Uses a fixed-capacity LRU cache (1024 entries) instead of cluster_map_size-
-// scaled arrays, so memory consumption is bounded regardless of filesystem size.
-// Bitmaps are built lazily on first access, evicted LRU-first when at capacity.
 #+build linux
 package fs
 
 import "core:container/bit_array"
 import "core:container/lru"
-import "core:os"
 
+@private
 Alloc_Cache_Entry :: struct {
 	bitmap: bit_array.Bit_Array,
 	used:   u16,
@@ -29,7 +25,6 @@ alloc_cache_on_remove :: proc(key: u64, val: Alloc_Cache_Entry, user_data: rawpt
 
 ALLOC_CACHE_CAPACITY :: 1024
 
-// alloc_cache_init initializes the LRU cache. No disk I/O or large array allocs.
 alloc_cache_init :: proc(cache: ^Cluster_Bitmap_Cache, master: ^Master_Record) {
 	cache.cache_size = int(master.cluster_size)
 	cache.hint = 0
@@ -37,13 +32,11 @@ alloc_cache_init :: proc(cache: ^Cluster_Bitmap_Cache, master: ^Master_Record) {
 	cache.lru.on_remove = alloc_cache_on_remove
 }
 
-// alloc_cache_destroy frees all cached bitmaps.
 alloc_cache_destroy :: proc(cache: ^Cluster_Bitmap_Cache) {
 	lru.destroy(&cache.lru, true)
 	cache^ = {}
 }
 
-// alloc_cache_invalidate removes a cluster's bitmap from the cache.
 alloc_cache_invalidate :: proc(cache: ^Cluster_Bitmap_Cache, cluster: u64) {
 	lru.remove(&cache.lru, cluster)
 }
@@ -55,17 +48,15 @@ cache_bitmap :: #force_inline proc(cache: ^Cluster_Bitmap_Cache) -> bit_array.Bi
 	return ba
 }
 
-// alloc_cache_ensure returns up-to-date bitmap and used count for a cluster.
-// Builds from disk on cache miss; returns ok=false if cluster index is invalid.
-alloc_cache_ensure :: proc(cache: ^Cluster_Bitmap_Cache, master: ^Master_Record, disk: ^os.File, cluster: u64) -> (bitmap: bit_array.Bit_Array, used: u16, ok: bool) {
-	if u64(cluster) >= master.cluster_map_size {
+alloc_cache_ensure :: proc(cache: ^Cluster_Bitmap_Cache, vol: ^Volume, cluster: u64) -> (bitmap: bit_array.Bit_Array, used: u16, ok: bool) {
+	if u64(cluster) >= vol.master.cluster_map_size {
 		return {}, 0, false
 	}
 	if entry, hit := lru.get(&cache.lru, cluster); hit {
 		return entry.bitmap, entry.used, true
 	}
 
-	_alloc_cache_build(cache, master, disk, Cluster(cluster))
+	_alloc_cache_build(cache, vol, Cluster(cluster))
 	entry, hit := lru.get(&cache.lru, cluster)
 	if !hit {
 		return {}, 0, false
@@ -74,9 +65,9 @@ alloc_cache_ensure :: proc(cache: ^Cluster_Bitmap_Cache, master: ^Master_Record,
 }
 
 @private
-_alloc_cache_build :: proc(cache: ^Cluster_Bitmap_Cache, master: ^Master_Record, disk: ^os.File, cluster: Cluster) {
+_alloc_cache_build :: proc(cache: ^Cluster_Bitmap_Cache, vol: ^Volume, cluster: Cluster) {
 	bitmap := cache_bitmap(cache)
-	cme, cme_ok := read_cluster_map_entry(disk, master, cluster)
+	cme, cme_ok := read_cluster_map_entry(vol, cluster)
 	if !cme_ok {
 		if err := lru.set(&cache.lru, u64(cluster), Alloc_Cache_Entry{bitmap, 0}); err != nil {
 			bit_array.destroy(&bitmap)
@@ -87,7 +78,7 @@ _alloc_cache_build :: proc(cache: ^Cluster_Bitmap_Cache, master: ^Master_Record,
 	bit_array.unsafe_set(&bitmap, int(cme.sector_index))
 	used: u16 = 0
 	table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-	if !read_cluster_entry_table(disk, master, cluster, &table) {
+	if !read_cluster_entry_table(vol, cluster, &table) {
 		if err := lru.set(&cache.lru, u64(cluster), Alloc_Cache_Entry{bitmap, used}); err != nil {
 			bit_array.destroy(&bitmap)
 		}
@@ -106,16 +97,13 @@ _alloc_cache_build :: proc(cache: ^Cluster_Bitmap_Cache, master: ^Master_Record,
 	}
 }
 
-// alloc_cache_count_free returns the total number of free sectors.
-alloc_cache_count_free :: proc(cache: ^Cluster_Bitmap_Cache, master: ^Master_Record, disk: ^os.File) -> u64 {
+alloc_cache_count_free :: proc(vol: ^Volume) -> u64 {
 	free: u64 = 0
-	for ci in 0 ..< int(master.cluster_map_size) {
-		bitmap: bit_array.Bit_Array
-		bit_array.init(&bitmap, cache.cache_size, 0, context.temp_allocator)
-		cme := read_cluster_map_entry(disk, master, Cluster(ci)) or_continue
-		get_bitmap_fallback(&bitmap, master, disk, Cluster(ci), &cme)
-		for b in 0 ..< u16(master.cluster_size) {
-			if !bit_array.unsafe_get(&bitmap, int(b)) {
+	for ci in 0 ..< int(vol.master.cluster_map_size) {
+		bm, _, bok := alloc_cache_ensure(&vol.cache, vol, u64(ci))
+		if !bok { continue }
+		for b in 0 ..< u16(vol.master.cluster_size) {
+			if !bit_array.unsafe_get(&bm, int(b)) {
 				free += 1
 			}
 		}
