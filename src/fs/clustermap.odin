@@ -78,6 +78,7 @@ find_cluster_entry :: proc(
 write_cluster_map_entry :: proc(
 	disk: ^os.File, master: ^Master_Record, cluster: Cluster,
 	entry: ^Cluster_Map_Entry,
+	cache: ^Cluster_Bitmap_Cache = nil,
 ) -> bool {
 	if u64(cluster) >= master.cluster_map_size {
 		return false
@@ -92,12 +93,17 @@ write_cluster_map_entry :: proc(
 
 	entries := (^[CLUSTER_MAP_ENTRIES_PER_SECTOR]Cluster_Map_Entry)(&buf[0])
 	entries[entry_index] = entry^
-	return sector_write(disk, entry_sector, buf[:])
+	ok := sector_write(disk, entry_sector, buf[:])
+	if ok && cache != nil {
+		alloc_cache_invalidate(cache, u64(cluster))
+	}
+	return ok
 }
 
 write_cluster_entry_table :: proc(
 	disk: ^os.File, master: ^Master_Record, cluster: Cluster,
 	table: ^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry,
+	cache: ^Cluster_Bitmap_Cache = nil,
 ) -> bool {
 	cme := read_cluster_map_entry(disk, master, cluster) or_return
 	if .Allocated not_in cme.flags {
@@ -110,17 +116,66 @@ write_cluster_entry_table :: proc(
 	#unroll for i in 0 ..< CLUSTER_ENTRIES_PER_SECTOR {
 		dst[i] = table[i]
 	}
-	return sector_write(disk, table_sector, buf[:])
+
+	ok := sector_write(disk, table_sector, buf[:])
+	if ok && cache != nil {
+		alloc_cache_invalidate(cache, u64(cluster))
+	}
+	return ok
 }
 
 write_cluster_entry_at :: proc(
 	disk: ^os.File, master: ^Master_Record,
 	cluster: Cluster, entry_index: int, entry: ^Cluster_Entry,
+	cache: ^Cluster_Bitmap_Cache = nil,
 ) -> bool {
 	table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 	if !read_cluster_entry_table(disk, master, cluster, &table) {
 		return false
 	}
 	table[entry_index] = entry^
-	return write_cluster_entry_table(disk, master, cluster, &table)
+	return write_cluster_entry_table(disk, master, cluster, &table, cache)
+}
+
+// Chain walk helper — advances a cursor through a Cluster_Entry chain.
+// Used by resolve_extents, allocate_sectors, resolve_lfn to avoid
+// duplicating the guard-check + find + advance pattern.
+Chain_Cursor :: struct {
+	cluster: Cluster,
+	offset:  Sector_Offset,
+}
+
+Chain_Step :: enum {
+	Advance,   // entry is valid, cursor advanced to link
+	At_End,    // entry is valid, this is the last link (next_cluster == 0)
+	Corrupted, // chain too long or entry not found / zero-size
+}
+
+chain_step :: proc(
+	disk: ^os.File,
+	master: ^Master_Record,
+	cursor: ^Chain_Cursor,
+	guard: int,
+	max_guards: int,
+) -> (ce: Cluster_Entry, entry_cluster: Cluster, step: Chain_Step) {
+	if guard >= max_guards {
+		return {}, {}, .Corrupted
+	}
+
+	found_ce, found_ok := find_cluster_entry(disk, master, cursor.cluster, cursor.offset)
+	if !found_ok || found_ce.allocation_size == 0 {
+		return {}, {}, .Corrupted
+	}
+
+	ce = found_ce
+	entry_cluster = cursor.cluster
+	if ce.next_cluster == 0 {
+		step = .At_End
+		return
+	}
+
+	cursor.cluster = Cluster(ce.next_cluster)
+	cursor.offset  = Sector_Offset(ce.next_sector_index)
+	step = .Advance
+	return
 }

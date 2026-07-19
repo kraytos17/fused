@@ -21,6 +21,7 @@ read_directory_entries :: proc(
 	sector_offset: Sector_Offset,
 ) -> (entries: [dynamic]Directory_Entry, ok: bool) {
 	runs, runs_ok := resolve_extents(disk, master, cluster, sector_offset)
+	defer delete(runs)
 	if !runs_ok {
 		return {}, false
 	}

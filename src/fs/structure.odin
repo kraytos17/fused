@@ -89,23 +89,26 @@ FS_Error :: enum {
 
 // Rev 4 images had a single rev byte at offset 7 and can't be parsed
 // by the rev 5 Master_Record layout (rev_max would read garbage).
-// Minimum supported version is therefore 5.
-SUPPORTED_REV_MIN :: 5
-SUPPORTED_REV_MAX :: 5
+// Rev 5 added uid/gid in Directory_Entry (56-byte entries).
+// Rev 6 added intent log for crash-consistent allocation transactions.
+// Rev 7 added physical redo-log WAL (Journal_V2) for full crash consistency.
+SUPPORTED_REV_MIN :: 6
+SUPPORTED_REV_MAX :: 7
 
 // Feature version map: each flag is associated with the rev it was introduced.
 // When adding a new feature: add it here, add to ALL_SUPPORTED_FEATURES, bump SUPPORTED_REV_MAX.
 Feature_Flag :: enum u64 {
 	Uid_Gid     = 0,  // rev 5: uid/gid fields in Directory_Entry, 56-byte entries, 9 per sector
+	Journal_V2  = 1,  // rev 7: physical redo-log WAL
 }
 Features :: bit_set[Feature_Flag; u64]
 
 // All features that this version understands.
 // When adding a new feature: add it here AND bump SUPPORTED_REV_MAX.
-ALL_SUPPORTED_FEATURES :: Features{.Uid_Gid}
+ALL_SUPPORTED_FEATURES :: Features{.Uid_Gid, .Journal_V2}
 
 // Every defined Feature_Flag must be accounted for in ALL_SUPPORTED_FEATURES.
-#assert(ALL_SUPPORTED_FEATURES <= Features{.Uid_Gid})
+#assert(ALL_SUPPORTED_FEATURES <= Features{.Uid_Gid, .Journal_V2})
 
 // MasterRecord — sector 0, 512 bytes
 Master_Record :: struct #packed #all_or_none {
@@ -196,3 +199,67 @@ Extent_Run :: struct {
 	sector: Sector,
 	count:  u16,
 }
+
+JOURNAL_MAGIC :: 0xF11E
+Jv2_MAGIC :: 0xF11E0002
+
+JOURNAL_SEQ_OFFSET       :: 0  // u64: next transaction seq (resv offset)
+JOURNAL_WATERMARK_OFFSET :: 8  // u64: last fully-applied seq
+JOURNAL_REGION_OFFSET    :: 16 // u64: journal region size in sectors
+
+// Intent_Log_Entry — describes a single CE-table write (rev 6 format, 14 bytes).
+Intent_Log_Entry :: struct #packed {
+	cluster:         u64,
+	sector_offset:   u16,
+	ce_index:        u8,
+	alloc_size:      u16,
+	state:           u8,
+}
+
+// Journal_Entry — full Cluster_Entry data for rev 7 replay (24 bytes).
+Journal_Entry :: struct #packed {
+	cluster:          u64,
+	ce_index:         u8,
+	state:            u8,
+	sector_start:     u16,
+	alloc_size:       u16,
+	next_cluster:     u64,
+	next_sector_index: u16,
+}
+
+// Jv2_Record — one sector in the ring buffer, containing packed Journal_Entry records.
+Jv2_Record :: struct #packed {
+	entries: [JOURNAL_ENTRIES_PER_RECORD]Journal_Entry,
+}
+JOURNAL_ENTRIES_PER_RECORD :: 21  // 504 / 24, no padding needed
+#assert(size_of(Jv2_Record) == 21 * 24)
+#assert(size_of(Jv2_Record) <= SECTOR_SIZE)
+#assert(size_of(Journal_Entry) == 24)
+
+// Jv2_Header — one sector, starts every transaction in the ring buffer.
+Jv2_Header :: struct #packed {
+	magic:        u32,
+	seq:          u64,
+	rec_count:    u16,
+	rec_sectors:  u16,
+	committed:    u8,
+	_pad:         [5]u8,
+	header_crc:   u32,
+	_resv:        [482]u8,
+	tail_magic:   u32,
+}
+#assert(size_of(Jv2_Header) == SECTOR_SIZE)
+
+// Intent_Log — single sector (512 bytes), rev 6 format.
+Intent_Log :: struct #packed {
+	magic:   u16,
+	seq:     u64,
+	count:   u16,
+	entries: [MAX_JOURNAL_ENTRIES_v6]Intent_Log_Entry,
+	_pad:    [12]u8,
+	crc:     u32,
+}
+#assert(size_of(Intent_Log) <= SECTOR_SIZE)
+MAX_JOURNAL_ENTRIES_v6 :: 34
+
+#assert(size_of(Intent_Log_Entry) == 14)

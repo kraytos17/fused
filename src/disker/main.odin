@@ -142,14 +142,16 @@ main :: proc() {
 
 	cme_per_sector := u64(fs.CLUSTER_MAP_ENTRIES_PER_SECTOR)
 	cm_sectors := (total_clusters + cme_per_sector - 1) / cme_per_sector
-	reserved_clusters := (cm_sectors + 1 + cluster_size - 1) / cluster_size
+	journal_sectors := max(64, total_clusters / 10)
+	metadata_sectors := 1 + cm_sectors + journal_sectors
+	reserved_clusters := (metadata_sectors + cluster_size - 1) / cluster_size
 	root_cluster := reserved_clusters
 
 	master: fs.Master_Record
 	master.sig = fs.FUSED_SIG
-	master.rev_min = 5
-	master.rev_max = 5
-	master.features = u64(fs.Features{.Uid_Gid})
+	master.rev_min = 7
+	master.rev_max = 7
+	master.features = u64(fs.Features{.Uid_Gid, .Journal_V2})
 	master.cluster_map_offset = 1
 	master.cluster_map_size = total_clusters
 	master.cluster_size = cluster_size
@@ -157,6 +159,10 @@ main :: proc() {
 	master.root_sector_index = u16(ce_sectors)
 	master.root_cluster = root_cluster
 	master.end_sig = 0x0BB0
+	// Compute journal region size: max(64, total_clusters / 10) sectors
+	journal_sectors = max(64, total_clusters / 10)
+	fs.journal_v2_set_region_size(&master, journal_sectors)
+	fs.journal_seq_init(&master)
 	{
 		master_buf: [fs.SECTOR_SIZE]u8
 		(^fs.Master_Record)(&master_buf[0])^ = master
@@ -189,6 +195,15 @@ main :: proc() {
 				log.infof("  cluster map: %d/%d sectors", sec_idx + 1, cm_sectors)
 			}
 		}
+	}
+
+	// Zero the journal region (right after CME table)
+	jrnl_start := fs.intent_log_sector(&master)
+	jrnl_sectors := fs.journal_v2_region_size(&master)
+	w.pos = i64(u64(jrnl_start) * fs.SECTOR_SIZE)
+	jrnl_zero: [fs.SECTOR_SIZE]u8
+	for i: u64; i < jrnl_sectors; i += 1 {
+		if !writer_write(&w, jrnl_zero[:]) { os.exit(1) }
 	}
 
 	root_sector := i64(u64(root_cluster) * cluster_size)

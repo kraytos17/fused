@@ -8,3 +8,4 @@ logs/
 *.bin
 __pycache__/
 ROADMAP.md
+journaling-architecture-plan.md

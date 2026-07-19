@@ -130,7 +130,7 @@ vet-cast:
 	$(ODIN) build $(MOUNTER_DIR) $(COLLECTIONS) -vet-cast -warnings-as-errors -out:/dev/null
 	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS)
 
-test: run-disker
+test: run-disker clean-logs
 	@echo "==> Running all tests"
 	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS) $(TIMING_FLAG)
 

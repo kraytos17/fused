@@ -43,6 +43,11 @@ FS :: struct {
 	lfn_bump:    LFN_Bump,
 }
 
+// LFN_Bump is a bump allocator for long filename data sectors.
+// LFNs are append-only (filenames never change) and never freed
+// individually, so a bump allocator avoids the fragmentation that
+// a general-purpose per-sector allocation would incur — each sector
+// packs ~25 names sequentially instead of one name per sector.
 LFN_Bump :: struct {
 	active:     bool,
 	cluster:    fs.Cluster,
@@ -113,6 +118,7 @@ read_entry_from_fh :: proc(fsys: ^FS, fh: u64) -> (fs.Directory_Entry, fs.Cluste
 	}
 
 	runs, runs_ok := fs.resolve_extents(fsys.disk, &fsys.master, pc, po)
+	defer delete(runs)
 	if !runs_ok {
 		return {}, 0, 0, false
 	}
@@ -284,6 +290,7 @@ resolve_path :: proc(fsys: ^FS, path: string, allocator := context.allocator) ->
 write_entry_back :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, cluster: fs.Cluster, offset: fs.Sector_Offset, index: int) -> bool {
 	depc := dir_entries_per_buf(fsys.master.features)
 	runs, runs_ok := fs.resolve_extents(fsys.disk, &fsys.master, cluster, offset)
+	defer delete(runs)
 	if !runs_ok {
 		return false
 	}
@@ -311,6 +318,7 @@ write_entry_back :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, cluster: fs.Clus
 find_free_slot_in_extent :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Sector_Offset) -> (dcluster: fs.Cluster, dsec: fs.Sector_Offset, didx: int, ok: bool) {
 	depc := dir_entries_per_buf(fsys.master.features)
 	dir_runs, dir_ok := fs.resolve_extents(fsys.disk, &fsys.master, dir_cluster, dir_offset)
+	defer delete(dir_runs)
 	if !dir_ok {
 		return {}, 0, 0, false
 	}
@@ -345,6 +353,7 @@ find_or_extend_dir :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Se
 	}
 
 	current_runs, cr_ok := fs.resolve_extents(fsys.disk, &fsys.master, dir_cluster, dir_offset)
+	defer delete(current_runs)
 	if !cr_ok {
 		return {}, {}, 0, false
 	}
@@ -360,6 +369,7 @@ find_or_extend_dir :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Se
 	}
 
 	dir_runs, dir_ok := fs.resolve_extents(fsys.disk, &fsys.master, dir_cluster, dir_offset)
+	defer delete(dir_runs)
 	if !dir_ok {
 		return {}, {}, 0, false
 	}
@@ -390,6 +400,7 @@ find_or_extend_dir :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Se
 check_name_exists :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Sector_Offset, name: string) -> bool {
 	depc := dir_entries_per_buf(fsys.master.features)
 	dir_runs, dir_ok := fs.resolve_extents(fsys.disk, &fsys.master, dir_cluster, dir_offset)
+	defer delete(dir_runs)
 	if !dir_ok {
 		return false
 	}
@@ -442,6 +453,7 @@ set_entry_name :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> b
 			}
 
 			lfn_runs, lfn_ok := fs.resolve_extents(fsys.disk, &fsys.master, new_c, new_o)
+			defer delete(lfn_runs)
 			if !lfn_ok || len(lfn_runs) == 0 {
 				return false
 			}
@@ -568,7 +580,6 @@ fused_readdir :: proc "c" (
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
-
 	// Fast path: resolve path without holding the lock long-term.
 	// We release the lock after resolving, since the directory's
 	// on-disk data is stable for the duration of the readdir call.
@@ -580,18 +591,23 @@ fused_readdir :: proc "c" (
 		log.debugf("readdir: %s → ENOENT/not-dir", path)
 		return fuse3.nix(.ENOENT)
 	}
+
 	dir_cluster := fs.Cluster(entry.stored_cluster)
 	dir_offset := fs.Sector_Offset(entry.sector_index)
 	dir_runs, dir_ok := fs.resolve_extents(fsys.disk, &fsys.master, dir_cluster, dir_offset)
-	sync.mutex_unlock(&fsys.mu)
 
+	defer delete(dir_runs)
+	sync.mutex_unlock(&fsys.mu)
 	if !dir_ok {
 		log.debugf("readdir: %s → extent resolve failed", path)
 		return fuse3.nix(.ENOENT)
 	}
-
-	if rc := fuse3.fill_dir(filler, buf, ".", nil); rc != 0 {return rc}
-	if rc := fuse3.fill_dir(filler, buf, "..", nil); rc != 0 {return rc}
+	if rc := fuse3.fill_dir(filler, buf, ".", nil); rc != 0 {
+		return rc
+	}
+	if rc := fuse3.fill_dir(filler, buf, "..", nil); rc != 0 {
+		return rc
+	}
 
 	e: int
 	sector_buf: [fs.SECTOR_SIZE]u8
@@ -685,6 +701,7 @@ fused_read :: proc "c" (
 	}
 
 	runs, runs_ok := fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
+	defer delete(runs)
 	if !runs_ok {
 		return fuse3.nix(.ENOENT)
 	}
@@ -766,6 +783,7 @@ fused_read_buf :: proc "c" (
 	}
 
 	runs, runs_ok := fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
+	defer delete(runs)
 	if !runs_ok {
 		return fuse3.nix(.ENOENT)
 	}
@@ -858,6 +876,8 @@ fused_write :: proc "c" (
 
 	entry_cluster, entry_offset, entry_idx := unpack_fh(fi.fh)
 	runs, runs_ok := fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
+	defer delete(runs)
+
 	total_sectors := (u64(off) + u64(size) + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
 	current_sectors: u64
 	if runs_ok {
@@ -880,6 +900,7 @@ fused_write :: proc "c" (
 			data_cluster = new_c
 			data_offset = new_o
 		}
+		delete(runs)
 		runs, runs_ok = fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
 	}
 	if !runs_ok {
@@ -887,6 +908,8 @@ fused_write :: proc "c" (
 		return fuse3.nix(.ENOENT)
 	}
 
+	// fsync after metadata allocation — ensures CE table and chain are durable.
+	os.sync(fsys.disk)
 	log.debugf("write: %s → enter write loop (runs=%d)", path, len(runs))
 	pos_in_file: u64 = 0
 	bytes_written: u64 = 0
@@ -953,9 +976,11 @@ fused_write :: proc "c" (
 		pos_in_file = u64(run.sector + fs.Sector(run.count)) * fs.SECTOR_SIZE
 	}
 	if new_size != u64(entry.file_size) {
+		os.sync(fsys.disk)
 		set_entry_time_to_now(&entry)
 		entry.file_size = new_size
 		write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx)
+		os.sync(fsys.disk)
 	}
 
 	lru.remove(&fsys.path_cache, string(path))
@@ -991,6 +1016,8 @@ fused_write_buf :: proc "c" (
 
 	entry_cluster, entry_offset, entry_idx := unpack_fh(fi.fh)
 	runs, runs_ok := fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
+	defer delete(runs)
+
 	total_sectors := (u64(off) + total_size + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
 	current_sectors: u64
 	if runs_ok {
@@ -1013,6 +1040,7 @@ fused_write_buf :: proc "c" (
 			data_cluster = new_c
 			data_offset = new_o
 		}
+		delete(runs)
 		runs, runs_ok = fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
 	}
 	if !runs_ok {
@@ -1215,6 +1243,7 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 	}
 
 	dir_runs, dr_ok := fs.resolve_extents(fsys.disk, &fsys.master, new_cluster, new_offset)
+	defer delete(dir_runs)
 	if !dr_ok || len(dir_runs) == 0 {
 		return fuse3.nix(.EIO)
 	}
@@ -1279,6 +1308,7 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 
 	{
 		runs, rok := fs.resolve_extents(fsys.disk, &fsys.master, new_c, new_o)
+		defer delete(runs)
 		if !rok || len(runs) == 0 {
 			return fuse3.nix(.EIO)
 		}
@@ -1434,6 +1464,7 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 	new_sectors := (u64(size) + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
 	current_sectors: u64
 	runs, runs_ok := fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
+	defer delete(runs)
 	if runs_ok {
 		for r in runs {
 			current_sectors += u64(r.count)
@@ -1477,7 +1508,7 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 					}
 
 					ce.allocation_size = u16(needed)
-					if !fs.write_cluster_entry_at(fsys.disk, &fsys.master, current_c, ce_idx, &ce) {
+					if !fs.write_cluster_entry_at(fsys.disk, &fsys.master, current_c, ce_idx, &ce, &fsys.alloc_cache) {
 						return fuse3.nix(.EIO)
 					}
 				}
@@ -1494,6 +1525,7 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 		if aerr != .None {
 			return fuse3.nix(.ENOSPC)
 		}
+		os.sync(fsys.disk)
 	}
 
 	set_entry_time_to_now(&entry)
@@ -1502,6 +1534,7 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 		return fuse3.nix(.EIO)
 	}
 
+	os.sync(fsys.disk)
 	lru.remove(&fsys.path_cache, string(path))
 	log.debugf("truncate: %s → %d", path, size)
 	return 0
@@ -1511,6 +1544,7 @@ zero_file_range :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, data_cluster: fs.
 	if start >= end {return true}
 
 	runs, rok := fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
+	defer delete(runs)
 	if !rok {return false}
 
 	zero_sector: [fs.SECTOR_SIZE]u8
@@ -1579,6 +1613,7 @@ fused_fallocate :: proc "c" (path: cstring, mode: c.int, off: posix.off_t, lengt
 	total_sectors := (alloc_start + alloc_len + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
 	current_sectors: u64
 	runs, runs_ok := fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
+	defer delete(runs)
 	if runs_ok {
 		for r in runs {
 			current_sectors += u64(r.count)
@@ -1619,6 +1654,7 @@ fused_fallocate :: proc "c" (path: cstring, mode: c.int, off: posix.off_t, lengt
 			if !zok {
 				return fuse3.nix(.EIO)
 			}
+			os.sync(fsys.disk)
 		}
 	}
 	if mode & fuse3.FALLOC_FL_KEEP_SIZE == 0 {
@@ -1631,6 +1667,7 @@ fused_fallocate :: proc "c" (path: cstring, mode: c.int, off: posix.off_t, lengt
 	if !write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx) {
 		return fuse3.nix(.EIO)
 	}
+	os.sync(fsys.disk)
 
 	path_cache_invalidate_all(fsys)
 	log.debugf("fallocate: %s off=%d len=%d mode=%d", path, off, length, mode)
@@ -1955,6 +1992,7 @@ fused_readlink :: proc "c" (path: cstring, buf: [^]c.char, size: c.size_t) -> c.
 	}
 
 	runs, rok := fs.resolve_extents(fsys.disk, &fsys.master, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index))
+	defer delete(runs)
 	if !rok {
 		return fuse3.nix(.EIO)
 	}
@@ -2013,11 +2051,13 @@ fused_copy_file_range :: proc "c" (
 
 	dst_cluster2, dst_offset2, dst_idx := unpack_fh(fi_out.fh)
 	src_runs, src_rok := fs.resolve_extents(fsys.disk, &fsys.master, src_cluster, src_offset)
+	defer delete(src_runs)
 	if !src_rok {
 		return c.ssize_t(-int(fuse3.nix(.ENOENT)))
 	}
 
 	dst_runs, dst_rok := fs.resolve_extents(fsys.disk, &fsys.master, dst_cluster, dst_offset)
+	defer delete(dst_runs)
 	if !dst_rok {dst_runs = {}}
 
 	src_off := u64(off_in)
@@ -2036,6 +2076,8 @@ fused_copy_file_range :: proc "c" (
 			dst_cluster = new_c
 			dst_offset = new_o
 		}
+
+		delete(dst_runs)
 		dst_runs, dst_rok = fs.resolve_extents(fsys.disk, &fsys.master, dst_cluster, dst_offset)
 		if !dst_rok {return c.ssize_t(-int(fuse3.nix(.ENOENT)))}
 	}
@@ -2119,6 +2161,7 @@ fused_lseek :: proc "c" (path: cstring, off: posix.off_t, whence: c.int, fi: ^fu
 	}
 
 	runs, rok := fs.resolve_extents(fsys.disk, &fsys.master, data_cluster, data_offset)
+	defer delete(runs)
 	if !rok {
 		return posix.off_t(-int(fuse3.nix(.ENOENT)))
 	}

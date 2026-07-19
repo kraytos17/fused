@@ -136,6 +136,11 @@ main :: proc() {
 		os.exit(1)
 	}
 
+	if .Journal_V2 in transmute(fs.Features)master.features {
+		fs.journal_v2_recover(fd, &master)
+	} else {
+		fs.intent_log_recover(fd, &master)
+	}
 	fsys.master = master
 	fsys.image_size = image_size
 	fs.alloc_cache_init(&fsys.alloc_cache, &master)

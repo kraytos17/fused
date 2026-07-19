@@ -264,6 +264,7 @@ test_write_zero_bytes :: proc(t: ^testing.T) {
 	defer fs.deallocate_sectors(&master, fd, nil, fc, fo)
 
 	runs, _ := fs.resolve_extents(fd, &master, fc, fo)
+	defer delete(runs)
 	sector := runs[0].sector
 
 	// Write a known pattern first.

@@ -38,7 +38,7 @@ test_fs_core :: proc(t: ^testing.T) {
 	err := fs.validate_master(&master, img_size)
 	testing.expect_value(t, err, fs.FS_Error.None)
 	testing.expect_value(t, master.sig, fs.FUSED_SIG)
-	testing.expect_value(t, master.rev_max, u8(5))
+	testing.expect_value(t, master.rev_max, u8(7))
 
 	root_cluster := fs.Cluster(master.root_cluster)
 	root_offset  := fs.Sector_Offset(master.root_sector_index)
@@ -107,9 +107,9 @@ test_validate_master_error_paths :: proc(t: ^testing.T) {
 	// Build a valid base master with known good values.
 	m := fs.Master_Record {
 		sig                = fs.FUSED_SIG,
-		rev_min            = 5,
-		rev_max            = 5,
-		features           = u64(fs.Features{.Uid_Gid}),
+		rev_min            = 7,
+		rev_max            = 7,
+		features           = u64(fs.Features{.Uid_Gid, .Journal_V2}),
 		cluster_map_offset = 1,
 		cluster_map_size   = 128,
 		cluster_size       = 16,
@@ -131,7 +131,7 @@ test_validate_master_error_paths :: proc(t: ^testing.T) {
 	testing.expect_value(t, fs.validate_master(&m2, img_size), fs.FS_Error.Version_Too_Old)
 
 	// 3. Version too new (rev_min > SUPPORTED_REV_MAX)
-	m2 = m; m2.rev_min = 6
+	m2 = m; m2.rev_min = 8
 	testing.expect_value(t, fs.validate_master(&m2, img_size), fs.FS_Error.Version_Too_New)
 
 	// 4. Bad end signature
@@ -192,9 +192,9 @@ test_sector_read_write_bulk :: proc(t: ^testing.T) {
 	testing.expect(t, ok, "read_master_record")
 
 	// Find the Kernel file's data sector.
-	kernel_ce, ce_ok := fs.find_cluster_entry(fd, &master, fs.Cluster(1), fs.Sector_Offset(2))
+	kernel_ce, ce_ok := fs.find_cluster_entry(fd, &master, fs.Cluster(master.root_cluster), fs.Sector_Offset(2))
 	testing.expect(t, ce_ok, "find_cluster_entry for Kernel")
-	abs_sector := fs.Sector(u64(1) * master.cluster_size + u64(kernel_ce.sector_start))
+	abs_sector := fs.Sector(u64(master.root_cluster) * master.cluster_size + u64(kernel_ce.sector_start))
 
 	// Read original data
 	orig := make([]u8, fs.SECTOR_SIZE)

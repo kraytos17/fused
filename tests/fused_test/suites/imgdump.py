@@ -84,8 +84,8 @@ def _test_json_validates(suite, imgdump, image):
     if d is None:
         return _check(suite, "json-validates", False, f"parse error: {err}")
     checks = [
-        (d["master"]["rev_min"] == 5, f"rev_min={d['master']['rev_min']}"),
-        (d["master"]["rev_max"] == 5, f"rev_max={d['master']['rev_max']}"),
+        (d["master"]["rev_min"] == 7, f"rev_min={d['master']['rev_min']}"),
+        (d["master"]["rev_max"] == 7, f"rev_max={d['master']['rev_max']}"),
         (d["master"]["cluster_size"] == 16, f"cluster_size={d['master']['cluster_size']}"),
         ("Kernel" in d["root"], "Kernel missing from root"),
         (d["root"]["Kernel"]["kind"] == "FILE", f"kind={d['root']['Kernel']['kind']}"),
