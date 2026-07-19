@@ -36,7 +36,7 @@ main :: proc() {
 		log.errorf("unknown log level: %s (use debug|info|warn|error)", f.log_level)
 	}
 
-	context.logger = log.create_console_logger(log_level)
+	context.logger = log.create_file_logger(os.stderr, log_level, log.Default_File_Logger_Opts)
 	vol, verr := fs.volume_open(f.path)
 	if verr != .None {
 		log.errorf("cannot open %s: %v", f.path, verr)

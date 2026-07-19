@@ -49,33 +49,59 @@ src/
 tests/                63 Odin unit tests + 48 Python pytest integration tests
 ```
 
-## Build
-
-**Prerequisites**
+## Prerequisites
 
 - Odin dev-2026-07-nightly or later
 - libfuse3 >= 3.18
 - Linux kernel with the fuse module loaded (`modprobe fuse`)
 
-```
-make all           # build all → format image → test
-make build         # debug build → build/fused
-make format        # image formatter → build/format
-make imgdump       # image dumper → build/imgdump
-make create-image  # format 1 MB image → fused.img
-make test          # Odin unit tests (63)
-make pytest        # Python integration tests (48)
-make ci            # full pipeline: build + check + audit + test + tool + FUSE smoke
+## Workflow
+
+### 1. Build everything
+
+```bash
+make build       # debug build → build/fused
+make format      # image formatter → build/format
+make imgdump     # image inspector → build/imgdump
+make all         # does all three + creates test image + runs tests
 ```
 
-## Mount
+### 2. Create a disk image
 
+```bash
+make create-image               # 1 MB default → fused.img
+build/format --force --output=my.img --size=16M   # custom
 ```
-make mount                                          # foreground, debug, mountpoint=mnt
-./build/fused fused.img -f mnt                       # foreground
-./build/fused --log-file=fused.log fused.img mnt     # with app log
-./build/fused --log-level=warn fused.img mnt         # production
+
+### 3. Inspect the image
+
+```bash
+build/imgdump fused.img                    # human-readable
+build/imgdump --json fused.img              # machine-readable JSON
+build/imgdump --hex=/Kernel fused.img       # hex dump of a file
 ```
+
+### 4. Mount it
+
+```bash
+make mount                  # foreground, debug, creates mnt/ automatically
+```
+
+Or manually:
+
+```bash
+mkdir -p mnt
+build/fused fused.img -f mnt
+```
+
+In another terminal:
+
+```bash
+ls mnt/                     # "Kernel" demo file
+cat mnt/Kernel | head -c4 | od -tx1
+```
+
+FUSE flags:
 
 | Flag | Purpose |
 |---|---|
@@ -85,6 +111,24 @@ make mount                                          # foreground, debug, mountpo
 | `--log-file=<path>` | Redirect Odin log messages to file (append) |
 | `--log-level=<level>` | Filter: debug (default), info, warn, error |
 | `--log-format=<fmt>` | Output format: long (default), short, full |
+
+### 5. Unmount
+
+```bash
+make unmount                    # clean
+fusermount3 -u mnt              # or by hand
+```
+
+### 6. Test
+
+```bash
+make test                       # 63 Odin unit tests
+make pytest                     # 48 Python integration tests
+make ci                         # full pipeline: build → check → audit → test → tool → FUSE smoke
+make smoke                      # basic FUSE ops (isolated namespace, needs /dev/fuse)
+make smoke-rw                   # read-write + persistence
+make smoke-errors               # error path tests
+```
 
 ## Production logging
 

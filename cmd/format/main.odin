@@ -90,7 +90,7 @@ main :: proc() {
 		os.exit(1)
 	}
 
-	cluster_size := u64(strconv.parse_int(f.cluster_str) or_else 0)
+	cluster_size := u64(strconv.parse_uint(f.cluster_str) or_else 0)
 	if cluster_size == 0 || cluster_size > 65536 {
 		log.errorf("invalid --cluster-size: %s", f.cluster_str)
 		os.exit(1)
