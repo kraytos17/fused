@@ -55,6 +55,42 @@ nix :: #force_inline proc "contextless"(e: posix.Errno) -> c.int {
 	return -c.int(e)
 }
 
+// ODIN_MOUNTER_TEST enables direct unit testing of mounter callbacks without a
+// live FUSE mount.  When set, fuse_get_context serves a test-injected Context.
+ODIN_MOUNTER_TEST :: #config(ODIN_MOUNTER_TEST, false)
+
+// test_ctx is the fake FUSE context installed by set_test_context.
+@private
+test_ctx: Context
+
+// test_ctx_installed is true once set_test_context has been called.
+@private
+test_ctx_installed: bool
+
+// set_test_context installs a fake FUSE context so callbacks can be exercised
+// in-process.  Must be called from an Odin test before invoking any fused_*
+// callback.  Only compiled when ODIN_MOUNTER_TEST is set.
+set_test_context :: proc(ctx: ^Context) {
+	when ODIN_MOUNTER_TEST {
+		test_ctx = ctx^
+		test_ctx_installed = true
+	} else {
+		_ = ctx
+	}
+}
+
+// fuse_get_context returns the current FUSE context.  In a test build with a
+// context installed via set_test_context, the fake context is returned;
+// otherwise it forwards to the libfuse3 implementation.
+fuse_get_context :: proc "c"() -> ^Context {
+	when ODIN_MOUNTER_TEST {
+		if test_ctx_installed {
+			return &test_ctx
+		}
+	}
+	return _fuse_get_context_impl()
+}
+
 // ctx returns a copy of the current FUSE context.  Per libfuse docs the
 // underlying C pointer is only valid for the duration of the current
 // FUSE operation — returning by value (not by pointer) prevents storing

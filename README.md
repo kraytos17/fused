@@ -1,9 +1,10 @@
 # fused — FUSE filesystem in Odin
 
 A FUSE filesystem daemon written in Odin, backed by a cluster-based on-disk
-format (rev 7, feature flags, uid/gid support, journaling). 35 of 43
-`fuse_operations` callbacks are implemented. Multi-threaded by default,
-with a `sync.Mutex` guarding cache mutation. Zero-copy I/O via `splice(2)`.
+format (rev 8, feature flags, uid/gid support, journaling, extended
+attributes). 39 of 43 `fuse_operations` callbacks are implemented.
+Multi-threaded by default, with a `sync.Mutex` guarding cache mutation.
+Zero-copy I/O via `splice(2)`.
 Long filenames (up to 255 characters) are supported through bump-allocated
 data sectors.
 
@@ -27,7 +28,7 @@ cmd/
 src/
   fuse3/              FFI binding to libfuse3.so
   fs/                 On-disk format + all volume logic
-    structure.odin      Packed on-disk structs (rev 7, feature flags)
+    structure.odin      Packed on-disk structs (rev 8, feature flags)
     volume.odin          Volume struct, volume_open/close
     diskio.odin          Sector read/write
     clustermap.odin       Cluster map reader/writer
@@ -37,16 +38,18 @@ src/
     alloc_cache.odin        LRU bitmap cache
     path.odin                 Unified path resolution
     journal.odin                Intent log + journal v2 WAL
+    xattr.odin                  Extended-attribute blob read/write
     validate.odin                 MasterRecord validation
     display.odin                    Human-readable flag formatters
-  mounter/            FUSE callbacks (35 wired), package mounter
+  mounter/            FUSE callbacks (39 wired), package mounter
     core.odin            FS struct, begin_op/end_op, resolve_path
     dir.odin               Directory slot helpers
     read.odin                 fused_getattr, fused_readdir, fused_read
     write.odin                  fused_write, fused_truncate, fused_copy_file_range
     create.odin                    fused_create, fused_mkdir, fused_symlink, fused_rename
+    xattr.odin                     fused_setxattr, fused_getxattr, fused_listxattr, fused_removexattr
     misc.odin                        fused_utimens, fused_chmod, fused_lseek, fused_statfs
-tests/                63 Odin unit tests + 48 Python pytest integration tests
+tests/                77 Odin unit tests + 50 Python pytest integration tests
 ```
 
 ## Prerequisites
@@ -122,13 +125,19 @@ fusermount3 -u mnt              # or by hand
 ### 6. Test
 
 ```bash
-make test                       # 63 Odin unit tests
-make pytest                     # 48 Python integration tests
+make test                       # 77 Odin unit tests
+make pytest                     # 50 Python integration tests
 make ci                         # full pipeline: build → check → audit → test → tool → FUSE smoke
 make smoke                      # basic FUSE ops (isolated namespace, needs /dev/fuse)
 make smoke-rw                   # read-write + persistence
 make smoke-errors               # error path tests
 ```
+
+Two test layers: Odin unit tests (`make test`) exercise the `fs` library and
+the `mounter` callbacks directly in-process (errno mapping, xattr semantics,
+path resolution — no kernel). Python pytest tests (`make pytest`) mount the
+real filesystem via `/dev/fuse` and verify end-to-end behavior through the
+kernel, including errno translation on real syscalls.
 
 ## Production logging
 
@@ -157,10 +166,10 @@ logrotate, or pipe-based rotation:
 | `mount` | Build, then mount in foreground |
 | `unmount` | `fusermount3 -u mnt` |
 | `clean` | Remove `build/`, `logs/`, `mnt/`, `fused.img`; kill any running mount |
-| `test` | Odin unit tests (63) |
-| `pytest` | Python integration tests (48) |
+| `test` | Odin unit tests (77) |
+| `pytest` | Python integration tests (50) |
 | `check` | Struct-size cross-check (Odin compile-time `#assert`s) |
-| `audit` | Verify every `proc "c"` callback uses `begin_op` (35 callbacks) |
+| `audit` | Verify every `proc "c"` callback uses `begin_op` (39 callbacks) |
 | `smoke` | Basic FUSE smoke test in an isolated namespace (pytest) |
 | `smoke-rw` | Read-write FUSE test (pytest) |
 | `smoke-mt` | Multi-threaded stress test |
@@ -205,10 +214,15 @@ in `src/fs/structure.odin` carries a compile-time
   kernel splices directly from disk to the FUSE pipe. `fused_write_buf`
   uses `linux.splice()` for the write side.
 
-- **Format versioning.** Rev 6–7, with `rev_min`/`rev_max` range checking
+- **Format versioning.** Rev 6–8, with `rev_min`/`rev_max` range checking
   and a `features` bitmask for runtime dispatch. Intent log (rev 6) and
-  journal v2 WAL (rev 7) provide crash consistency. See [`docs/REV.md`](docs/REV.md)
-  for the full revision history.
+  journal v2 WAL (rev 7) provide crash consistency; rev 8 adds extended
+  attributes. See [`docs/REV.md`](docs/REV.md) for the full revision history.
+
+- **Extended attributes.** `setxattr`/`getxattr`/`listxattr`/`removexattr`
+  store attributes in a self-describing blob chain referenced by each
+  directory entry's `xattr_cluster`. Linux limits apply (255-byte names,
+  64 KB values). See [`docs/DESIGN.md`](docs/DESIGN.md).
 
 - **Two in-memory caches.** LRU bitmap cache (1024 cluster entries) and
   LRU path-resolution cache (128 entries) — no filesystem-size-scaled
@@ -216,5 +230,5 @@ in `src/fs/structure.odin` carries a compile-time
 
 ## Remaining work
 
-8 of 43 `fuse_operations` callbacks remain unwired: `lock`, `flock`,
-`bmap`, `poll`, `setxattr`, `getxattr`, `listxattr`, `removexattr`.
+4 of 43 `fuse_operations` callbacks remain unwired: `lock`, `flock`,
+`bmap`, `poll`.

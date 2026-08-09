@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # tests/ci.py — fused CI pipeline.
 #
 # Usage:
@@ -11,8 +10,6 @@ import os
 import subprocess
 import sys
 
-from fused_test.result import TestSuite
-
 _tests_dir = os.path.dirname(os.path.abspath(__file__))
 if _tests_dir not in sys.path:
     sys.path.insert(0, _tests_dir)
@@ -23,16 +20,42 @@ LOGS = os.path.join(ROOT, "logs")
 MOUNT = os.path.join(ROOT, "mnt")
 
 
-def make_suite(name, cmd, cwd=None):
-    s = TestSuite(name=name)
-    r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd or ROOT)
+class Suite:
+    """Tiny aggregation of named phase results (pass/fail + optional detail)."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.results: list[tuple[str, bool, str]] = []
+
+    @property
+    def passed(self) -> int:
+        return sum(1 for _, ok, _ in self.results if ok)
+
+    @property
+    def failed(self) -> int:
+        return len(self.results) - self.passed
+
+    def add(self, name: str, ok: bool, detail: str = "") -> None:
+        self.results.append((name, ok, detail))
+
+    def print_summary(self) -> None:
+        for name, ok, detail in self.results:
+            status = "PASS" if ok else "FAIL"
+            suffix = f": {detail}" if detail else ""
+            print(f"{status}   {name}{suffix}")
+        print(f"=== {self.name}: {self.passed} passed, {self.failed} failed ===")
+
+
+def make_suite(name: str, cmd: list[str], cwd: str | None = None) -> Suite:
+    s = Suite(name=name)
+    r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd or ROOT, check=False)
     sys.stdout.write(r.stdout)
-    s.add_result(name, r.returncode == 0,
-                 detail=r.stdout.strip() if r.returncode != 0 else "")
+    s.add(name, r.returncode == 0,
+          detail=r.stdout.strip() if r.returncode != 0 else "")
     return s
 
 
-def phase_static():
+def phase_static() -> tuple[int, int]:
     suites = [
         make_suite("struct sizes", ["make", "check"]),
         make_suite("context audit", ["make", "audit"]),
@@ -47,14 +70,14 @@ def phase_static():
     return total_p, total_f
 
 
-def phase_unit():
+def phase_unit() -> tuple[int, int]:
     print("== Phase 2: Unit tests ==")
     s = make_suite("odin test", ["make", "test"])
     s.print_summary()
     return s.passed, s.failed
 
 
-def phase_tools(skip=False):
+def phase_tools(skip: bool = False) -> tuple[int, int]:
     if skip:
         print("== Phase 3: Tool integration tests ==")
         print("  (skipped)")
@@ -67,14 +90,14 @@ def phase_tools(skip=False):
     return s.passed, s.failed
 
 
-def phase_fuse(skip=False):
+def phase_fuse(skip: bool = False) -> tuple[int, int]:
     if skip:
         print("== Phase 4: FUSE smoke tests ==")
         print("  (skipped)")
         return 0, 0
 
     if not os.path.exists("/dev/fuse") or subprocess.run(["which", "unshare"],
-                                                           capture_output=True).returncode != 0:
+                                                           capture_output=True, check=False).returncode != 0:
         print("  WARN: /dev/fuse or unshare missing — skipping FUSE tests")
         return 0, 0
 
@@ -93,19 +116,19 @@ def phase_fuse(skip=False):
          "--image", os.path.join(ROOT, "fused.img"),
          "--mount", MOUNT,
          "--logs", LOGS],
-        capture_output=True, text=True, env=env, cwd=ROOT,
+        capture_output=True, text=True, env=env, cwd=ROOT, check=False,
     )
     sys.stdout.write(r.stdout)
     if r.stderr:
         sys.stderr.write(r.stderr)
-    s = TestSuite(name="FUSE smoke")
-    s.add_result("fuse-smoke", r.returncode == 0,
-                 detail=r.stdout.strip() if r.returncode != 0 else "")
+    s = Suite(name="FUSE smoke")
+    s.add("fuse-smoke", r.returncode == 0,
+          detail=r.stdout.strip() if r.returncode != 0 else "")
     s.print_summary()
     return s.passed, s.failed
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="fused CI")
     parser.add_argument("--skip-fuse", action="store_true")
     parser.add_argument("--skip-tool-tests", action="store_true")

@@ -26,6 +26,7 @@ FUSED_SIG                  :: [7]u8{'F', 'U', 'S', 'E', 'D', 0, 0}
 #assert((DIR_ENTRIES_PER_SECTOR_V5 + 1) * DIR_ENTRY_SIZE_V5 >  SECTOR_SIZE)
 #assert(DIR_ENTRY_SIZE_V4 * DIR_ENTRIES_PER_SECTOR_V4 <= SECTOR_SIZE)
 #assert((DIR_ENTRIES_PER_SECTOR_V4 + 1) * DIR_ENTRY_SIZE_V4 >  SECTOR_SIZE)
+#assert(DIR_ENTRY_SIZE_V6 * DIR_ENTRIES_PER_SECTOR_V6 == SECTOR_SIZE)
 
 Cluster_Map_Flag :: enum u16 {
 	Allocated, // bit 0
@@ -40,6 +41,7 @@ Cluster_Entry_Flag :: enum u8 {
 	Directory,    // bit 2
 	File_Content, // bit 3
 	LFN,          // bit 4
+	XAttr,        // bit 5: extended-attribute data chain
 }
 Cluster_Entry_State :: bit_set[Cluster_Entry_Flag; u8]
 
@@ -70,6 +72,7 @@ Allocation_Kind :: enum u8 {
 	File_Content,
 	Cluster_Map,
 	LFN,
+	XAttr,
 }
 
 FS_Error :: enum {
@@ -96,23 +99,25 @@ FS_Error :: enum {
 // Rev 5 added uid/gid in Directory_Entry (56-byte entries).
 // Rev 6 added intent log for crash-consistent allocation transactions.
 // Rev 7 added physical redo-log WAL (Journal_V2) for full crash consistency.
+// Rev 8 added XAttr support (extended attributes stored in a dedicated chain).
 SUPPORTED_REV_MIN :: 6
-SUPPORTED_REV_MAX :: 7
+SUPPORTED_REV_MAX :: 8
 
 // Feature version map: each flag is associated with the rev it was introduced.
 // When adding a new feature: add it here, add to ALL_SUPPORTED_FEATURES, bump SUPPORTED_REV_MAX.
 Feature_Flag :: enum u64 {
 	Uid_Gid     = 0,  // rev 5: uid/gid fields in Directory_Entry, 56-byte entries, 9 per sector
 	Journal_V2  = 1,  // rev 7: physical redo-log WAL
+	XAttr       = 2,  // rev 8: xattr_cluster field in Directory_Entry, 64-byte entries, 8 per sector
 }
 Features :: bit_set[Feature_Flag; u64]
 
 // All features that this version understands.
 // When adding a new feature: add it here AND bump SUPPORTED_REV_MAX.
-ALL_SUPPORTED_FEATURES :: Features{.Uid_Gid, .Journal_V2}
+ALL_SUPPORTED_FEATURES :: Features{.Uid_Gid, .Journal_V2, .XAttr}
 
 // Every defined Feature_Flag must be accounted for in ALL_SUPPORTED_FEATURES.
-#assert(ALL_SUPPORTED_FEATURES <= Features{.Uid_Gid, .Journal_V2})
+#assert(ALL_SUPPORTED_FEATURES <= Features{.Uid_Gid, .Journal_V2, .XAttr})
 
 // MasterRecord — sector 0, 512 bytes
 Master_Record :: struct #packed #all_or_none {
@@ -158,21 +163,28 @@ DIR_ENTRIES_PER_SECTOR_V4 :: 10
 DIR_ENTRY_SIZE_V5 :: 56
 DIR_ENTRIES_PER_SECTOR_V5 :: 9
 
+// Rev 8: xattr_cluster field appended to Directory_Entry.
+DIR_ENTRY_SIZE_V6 :: 64
+DIR_ENTRIES_PER_SECTOR_V6 :: 8
+
 // Default for the current format version
-DIR_ENTRIES_PER_SECTOR :: DIR_ENTRIES_PER_SECTOR_V5
-DIR_ENTRY_SIZE :: DIR_ENTRY_SIZE_V5
+DIR_ENTRIES_PER_SECTOR :: DIR_ENTRIES_PER_SECTOR_V6
+DIR_ENTRY_SIZE :: DIR_ENTRY_SIZE_V6
 
 dir_entry_size :: proc(features: Features) -> u16 {
+	if .XAttr in features {return DIR_ENTRY_SIZE_V6}
 	if .Uid_Gid in features {return DIR_ENTRY_SIZE_V5}
 	return DIR_ENTRY_SIZE_V4
 }
 
 dir_entries_per_sector :: proc(features: Features) -> u16 {
+	if .XAttr in features {return DIR_ENTRIES_PER_SECTOR_V6}
 	if .Uid_Gid in features {return DIR_ENTRIES_PER_SECTOR_V5}
 	return DIR_ENTRIES_PER_SECTOR_V4
 }
 
-// DirectoryEntry — 56 bytes, 9 per sector (rev 5, with uid/gid)
+// DirectoryEntry — 64 bytes, 8 per sector (rev 8, with xattr support)
+// 56 bytes, 9 per sector (rev 5-7, without xattr support)
 // or 48 bytes, 10 per sector (rev 4, without uid/gid)
 Directory_Entry :: struct #packed {
 	flags:           Dir_Flags,
@@ -186,8 +198,9 @@ Directory_Entry :: struct #packed {
 	file_size:       u64,
 	atime_date_time: Packed_Date_Time,
 	atime_year:      u16,
+	xattr_cluster:   u64,
 }
-#assert(size_of(Directory_Entry) == 56)
+#assert(size_of(Directory_Entry) == 64)
 
 // LFN_Pointer — packed into file_name[16] when the LFN flag is set
 LFN_Pointer :: struct #packed {
@@ -267,3 +280,24 @@ Intent_Log :: struct #packed {
 MAX_JOURNAL_ENTRIES_v6 :: 34
 
 #assert(size_of(Intent_Log_Entry) == 14)
+
+// XAttr blob — packed records stored in a dedicated cluster chain.
+// The chain is found by scanning the owning cluster's CE table for an
+// entry whose state carries .XAttr (mirrors LFN pointer resolution).
+XATTR_MAGIC       :: 0x58415452 // "XATR"
+XATTR_NAME_MAX    :: 255
+XATTR_SIZE_MAX    :: 65536
+
+XAttr_Blob_Header :: struct #packed {
+	magic: u32,
+	count: u16,
+	_pad:  u16,
+	total: u32, // total payload bytes (names + values) that follow the header
+}
+#assert(size_of(XAttr_Blob_Header) == 12)
+
+XAttr_Record_Header :: struct #packed {
+	name_len:  u16,
+	value_len: u32,
+}
+#assert(size_of(XAttr_Record_Header) == 6)

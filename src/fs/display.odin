@@ -30,6 +30,7 @@ ce_state_str :: proc(s: Cluster_Entry_State, buf: []byte) -> string {
 	if .Directory   in s { write_flag(&sb, &n, "DIRECTORY") }
 	if .File_Content in s { write_flag(&sb, &n, "FILE_CONTENT") }
 	if .LFN         in s { write_flag(&sb, &n, "LFN") }
+	if .XAttr       in s { write_flag(&sb, &n, "XATTR") }
 	if n == 0 { return "0" }
 	return strings.to_string(sb)
 }

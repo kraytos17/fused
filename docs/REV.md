@@ -32,3 +32,20 @@ automatic replay on mount. `SUPPORTED_REV_MIN = 6`, `SUPPORTED_REV_MAX = 7`.
 Rev 7 images can be mounted read/write by the current codebase. Rev 6
 images are still mountable (code selects the journal path based on
 the `Journal_V2` feature flag).
+
+## Rev 8 — `XAttr` feature
+
+Added `XAttr` feature flag (bit 2). `Directory_Entry` grows from 56 to
+64 bytes (8 entries per sector instead of 9) with a new `xattr_cluster`
+field. Extended attributes are serialized into a self-describing blob
+(`XAttr_Blob_Header` + length-prefixed name/value records) stored in a
+dedicated `.XAttr` cluster chain referenced by `xattr_cluster`.
+
+Allocation and deallocation of xattr chains are journaled through the v2
+WAL (deallocation now records a v2 journal entry on v2 images, fixing a
+latent bug where freed chains were resurrected by replay on remount).
+`SUPPORTED_REV_MIN = 6`, `SUPPORTED_REV_MAX = 8`.
+
+Rev 8 images can be mounted read/write by the current codebase. Rev 6/7
+images remain mountable (entry sizing and journal path dispatch on the
+feature flags).

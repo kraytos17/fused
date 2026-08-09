@@ -4,12 +4,12 @@
 #   python3 -m fused_test.suites.stress --fused=<bin> --image=<path> --mount=<dir> --logs=<dir>
 
 import argparse
+import concurrent.futures
 import os
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
-from fused_test.result import TestSuite, TestResult
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -18,17 +18,42 @@ class WorkerResult:
     errors: int
 
 
+@dataclass
+class StressResult:
+    """Tiny summary of stress-test phases."""
+
+    results: list = field(default_factory=list)
+
+    @property
+    def passed(self) -> int:
+        return sum(1 for _, ok, _ in self.results if ok)
+
+    @property
+    def failed(self) -> int:
+        return len(self.results) - self.passed
+
+    def add(self, name: str, ok: bool, detail: str = "") -> None:
+        self.results.append((name, ok, detail))
+
+    def print_summary(self) -> None:
+        for name, ok, detail in self.results:
+            status = "PASS" if ok else "FAIL"
+            suffix = f": {detail}" if detail else ""
+            print(f"{status}   {name}{suffix}")
+        print(f"=== Multi-threaded stress test: {self.passed} passed, {self.failed} failed ===")
+
+
 def run(fused: str, image: str, mount: str, logs: str,
-        duration: int = 15) -> TestSuite:
+        duration: int = 15) -> StressResult:
     mount_abs = os.path.abspath(mount)
     logs_abs = os.path.abspath(logs)
-    suite = TestSuite(name="Multi-threaded stress test")
+    suite = StressResult()
 
     if not os.path.isfile(fused):
-        suite.add(TestResult(name="binary", passed=False, detail=f"not found: {fused}"))
+        suite.add("binary", False, detail=f"not found: {fused}")
         return suite
     if not os.path.isfile(image):
-        suite.add(TestResult(name="image", passed=False, detail=f"not found: {image}"))
+        suite.add("image", False, detail=f"not found: {image}")
         return suite
 
     os.makedirs(mount_abs, exist_ok=True)
@@ -43,8 +68,7 @@ def run(fused: str, image: str, mount: str, logs: str,
     for i in range(5):
         time.sleep(1)
         if daemon.poll() is not None:
-            suite.add(TestResult(name="mount", passed=False,
-                                 detail=f"daemon died after {i+1}s"))
+            suite.add("mount", False, detail=f"daemon died after {i+1}s")
             return suite
         try:
             if os.listdir(mount_abs):
@@ -54,11 +78,11 @@ def run(fused: str, image: str, mount: str, logs: str,
             pass
 
     if not mounted:
-        suite.add(TestResult(name="mount", passed=False, detail="mount did not appear"))
+        suite.add("mount", False, detail="mount did not appear")
         daemon.kill()
         return suite
 
-    suite.add(TestResult(name="mount", passed=True))
+    suite.add("mount", True)
 
     # Run workers concurrently
     workers = [
@@ -66,7 +90,6 @@ def run(fused: str, image: str, mount: str, logs: str,
         ("writer", _writer_worker, [mount_abs, duration]),
     ]
 
-    import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         futures = {executor.submit(fn, *args): name
                    for name, fn, args in workers}
@@ -75,19 +98,19 @@ def run(fused: str, image: str, mount: str, logs: str,
             try:
                 r = future.result()
                 if r.ops == 0 and r.errors > 0:
-                    suite.add(TestResult(name=f"stress-{name}", passed=False,
-                                         detail=f"0 ops, {r.errors} errors (daemon unresponsive)"))
+                    suite.add(name, False,
+                              detail=f"0 ops, {r.errors} errors (daemon unresponsive)")
                 else:
                     detail = f"{r.ops} ops"
                     if r.errors:
                         detail += f", {r.errors} transient errors"
-                    suite.add(TestResult(name=f"stress-{name}", passed=True, detail=detail))
+                    suite.add(name, True, detail=detail)
             except Exception as e:
-                suite.add(TestResult(name=f"stress-{name}", passed=False, detail=str(e)))
+                suite.add(name, False, detail=str(e))
 
     # Cleanup
     subprocess.run(["fusermount3", "-uz", mount_abs],
-                   capture_output=True, timeout=5)
+                   capture_output=True, timeout=5, check=False)
     daemon.terminate()
     try:
         daemon.wait(timeout=3)

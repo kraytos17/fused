@@ -320,7 +320,7 @@ fused_write_buf :: proc "c" (
 	if new_size != u64(entry.file_size) {
 		os.sync(fsys.vol.disk)
 	}
-	
+
 	log.debugf("write_buf: %s off=%d → %d bytes (%v)", path, off, bytes_written, time.since(write_start))
 	return write_finish(fsys, &entry, fh, new_size, bytes_written)
 }
@@ -548,7 +548,7 @@ fused_fallocate :: proc "c" (path: cstring, mode: c.int, off: posix.off_t, lengt
 	if !write_entry_back(fsys, &entry, fs.Cluster(fh.dir_cluster), fs.Sector_Offset(fh.dir_offset), int(fh.entry_index)) {
 		return fuse3.nix(.EIO)
 	}
-	
+
 	os.sync(fsys.vol.disk)
 	path_cache_invalidate_all(fsys)
 	log.debugf("fallocate: %s off=%d len=%d mode=%d", path, off, length, mode)

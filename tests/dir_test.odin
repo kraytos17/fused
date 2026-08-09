@@ -118,7 +118,7 @@ test_dir_many_entries_across_extents :: proc(t: ^testing.T) {
 		}
 	}
 
-	testing.expectf(t, found == 12, "expected 12 entries across extents, got %d", found)
+	testing.expectf(t, found == 11, "expected 11 entries across extents, got %d", found)
 	// Clean up entries
 	for i in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
 		raw[i].flags -= {.Exists, .Allocated}

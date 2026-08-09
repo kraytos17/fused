@@ -3,8 +3,8 @@
 ## Overview
 
 fused is a FUSE filesystem daemon implemented in Odin. It provides a libfuse3
-FFI binding, a cluster-based on-disk format (rev 7 with feature flags), and
-read-write FUSE mounting (35 of 43 `fuse_operations` callbacks implemented).
+FFI binding, a cluster-based on-disk format (rev 8 with feature flags), and
+read-write FUSE mounting (39 of 43 `fuse_operations` callbacks implemented).
 
 ```
 ┌─────────────┐     ┌──────────────────┐     ┌──────────────┐
@@ -24,13 +24,13 @@ read-write FUSE mounting (35 of 43 `fuse_operations` callbacks implemented).
 |---|---|---|
 | **`src/fuse3/`** | FFI binding to libfuse3. 43 `fuse_operations` callbacks, 12 cross-FFI structs with compile-time `#assert(size_of)`, 43 callback offsets verified against C ground truth. | `libfuse3.so` (system) |
 | **`src/fs/`** | Filesystem logic operating on raw disk images. No FUSE dependency. `Volume` struct bundles disk fd, master record, and alloc cache. | `core:os` |
-| **`src/mounter/`** | FUSE callbacks (35 of 43 wired) as `package mounter`. Each `fused_*` callback uses `begin_op()`/`end_op()` for locking. Translates `FS_Error` to negated errno via `fs_error_to_errno`. | `src/fs/`, `src/fuse3/` |
+| **`src/mounter/`** | FUSE callbacks (39 of 43 wired) as `package mounter`. Each `fused_*` callback uses `begin_op()`/`end_op()` for locking. Translates `FS_Error` to negated errno via `fs_error_to_errno`. | `src/fs/`, `src/fuse3/` |
 | **`cmd/mount/`** | Binary entry point — `package main`, calls `mounter.run()`. | `src/mounter/` |
 | **`cmd/format/`** | Standalone image formatter. Produces valid disk images without libfuse3. | `src/fs/` |
 | **`cmd/dump/`** | Read-only image dumper. Walks the image structure and prints it in human-readable or JSON form. | `src/fs/` |
-| **`tests/`** | Odin unit tests (63), Python pytest integration (48), struct-size cross-checks, context audit. | — |
+| **`tests/`** | Odin unit tests (77), Python pytest integration (50), struct-size cross-checks, context audit. | — |
 
-## On-disk format (rev 7)
+## On-disk format (rev 8)
 
 ### MasterRecord (sector 0, 512 bytes)
 
@@ -38,8 +38,8 @@ read-write FUSE mounting (35 of 43 `fuse_operations` callbacks implemented).
 |---|---|---|---|
 | 0 | `sig` | `[7]u8` | Filesystem identifier: `"FUSED\0\0"` |
 | 7 | `rev_min` | `u8` | Minimum compatible format version (6) |
-| 8 | `rev_max` | `u8` | Format version written by formatter (7) |
-| 9 | `features` | `Features` | `bit_set[Feature_Flag; u64]` — bit 0 = `.Uid_Gid`, bit 1 = `.Journal_V2` |
+| 8 | `rev_max` | `u8` | Format version written by formatter (8) |
+| 9 | `features` | `Features` | `bit_set[Feature_Flag; u64]` — bit 0 = `.Uid_Gid`, bit 1 = `.Journal_V2`, bit 2 = `.XAttr` |
 | 17–22 | reserved | — | Zero |
 | 23 | `cluster_map_offset` | `u64` | Sector index of the first ClusterMapEntry (always 1) |
 | 31 | `cluster_map_size` | `u64` | Number of ClusterMapEntry records |
@@ -51,9 +51,10 @@ read-write FUSE mounting (35 of 43 `fuse_operations` callbacks implemented).
 | 510 | `end_sig` | `u16` | Magic sentinel: `0x0BB0` |
 
 **Feature flags** enable runtime dispatch. `.Uid_Gid` grows `Directory_Entry`
-from 48 to 56 bytes (9 entries/sector vs 10). `.Journal_V2` selects the
-physical redo-log WAL over the legacy intent log. The mounter reads
-`master.features` directly (it's a `bit_set` field, no transmute needed)
+from 48 to 56 bytes (9 entries/sector vs 10). `.XAttr` grows it further to
+64 bytes (8 entries/sector) and adds the `xattr_cluster` field. `.Journal_V2`
+selects the physical redo-log WAL over the legacy intent log. The mounter
+reads `master.features` directly (it's a `bit_set` field, no transmute needed)
 and selects the correct entry size at runtime via
 `dir_entry_size()` / `dir_entries_per_sector()`.
 
@@ -69,14 +70,14 @@ and selects the correct entry size at runtime via
 
 | Offset | Field | Type | Description |
 |---|---|---|---|
-| 0 | `state` | `bit_set[Cluster_Entry_Flag; u8]` | Allocated(b0), Cluster_Map(b1), Directory(b2), File_Content(b3), LFN(b4) |
+| 0 | `state` | `bit_set[Cluster_Entry_Flag; u8]` | Allocated(b0), Cluster_Map(b1), Directory(b2), File_Content(b3), LFN(b4), XAttr(b5) |
 | 1 | `next_sector_index` | `u16` | Sector offset of the next ClusterEntry in the chain |
 | 3 | `next_cluster` | `u64` | Cluster of the next ClusterEntry (0 terminates) |
 | 11 | `allocation_size` | `u16` | Number of contiguous sectors in this run |
 | 13 | `sector_start` | `u16` | Sector offset within the cluster where this run begins |
 | 15 | `reserved` | `u8` | Zero |
 
-### DirectoryEntry (48–56 bytes, 9–10 per sector)
+### DirectoryEntry (48–64 bytes, 8–10 per sector)
 
 V4 format (no `Uid_Gid` feature): 48 bytes, 10 per sector.
 
@@ -103,6 +104,31 @@ V5 format (with `Uid_Gid`): 56 bytes, 9 per sector. uid/gid inserted after `stor
 | 42 | `file_size` | `u64` |
 | 50 | `atime_date_time` | `bit_field u32` |
 | 54 | `atime_year` | `u16` |
+
+V6 format (with `XAttr`): 64 bytes, 8 per sector. `xattr_cluster` appended after `atime_year`:
+
+| Offset | Field | Type | Description |
+|---|---|---|---|
+| 56 | `xattr_cluster` | `u64` | Cluster containing the xattr blob chain (0 = none) |
+
+### Extended attributes (rev 8)
+
+Xattrs are packed into a self-describing blob stored in a dedicated `.XAttr`
+cluster chain referenced by `Directory_Entry.xattr_cluster`. The chain head is
+located by scanning the owning cluster's CE table for an entry whose state
+carries `.XAttr` (mirrors LFN pointer resolution).
+
+```
+XAttr_Blob_Header (12 bytes)
+  magic: u32 = "XATR" | count: u16 | _pad: u16 | total: u32
+XAttr_Record_Header (6 bytes) × count
+  name_len: u16 | value_len: u32
+  followed by: name bytes, then value bytes
+```
+
+Limits follow Linux: name ≤ 255 (`XATTR_NAME_MAX`), value ≤ 65536
+(`XATTR_SIZE_MAX`). Allocation and deallocation of xattr chains go through
+the journal (v2 WAL on rev-8 images).
 
 ### LFN_Pointer (16 bytes, packed into `file_name[16]`)
 
@@ -153,10 +179,10 @@ At `cluster_size = N`, the metadata overhead is `1/N`.
 
 ### Design decisions
 
-**Format versioning with feature flags.** On-disk format rev 6–7. `validate_master`
+**Format versioning with feature flags.** On-disk format rev 6–8. `validate_master`
 checks `rev_max < SUPPORTED_REV_MIN` (too old), `rev_min > SUPPORTED_REV_MAX` (too new),
 and validates feature flags (no unknown bits set). `SUPPORTED_REV_MIN = 6`,
-`SUPPORTED_REV_MAX = 7`. Rev 4 images can't be read by this layout (the
+`SUPPORTED_REV_MAX = 8`. Rev 4 images can't be read by this layout (the
 MasterRecord struct changed between rev 4 and 5).
 
 **`bit_set` for flag fields.** `ClusterMapEntry.flags`, `ClusterEntry.state`,
@@ -228,7 +254,7 @@ Functions producing variable-length results return `[dynamic]T` allocated on
 `mem.Tracking_Allocator` guarded behind `when ODIN_DEBUG` — zero overhead in
 release builds. Leaked allocations are reported at unmount time.
 
-## FUSE callbacks (35 of 43 wired)
+## FUSE callbacks (39 of 43 wired)
 
 | Category | Callbacks |
 |---|---|
@@ -252,20 +278,20 @@ tests/
 │   ├── suites/
 │   │   └── stress.py              Multi-threaded stress test (reader + writer workers)
 │   ├── mount.py                   FUSE mount context manager (contextlib.contextmanager)
-│   ├── io.py                      Shared read(path)/write(path, data) helpers
-│   └── result.py                  TestSuite/TestResult dataclasses
+│   └── io.py                      read/write helpers, run_cli, make_file/make_dir context managers
 ├── conftest.py                    Pytest fixtures: mounted_fs, fused_bin, disker_bin, imgdump_bin
 ├── pyproject.toml                 Pytest markers: tool, fuse
-├── test_errors.py                 7 FUSE error path tests (pytest)
+├── test_errors.py                 6 FUSE error path tests (pytest)
 ├── test_disker.py                 7 format tool CLI tests (pytest)
 ├── test_imgdump.py                10 imgdump tool tests (pytest)
-├── test_basic.py                  11 FUSE smoke tests (pytest)
+├── test_basic.py                  7 FUSE smoke tests (pytest)
 ├── test_rw.py                     13 read-write tests (pytest)
 ├── ci.py                          CI orchestrator (calls make + pytest)
 ├── run_in_namespace.sh            Thin shell: exec unshare -rUm timeout "$@"
 ├── test_common.odin               Shared Odin test helpers
-└── *.odin                         63 Odin unit tests (allocation, cache, directory, write,
-                                    fs, validate, display, LFN, struct sizes)
+├── mounter_test.odin              12 mounter-callback unit tests (errno mapping, direct fused_* calls)
+└── *.odin                         65 Odin unit tests (allocation, cache, directory, write,
+                                    fs, validate, display, LFN, struct sizes, xattr)
 ```
 
 ### CI pipeline
@@ -273,7 +299,7 @@ tests/
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `make test` (63 Odin tests) |
+| 2. Unit tests | `make test` (77 Odin tests: 65 fs + 12 mounter callbacks) |
 | 3. Tool integration | `make pytest -m tool` (17 format + imgdump tests) |
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |
@@ -294,6 +320,5 @@ master record includes `rev_min`, `rev_max`, and `features` fields.
 
 ## Remaining work
 
-8 of 43 `fuse_operations` callbacks are not yet wired:
-`lock`, `flock`, `bmap`, `poll`, `setxattr`, `getxattr`, `listxattr`,
-`removexattr`.
+4 of 43 `fuse_operations` callbacks are not yet wired:
+`lock`, `flock`, `bmap`, `poll`.

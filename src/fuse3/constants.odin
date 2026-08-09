@@ -39,6 +39,10 @@ RENAME_NOREPLACE :: c.uint(1 << 0)
 RENAME_EXCHANGE  :: c.uint(1 << 1)
 RENAME_WHITEOUT  :: c.uint(1 << 2)
 
+// xattr setxattr flags (linux/xattr.h)
+XATTR_CREATE   :: c.int(1 << 0) // fail if the attribute already exists
+XATTR_REPLACE  :: c.int(1 << 1) // fail if the attribute does not exist
+
 SEEK_DATA :: c.int(3)
 SEEK_HOLE :: c.int(4)
 

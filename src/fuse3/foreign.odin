@@ -30,9 +30,10 @@ foreign libfuse3 {
 	fuse_pkgversion :: proc "c"() -> cstring ---
 
 	// fuse_get_context returns a pointer to the current FUSE context (valid only
-	// during the callback).
+	// during the callback).  The public `fuse_get_context` wrapper in api.odin
+	// forwards here (or serves a test-injected context when ODIN_MOUNTER_TEST).
 	@(link_name = "fuse_get_context")
-	fuse_get_context :: proc "c"() -> ^Context ---
+	_fuse_get_context_impl :: proc "c"() -> ^Context ---
 }
 
 foreign libfuse3 {

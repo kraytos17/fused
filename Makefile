@@ -23,7 +23,7 @@ FULL_BUILD    := -debug -o:none -warnings-as-errors \
                  -use-single-module \
                  -no-threaded-checker \
                  -thread-count:$(THREAD_COUNT)
-TEST_FLAGS    := $(BASE_DEBUG) -define:ODIN_TEST_THREADS=1
+TEST_FLAGS    := $(BASE_DEBUG) -define:ODIN_TEST_THREADS=1 -define:ODIN_MOUNTER_TEST=true
 VET_FLAGS     := -vet -vet-shadowing -strict-style
 SHOW_TIMINGS  := $(or $(SHOW_TIMINGS),)
 TIMING_FLAG   := $(if $(SHOW_TIMINGS),-show-timings,)
@@ -99,7 +99,7 @@ smoke-rw: build create-image
 
 smoke-mt: build create-image
 	@$(HARNESS) 120 python3 -m fused_test.suites.stress \
-		--fused=build/fused --image=fused.img --mount=$(MOUNTPOINT) --logs=$(LOGS_DIR) --stress-duration=15
+		--fused=build/fused --image=fused.img --mount=$(MOUNTPOINT) --logs=$(LOGS_DIR) --duration=15
 
 smoke-errors: build create-image
 	@$(HARNESS) 60 uv run pytest tests/test_errors.py \
@@ -127,7 +127,7 @@ help:
 	@echo ""
 	@echo "Tests:"
 	@echo "  test             Odin unit tests (63)"
-	@echo "  pytest           Python integration tests (48)"
+	@echo "  pytest           Python integration tests (50)"
 	@echo "  check            struct size cross-check"
 	@echo "  audit            verify begin_op usage (35 callbacks)"
 	@echo "  smoke            basic FUSE ops (pytest, isolated ns)"

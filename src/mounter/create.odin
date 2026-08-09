@@ -149,7 +149,7 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 	if aerr != .None {
 		return fuse3.nix(.ENOSPC)
 	}
-	
+
 	{
 		runs, r_err := fs.resolve_extents(&fsys.vol, new_c, new_o)
 		defer delete(runs)
@@ -207,6 +207,11 @@ fused_unlink :: proc "c" (path: cstring) -> c.int {
 		}
 	}
 
+	log.debugf("unlink: %s xattr_cluster=%d", path, entry.xattr_cluster)
+	if xerr := fs.xattr_clear(&fsys.vol, &entry); xerr != .None {
+		return fs_error_to_errno(xerr)
+	}
+
 	entry.flags = {}
 	if !write_entry_back(fsys, &entry, cluster, offset, idx) {
 		return fuse3.nix(.EIO)
@@ -246,6 +251,9 @@ fused_rmdir :: proc "c" (path: cstring) -> c.int {
 			return fs_error_to_errno(derr)
 		}
 	}
+	if xerr := fs.xattr_clear(&fsys.vol, &entry); xerr != .None {
+		return fs_error_to_errno(xerr)
+	}
 
 	entry.flags = {}
 	if !write_entry_back(fsys, &entry, cluster, offset, idx) {
@@ -279,11 +287,14 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	}
 
 	new_parent_path, new_name := os.split_path(string(newpath))
-	_, new_parent_c, new_parent_o, _, np_ok := resolve_path_cached(fsys, new_parent_path, context.temp_allocator)
+	new_parent_entry, _, _, _, np_ok := resolve_path_cached(fsys, new_parent_path, context.temp_allocator)
 	if !np_ok {
 		log.debugf("rename: %s → parent ENOENT", newpath)
 		return fuse3.nix(.ENOENT)
 	}
+
+	new_parent_c := fs.Cluster(new_parent_entry.stored_cluster)
+	new_parent_o := fs.Sector_Offset(new_parent_entry.sector_index)
 	if old_cluster == new_parent_c && old_offset == new_parent_o {
 		if dst_entry, _, _, dst_idx, dst_ok := resolve_path_cached(fsys, string(newpath), context.temp_allocator); dst_ok {
 			if .Directory not_in dst_entry.flags {
@@ -291,6 +302,9 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 					if derr := fs.deallocate_sectors(&fsys.vol, fs.Cluster(dst_entry.stored_cluster), fs.Sector_Offset(dst_entry.sector_index)); derr != .None {
 						return fuse3.nix(.EIO)
 					}
+				}
+				if xerr := fs.xattr_clear(&fsys.vol, &dst_entry); xerr != .None {
+					return fuse3.nix(.EIO)
 				}
 
 				dst_entry.flags = {}
@@ -338,6 +352,9 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 				if derr := fs.deallocate_sectors(&fsys.vol, fs.Cluster(dst_entry.stored_cluster), fs.Sector_Offset(dst_entry.sector_index)); derr != .None {
 					return fuse3.nix(.EIO)
 				}
+			}
+			if xerr := fs.xattr_clear(&fsys.vol, &dst_entry); xerr != .None {
+				return fuse3.nix(.EIO)
 			}
 
 			dst_entry.flags = {}

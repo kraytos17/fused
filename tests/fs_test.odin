@@ -23,7 +23,7 @@ test_fs_core :: proc(t: ^testing.T) {
 	defer close_test_volume(&vol)
 
 	testing.expect_value(t, vol.master.sig, fs.FUSED_SIG)
-	testing.expect_value(t, vol.master.rev_max, u8(7))
+	testing.expect_value(t, vol.master.rev_max, u8(8))
 
 	root_cluster := fs.Cluster(vol.master.root_cluster)
 	root_offset  := fs.Sector_Offset(vol.master.root_sector_index)
@@ -113,7 +113,7 @@ test_validate_master_error_paths :: proc(t: ^testing.T) {
 	m2 = m; m2.rev_max = 3
 	testing.expect_value(t, fs.validate_master(&m2, img_size), fs.FS_Error.Version_Too_Old)
 
-	m2 = m; m2.rev_min = 8
+	m2 = m; m2.rev_min = 9
 	testing.expect_value(t, fs.validate_master(&m2, img_size), fs.FS_Error.Version_Too_New)
 
 	m2 = m; m2.end_sig = 0x0000

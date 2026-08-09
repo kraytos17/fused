@@ -9,6 +9,7 @@ import "core:c"
 import "core:container/lru"
 import "core:log"
 import "core:mem"
+import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:sys/posix"
@@ -268,4 +269,30 @@ resolve_entry :: proc(fsys: ^FS, path: cstring, fi: ^fuse3.File_Info) -> (
 	e, c, o, i, rok := resolve_path_cached(fsys, string(path), context.temp_allocator)
 	if !rok { return {}, 0, 0, 0, 0, 0, false }
 	return e, c, o, i, fs.Cluster(e.stored_cluster), fs.Sector_Offset(e.sector_index), true
+}
+
+// init_fs_for_test builds an FS for direct callback unit testing (no live FUSE
+// mount).  The caller installs it as the FUSE context private_data via
+// fuse3.set_test_context, and must call destroy_fs_for_test when done.
+init_fs_for_test :: proc(vol: fs.Volume, allocator := context.allocator) -> (fsys: FS) {
+	fsys.vol = vol
+	fsys.disk_raw_fd = c.int(os.fd(vol.disk))
+	fsys.logger = log.Logger{}
+	if fi, err := os.fstat(vol.disk, context.temp_allocator); err == nil {
+		fsys.vol.image_size = fs.Byte_Offset(u64(fi.size))
+	}
+
+	lru.init(&fsys.path_cache, 128, allocator, allocator)
+	fsys.path_cache.on_remove = path_cache_on_remove
+	lru.init(&fsys.lfn_cache, 256, allocator, allocator)
+	fsys.lfn_cache.on_remove = lfn_cache_on_remove
+	return fsys
+}
+
+// destroy_fs_for_test tears down an FS created by init_fs_for_test.  Does not
+// close the volume (the caller owns it).
+destroy_fs_for_test :: proc(fsys: ^FS) {
+	lru.destroy(&fsys.path_cache, false)
+	lru.destroy(&fsys.lfn_cache, false)
+	fsys^ = {}
 }

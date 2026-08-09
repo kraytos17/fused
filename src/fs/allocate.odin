@@ -65,31 +65,32 @@ _cluster_entry_state_for :: proc(kind: Allocation_Kind) -> Cluster_Entry_State {
 	case .File_Content: return {.File_Content}
 	case .Cluster_Map:  return {.Cluster_Map}
 	case .LFN:          return {.LFN}
+	case .XAttr:        return {.XAttr}
 	}
 	return {}
 }
 
 // allocate_sectors allocates contiguous sectors on a volume.
-// 
+//
 // Extension logic: if start_cluster != 0, existing extents are resolved and
 // their sector count is subtracted from sectors_needed to compute additional_needed.
 // If the existing chain already covers the request, (start_cluster, start_offset) is
 // returned immediately.
-// 
+//
 // Cluster-map scan: starting from vol.cache.hint, each cluster-map entry is examined.
 // Fresh (unallocated) clusters are initialised and zeroed. A per-cluster bitmap is
 // consulted via _find_contiguous_free; if no run is found the CME is marked Full and
 // skipped. An unused slot in the cluster-entry table is located and filled with a new
 // Cluster_Entry carrying the allocation size, sector start, and state derived from kind.
-// 
+//
 // Journal branching: v2 journals batch entries via journal_v2_add_entry; v6/v7 uses
 // intent_txn_add. Both paths are finalised with a commit/finish once allocation succeeds
 // (or rolled back via the deferred cleanup on error).
-// 
+//
 // Tail-chain linking: when extending an existing chain (start_cluster != 0),
 // link_tail_to_new walks the old chain and appends the first newly allocated cluster,
 // persisting the updated predecessor entry.
-// 
+//
 // Error returns: .Sector_Write_Error on I/O failure, .Entry_Not_Found if the tail
 // cannot be located, or .No_Space when the cluster map is exhausted.
 allocate_sectors :: proc(
@@ -304,7 +305,8 @@ allocate_sectors :: proc(
 // deallocate_sectors frees a chain of cluster entries starting at
 // (start_cluster, start_offset). Each entry has its Allocated flag cleared;
 // if the owning CME was marked Full, that flag is also removed. Deallocations
-// are recorded in a v6 intent log for crash-consistency.
+// are journaled (v2 WAL or v6 intent log) so a crash cannot resurrect the
+// freed chain on the next mount.
 deallocate_sectors :: proc(
 	vol:           ^Volume,
 	start_cluster: Cluster,
@@ -314,12 +316,20 @@ deallocate_sectors :: proc(
 		return .None
 	}
 
+	is_v2 := .Journal_V2 in vol.master.features
+	jrnl_v2_txn: Journal_Txn
 	dj_entries: [MAX_JOURNAL_ENTRIES_v6]Intent_Log_Entry
 	dj_count := 0
-	if !intent_log_begin(vol) {
-		return .Sector_Write_Error
+	if is_v2 {
+		journal_v2_begin(&vol.master, &jrnl_v2_txn)
+	} else {
+		if !intent_log_begin(vol) {
+			return .Sector_Write_Error
+		}
 	}
-	defer intent_log_commit(vol, dj_entries[:dj_count])
+	defer if !is_v2 {
+		intent_log_commit(vol, dj_entries[:dj_count])
+	}
 
 	current_cluster := start_cluster
 	current_offset  := start_offset
@@ -352,7 +362,17 @@ deallocate_sectors :: proc(
 		}
 
 		write_cluster_entry_table(vol, current_cluster, &table) or_return
-		if dj_count < MAX_JOURNAL_ENTRIES_v6 {
+		if is_v2 {
+			journal_v2_add_entry(&jrnl_v2_txn, Journal_Entry{
+				cluster           = u64(current_cluster),
+				ce_index          = u8(freed_idx),
+				state             = transmute(u8)entry.state,
+				sector_start      = entry.sector_start,
+				alloc_size        = entry.allocation_size,
+				next_cluster      = entry.next_cluster,
+				next_sector_index = entry.next_sector_index,
+			})
+		} else if dj_count < MAX_JOURNAL_ENTRIES_v6 {
 			dj_entries[dj_count] = Intent_Log_Entry{
 				cluster    = u64(current_cluster),
 				sector_offset = 0,
@@ -367,6 +387,12 @@ deallocate_sectors :: proc(
 		}
 		current_cluster = Cluster(entry.next_cluster)
 		current_offset  = Sector_Offset(entry.next_sector_index)
+	}
+	if is_v2 {
+		journal_v2_commit(vol, &jrnl_v2_txn)
+		journal_v2_finish(vol, jrnl_v2_txn.seq)
+	} else {
+		intent_log_commit(vol, dj_entries[:dj_count])
 	}
 	log.debugf("deallocate: ok — cluster=%d offset=%d", start_cluster, start_offset)
 	return .None

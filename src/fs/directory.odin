@@ -53,10 +53,10 @@ resolve_lfn :: proc(vol: ^Volume, entry: ^Directory_Entry, allocator := context.
 	}
 
 	ce_buf: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-	if read_cluster_entry_table(vol, Cluster(ptr.cluster), &ce_buf) != .None { 
-		return "", false 
+	if read_cluster_entry_table(vol, Cluster(ptr.cluster), &ce_buf) != .None {
+		return "", false
 	}
-	
+
 	target: Cluster_Entry
 	for &t in ce_buf {
 		if t.sector_start == ptr.sector && .Allocated in t.state {

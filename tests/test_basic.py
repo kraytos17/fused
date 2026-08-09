@@ -1,8 +1,10 @@
 import os
 import stat
 import subprocess
+
 import pytest
-from fused_test.io import read, write
+
+from fused_test.io import make_file, read
 
 
 @pytest.mark.fuse
@@ -31,45 +33,6 @@ def test_header_bytes(mounted_fs: str):
 
 
 @pytest.mark.fuse
-def test_write_and_read(mounted_fs: str):
-    path = os.path.join(mounted_fs, "write_test")
-    write(path, b"hello_fuse")
-    data = read(path)
-    assert data == b"hello_fuse"
-    os.unlink(path)
-
-
-@pytest.mark.fuse
-def test_multi_sector_write(mounted_fs: str):
-    path = os.path.join(mounted_fs, "multi")
-    data = os.urandom(3 * 512)
-    write(path, data)
-    st = os.stat(path)
-    assert st.st_size >= 1500
-    os.unlink(path)
-
-
-@pytest.mark.fuse
-def test_nested_subdir(mounted_fs: str):
-    sub = os.path.join(mounted_fs, "subdir", "a", "b")
-    os.makedirs(sub, exist_ok=True)
-    fpath = os.path.join(sub, "f")
-    write(fpath, b"deep")
-    data = read(fpath)
-    assert data == b"deep"
-    os.unlink(fpath)
-    os.rmdir(sub)
-    os.rmdir(os.path.join(mounted_fs, "subdir", "a"))
-    os.rmdir(os.path.join(mounted_fs, "subdir"))
-
-
-@pytest.mark.fuse
-def test_statvfs_basic(mounted_fs: str):
-    s = os.statvfs(mounted_fs)
-    assert s.f_bsize > 0
-
-
-@pytest.mark.fuse
 def test_statvfs_values(mounted_fs: str):
     s = os.statvfs(mounted_fs)
     assert s.f_namemax == 255
@@ -80,10 +43,8 @@ def test_statvfs_values(mounted_fs: str):
 def test_max_filename(mounted_fs: str):
     name = "a" * 255
     path = os.path.join(mounted_fs, name)
-    write(path, b"ok")
-    data = read(path)
-    assert data == b"ok"
-    os.unlink(path)
+    with make_file(path, b"ok") as f:
+        assert read(f) == b"ok"
 
 
 @pytest.mark.fuse

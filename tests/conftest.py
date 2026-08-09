@@ -11,7 +11,6 @@ def pytest_addoption(parser):
     parser.addoption("--image", default="fused.img", help="Path to the disk image")
     parser.addoption("--mount", default="mnt", help="Mount point directory")
     parser.addoption("--logs", default="logs", help="Logs output directory")
-    parser.addoption("--stress-duration", type=int, default=15, help="Duration in seconds for stress test")
     parser.addoption("--disker", default="build/format", help="Path to the format tool binary")
     parser.addoption("--imgdump", default="build/imgdump", help="Path to the imgdump tool binary")
 
