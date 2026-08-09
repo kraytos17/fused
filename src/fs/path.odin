@@ -2,6 +2,8 @@
 #+build linux
 package fs
 
+import "core:strings"
+
 // Resolved_Entry bundles a resolved Directory_Entry with its disk location.
 Resolved_Entry :: struct {
 	entry:       Directory_Entry,
@@ -11,7 +13,7 @@ Resolved_Entry :: struct {
 }
 
 // resolve_path walks a path string through the directory tree and returns the final entry.
-// It handles both short names and LFNs, uses manual component parsing (no heap alloc),
+// It handles both short names and LFNs, parses components without heap allocation,
 // and returns false if any intermediate path component is missing or not a directory.
 resolve_path :: proc(vol: ^Volume, path: string, allocator := context.allocator) -> (res: Resolved_Entry, ok: bool) {
 	if path == "/" || len(path) == 0 {
@@ -26,22 +28,14 @@ resolve_path :: proc(vol: ^Volume, path: string, allocator := context.allocator)
 		return res, true
 	}
 
-	Component :: struct { start, end: int }
-
-	comps: [16]Component
+	comps: [16]string
 	n_comps := 0
-	start := 1
-	i := start
-	for i <= len(path) {
-		if i == len(path) || path[i] == '/' {
-			if i > start {
-				if n_comps >= len(comps) { return {}, false }
-				comps[n_comps] = Component{start, i}
-				n_comps += 1
-			}
-			start = i + 1
-		}
-		i += 1
+	rest := path
+	for comp in strings.split_by_byte_iterator(&rest, '/') {
+		if len(comp) == 0 { continue }
+		if n_comps >= len(comps) { return {}, false }
+		comps[n_comps] = comp
+		n_comps += 1
 	}
 	if n_comps == 0 {
 		return resolve_path(vol, "/")
@@ -50,7 +44,7 @@ resolve_path :: proc(vol: ^Volume, path: string, allocator := context.allocator)
 	current_cluster := Cluster(vol.master.root_cluster)
 	current_offset  := Sector_Offset(vol.master.root_sector_index)
 	for comp_idx in 0 ..< n_comps {
-		target  := path[comps[comp_idx].start:comps[comp_idx].end]
+		target  := comps[comp_idx]
 		is_last := comp_idx == n_comps - 1
 		dirs, dirs_err := read_directory_entries(vol, current_cluster, current_offset)
 		defer delete(dirs)

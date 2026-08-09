@@ -4,13 +4,12 @@ package fs
 
 import "core:log"
 import "core:mem"
+import "core:strings"
 
 // entry_short_name returns the file name from a Directory_Entry (up to first null byte).
 entry_short_name :: proc "contextless" (entry: ^Directory_Entry) -> string {
-	n := 0
-	for n < 16 && entry.file_name[n] != 0 {
-		n += 1
-	}
+	n := strings.index_byte(string(entry.file_name[:]), 0)
+	if n < 0 { n = len(entry.file_name) }
 	return string(entry.file_name[:n])
 }
 

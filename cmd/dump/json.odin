@@ -1,80 +1,60 @@
 // json.odin — JSON output builder for the image dumper.
+//
+// Uses core:encoding/json to marshal typed structs. Output is compact
+// (single-line) strict JSON; the root directory map is sorted by key for
+// deterministic output.
 #+build linux
 package main
 
+import "core:encoding/json"
 import "core:fmt"
+import "core:log"
+import "core:os"
 import "core:strings"
 import "src:fs"
+
+// MasterJSON is the master-record section of the JSON output.
+MasterJSON :: struct {
+	sig:                string `json:"sig"`,
+	rev_min:            u8     `json:"rev_min"`,
+	rev_max:            u8     `json:"rev_max"`,
+	features:           u64    `json:"features"`,
+	cluster_map_offset: u64    `json:"cluster_map_offset"`,
+	cluster_map_size:   u64    `json:"cluster_map_size"`,
+	cluster_size:       u64    `json:"cluster_size"`,
+	root_sector_index:  u16    `json:"root_sector_index"`,
+	root_cluster:       u64    `json:"root_cluster"`,
+}
 
 // ClusterJSON represents a single cluster entry for JSON output.
 ClusterJSON :: struct {
 	// idx is the cluster index.
-	idx:          int,
+	idx:          int    `json:"idx"`,
 	// flags is the human-readable flags string.
-	flags:        string,
+	flags:        string `json:"flags"`,
 	// sector_index is the sector offset within the cluster.
-	sector_index: u16,
+	sector_index: u16    `json:"sector_index"`,
 }
 
 // EntryJSON represents a directory entry for JSON output.
 EntryJSON :: struct {
-	kind:     string,
-	size:     u64,
-	cluster:  u64,
-	sector:   u16,
-	dt:       string,
-	target:   string,
-	children: map[string]EntryJSON,
+	kind:     string               `json:"kind"`,
+	size:     u64                  `json:"size"`,
+	cluster:  u64                  `json:"cluster"`,
+	sector:   u16                  `json:"sector"`,
+	dt:       string               `json:"dt"`,
+	target:   string               `json:"target,omitempty"`,
+	children: map[string]EntryJSON `json:"children,omitempty"`,
 }
 
-// json_escape_string escapes a string for safe JSON output.
-json_escape_string :: proc(sb: ^strings.Builder, s: string) {
-	for i in 0 ..< len(s) {
-		b := u8(s[i])
-		switch b {
-		case '"':  strings.write_string(sb, `\"`)
-		case '\\': strings.write_string(sb, `\\`)
-		case '\b': strings.write_string(sb, `\b`)
-		case '\f': strings.write_string(sb, `\f`)
-		case '\n': strings.write_string(sb, `\n`)
-		case '\r': strings.write_string(sb, `\r`)
-		case '\t': strings.write_string(sb, `\t`)
-		case:
-			if b < 0x20 || b >= 0x7f {
-				fmt.sbprintf(sb, "\\u%04x", u32(b))
-			} else {
-				strings.write_byte(sb, b)
-			}
-		}
-	}
-}
-
-// json_write_entry writes a single directory entry (with optional children) as JSON.
-json_write_entry :: proc(sb: ^strings.Builder, name: string, entry: EntryJSON) {
-	strings.write_byte(sb, '"')
-	json_escape_string(sb, name)
-	fmt.sbprintf(sb, `":{{"kind":"%s","size":%d,"cluster":%d,"sector":%d,"dt":"`,
-		entry.kind, entry.size, entry.cluster, entry.sector)
-	json_escape_string(sb, entry.dt)
-	strings.write_byte(sb, '"')
-
-	if entry.target != "" {
-		fmt.sbprintf(sb, `,"target":"`)
-		json_escape_string(sb, entry.target)
-		strings.write_byte(sb, '"')
-	}
-
-	if entry.children != nil {
-		fmt.sbprintf(sb, `,"children":{{`)
-		first := true
-		for child_name, child_entry in entry.children {
-			if !first { strings.write_byte(sb, ',') }
-			first = false
-			json_write_entry(sb, child_name, child_entry)
-		}
-		strings.write_byte(sb, '}')
-	}
-	strings.write_byte(sb, '}')
+// RootJSON is the top-level JSON document.
+RootJSON :: struct {
+	master:    MasterJSON           `json:"master"`,
+	clusters:  [dynamic]ClusterJSON `json:"clusters"`,
+	allocated: u64                  `json:"allocated"`,
+	free:      u64                  `json:"free"`,
+	total:     u64                  `json:"total"`,
+	root:      map[string]EntryJSON `json:"root"`,
 }
 
 // build_clusters builds the JSON cluster entry array from disk.
@@ -85,7 +65,6 @@ build_clusters :: proc(vol: ^fs.Volume) -> (clusters: [dynamic]ClusterJSON, allo
 
 	entries_per_sector := u64(fs.CLUSTER_MAP_ENTRIES_PER_SECTOR)
 	cm_sectors := (m.cluster_map_size + entries_per_sector - 1) / entries_per_sector
-
 	for sec_idx: u64; sec_idx < cm_sectors; sec_idx += 1 {
 		buf: [fs.SECTOR_SIZE]u8
 		if !fs.sector_read(vol, fs.Sector(m.cluster_map_offset + sec_idx), buf[:]) {
@@ -185,49 +164,41 @@ build_directory :: proc(vol: ^fs.Volume, cluster: fs.Cluster, offset: fs.Sector_
 // print_json builds and prints the complete JSON output.
 print_json :: proc(vol: ^fs.Volume) {
 	m := &vol.master
-
-	sb := strings.builder_make()
-	defer strings.builder_destroy(&sb)
-
-	fmt.sbprintf(&sb, `{{"master":{{"sig":"`)
-	sig_str := string(m.sig[:])
-	json_escape_string(&sb, sig_str)
-	fmt.sbprintf(&sb, `","rev_min":%d,"rev_max":%d,"features":%d,`,
-		m.rev_min, m.rev_max, transmute(u64)(m.features))
-	fmt.sbprintf(&sb, `"cluster_map_offset":%d,"cluster_map_size":%d`,
-		m.cluster_map_offset, m.cluster_map_size)
-	fmt.sbprintf(&sb, `,"cluster_size":%d,"root_sector_index":%d,"root_cluster":%d},`,
-		m.cluster_size, m.root_sector_index, m.root_cluster)
-
-	// Clusters
 	cluster_list, allocated, total := build_clusters(vol)
 	defer {
 		for c in cluster_list { delete(c.flags) }
 		delete(cluster_list)
 	}
 
-	fmt.sbprintf(&sb, `"clusters":[`)
-	first_cluster := true
-	for c in cluster_list {
-		if !first_cluster { strings.write_byte(&sb, ',') }
-		first_cluster = false
-		fmt.sbprintf(&sb, `{{"idx":%d,"flags":"%s","sector_index":%d}}`,
-			c.idx, c.flags, c.sector_index)
-	}
-	fmt.sbprintf(&sb, `],"allocated":%d,"free":%d,"total":%d,`, allocated, total - allocated, total)
-
-	// Root directory
-	fmt.sbprintf(&sb, `"root":{{`)
 	root_entries := build_directory(vol, fs.Cluster(m.root_cluster), fs.Sector_Offset(m.root_sector_index))
 	defer delete(root_entries)
 
-	first := true
-	for name, entry in root_entries {
-		if !first { strings.write_byte(&sb, ',') }
-		first = false
-		json_write_entry(&sb, name, entry)
+	root := RootJSON{
+		master = MasterJSON{
+			sig                = string(m.sig[:]),
+			rev_min            = m.rev_min,
+			rev_max            = m.rev_max,
+			features           = transmute(u64)(m.features),
+			cluster_map_offset = m.cluster_map_offset,
+			cluster_map_size   = m.cluster_map_size,
+			cluster_size       = m.cluster_size,
+			root_sector_index  = m.root_sector_index,
+			root_cluster       = m.root_cluster,
+		},
+		clusters  = cluster_list,
+		allocated = allocated,
+		free      = total - allocated,
+		total     = total,
+		root      = root_entries,
 	}
-	fmt.sbprintf(&sb, `}}}}`)
 
+	sb := strings.builder_make()
+	defer strings.builder_destroy(&sb)
+
+	opts := json.Marshal_Options{spec = .JSON, sort_maps_by_key = true}
+	if err := json.marshal_to_builder(&sb, root, &opts); err != nil {
+		log.errorf("json marshal failed: %v", err)
+		os.exit(1)
+	}
 	fmt.println(strings.to_string(sb))
 }

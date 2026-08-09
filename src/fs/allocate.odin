@@ -12,9 +12,13 @@ _find_contiguous_free :: proc(bitmap: ^bit_array.Bit_Array, total_sectors: u64, 
 	run_start: u16 = 0xFFFF
 	run_len: u16 = 0
 	max_s := int(min(total_sectors, 65535))
-	for s in 0 ..< max_s {
-		if bit_array.unsafe_get(bitmap, s) {
-			if run_len > 0 && run_len >= needed {
+	it := bit_array.make_iterator(bitmap)
+	for set, s in bit_array.iterate_by_all(&it) {
+		if s >= max_s {
+			break
+		}
+		if set {
+			if run_len >= needed {
 				return run_start, run_len, true
 			}
 			run_start = 0xFFFF
@@ -40,8 +44,12 @@ _find_contiguous_free :: proc(bitmap: ^bit_array.Bit_Array, total_sectors: u64, 
 @private
 _is_cluster_full :: proc(bitmap: ^bit_array.Bit_Array, total_sectors: u64) -> bool {
 	max_s := int(min(total_sectors, 65535))
-	for s in 0 ..< max_s {
-		if !bit_array.unsafe_get(bitmap, s) {
+	it := bit_array.make_iterator(bitmap)
+	for set, s in bit_array.iterate_by_all(&it) {
+		if s >= max_s {
+			break
+		}
+		if !set {
 			return false
 		}
 	}

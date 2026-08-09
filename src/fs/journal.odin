@@ -19,14 +19,11 @@ intent_log_sector :: proc(master: ^Master_Record) -> Sector {
 }
 
 journal_seq_get :: proc(master: ^Master_Record) -> Journal_Seq {
-	seq: Journal_Seq
-	mem.copy(&seq, &master.resv[JOURNAL_SEQ_OFFSET], size_of(Journal_Seq))
-	return seq
+	return mem.reinterpret_copy(Journal_Seq, &master.resv[JOURNAL_SEQ_OFFSET])
 }
 
 journal_seq_set :: proc(master: ^Master_Record, seq: Journal_Seq) {
-	s := seq
-	mem.copy(&master.resv[JOURNAL_SEQ_OFFSET], &s, size_of(Journal_Seq))
+	(^Journal_Seq)(&master.resv[JOURNAL_SEQ_OFFSET])^ = seq
 }
 
 journal_seq_init :: proc(master: ^Master_Record) {
@@ -172,26 +169,21 @@ intent_txn_add :: proc(txn: ^Intent_Txn, cluster_idx: u64, free_idx: int, take: 
 }
 
 journal_v2_region_size :: proc(master: ^Master_Record) -> u64 {
-	n: u64
-	mem.copy(&n, &master.resv[JOURNAL_REGION_OFFSET], size_of(u64))
+	n := mem.reinterpret_copy(u64, &master.resv[JOURNAL_REGION_OFFSET])
 	if n == 0 { n = 64 }
 	return n
 }
 
 journal_v2_set_region_size :: proc(master: ^Master_Record, n: u64) {
-	s := n
-	mem.copy(&master.resv[JOURNAL_REGION_OFFSET], &s, size_of(u64))
+	(^u64)(&master.resv[JOURNAL_REGION_OFFSET])^ = n
 }
 
 journal_v2_watermark :: proc(master: ^Master_Record) -> u64 {
-	w: u64
-	mem.copy(&w, &master.resv[JOURNAL_WATERMARK_OFFSET], size_of(u64))
-	return w
+	return mem.reinterpret_copy(u64, &master.resv[JOURNAL_WATERMARK_OFFSET])
 }
 
 journal_v2_set_watermark :: proc(master: ^Master_Record, w: u64) {
-	s := w
-	mem.copy(&master.resv[JOURNAL_WATERMARK_OFFSET], &s, size_of(u64))
+	(^u64)(&master.resv[JOURNAL_WATERMARK_OFFSET])^ = w
 }
 
 journal_v2_begin :: proc(master: ^Master_Record, txn: ^Journal_Txn) {

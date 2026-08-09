@@ -179,9 +179,9 @@ build/imgdump --hex=/Kernel fused.img               # hex dump of /Kernel
 build/format --force --output=my.img --size=16M      # custom image
 ```
 
-`imgdump --json` always produces valid JSON; non-printable bytes in entry
-names are escaped as `\uXXXX`. The JSON master record includes `rev_min`,
-`rev_max`, and `features`.
+`imgdump --json` always produces valid JSON; strings are escaped per the
+JSON spec (ASCII/UTF-8 preserved, control and invalid bytes escaped). The
+JSON master record includes `rev_min`, `rev_max`, and `features`.
 
 ## ABI compatibility
 

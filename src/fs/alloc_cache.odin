@@ -110,8 +110,9 @@ alloc_cache_count_free :: proc(vol: ^Volume) -> u64 {
 	for ci in 0 ..< int(vol.master.cluster_map_size) {
 		bm, _, bok := alloc_cache_ensure(&vol.cache, vol, u64(ci))
 		if !bok { continue }
-		for b in 0 ..< u16(vol.master.cluster_size) {
-			if !bit_array.unsafe_get(&bm, int(b)) {
+		it := bit_array.make_iterator(&bm)
+		for set, _ in bit_array.iterate_by_all(&it) {
+			if !set {
 				free += 1
 			}
 		}
