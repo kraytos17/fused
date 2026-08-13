@@ -51,5 +51,5 @@ def test_max_filename(mounted_fs: str):
 def test_log_format_opts(fused_bin: str):
     for fmt in ["short", "long", "full"]:
         r = subprocess.run([fused_bin, "--log-format=" + fmt, "--help"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, check=False)
         assert r.returncode == 0, f"log-format={fmt} exit={r.returncode}"

@@ -9,7 +9,7 @@ import "src:fs"
 // (identified by cluster, offset, and entry index).
 write_entry_back :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, cluster: fs.Cluster, offset: fs.Sector_Offset, index: int) -> bool {
 	depc := dir_entries_per_buf(fsys.vol.master.features)
-	runs, ext_err := fs.resolve_extents(&fsys.vol,cluster, offset)
+	runs, ext_err := fs.resolve_extents(&fsys.vol, cluster, offset)
 	defer delete(runs)
 	if ext_err != .None {
 		return false

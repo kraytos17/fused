@@ -1,7 +1,7 @@
 // core.odin — Shared infrastructure for the FUSE callbacks.
 //
 // Every callback retrieves its FS state via fuse_get_context().private_data
-// (the get_fs() helper), eliminating package-level globals.
+// (the get_fs() helper).
 #+build linux
 package mounter
 
@@ -10,6 +10,7 @@ import "core:container/lru"
 import "core:log"
 import "core:mem"
 import "core:os"
+import "core:slice"
 import "core:strings"
 import "core:sync"
 import "core:sys/posix"
@@ -46,6 +47,19 @@ FS :: struct {
 	// lfn_cache is an LRU cache mapping (cluster,offset,index) to long
 	// file names.
 	lfn_cache:   lru.Cache(u64, string),
+	// extents caches resolved extent chains keyed by (data_cluster, offset).
+	// Cached slices are owned by the cache; invalidated on any metadata
+	// mutation (write/truncate/fallocate/unlink/xattr).
+	extents:     map[Extent_Cache_Key][]fs.Extent_Run,
+	// free_sectors caches the volume's free sector count so statfs is O(1).
+	free_sectors: u64,
+}
+
+// Extent_Cache_Key identifies a resolved extent chain by its start cluster and
+// sector offset within that cluster.
+Extent_Cache_Key :: struct {
+	cluster: u64,
+	offset:  u16,
 }
 
 // get_fs retrieves the FS pointer from the FUSE context's private_data.
@@ -146,7 +160,7 @@ _set_time_fields_now :: proc(year: ^u16, dt: ^fs.Packed_Date_Time) {
 // returning the entry, its data cluster, data offset, and whether it succeeded.
 read_entry_from_fh :: proc(fsys: ^FS, fh: u64) -> (fs.Directory_Entry, fs.Cluster, fs.Sector_Offset, bool) {
 	fh_packed := transmute(fs.File_Handle)(fh)
-	runs, ext_err := fs.resolve_extents(&fsys.vol,fs.Cluster(fh_packed.dir_cluster), fs.Sector_Offset(fh_packed.dir_offset))
+	runs, ext_err := fs.resolve_extents(&fsys.vol, fs.Cluster(fh_packed.dir_cluster), fs.Sector_Offset(fh_packed.dir_offset))
 	defer delete(runs)
 	if ext_err != .None {
 		return {}, 0, 0, false
@@ -215,10 +229,11 @@ path_cache_put :: proc(fsys: ^FS, path: string, val: Path_Cache_Value) {
 	lru.set(&fsys.path_cache, key, val)
 }
 
-// path_cache_invalidate_all clears both the path cache and the LFN cache.
+// path_cache_invalidate_all clears the path cache, LFN cache, and extent cache.
 path_cache_invalidate_all :: proc(fsys: ^FS) {
 	lru.clear(&fsys.path_cache, true)
 	lru.clear(&fsys.lfn_cache, true)
+	extent_cache_invalidate_all(fsys)
 }
 
 // resolve_path_cached resolves a path using the LRU path cache. On a miss the
@@ -286,13 +301,65 @@ init_fs_for_test :: proc(vol: fs.Volume, allocator := context.allocator) -> (fsy
 	fsys.path_cache.on_remove = path_cache_on_remove
 	lru.init(&fsys.lfn_cache, 256, allocator, allocator)
 	fsys.lfn_cache.on_remove = lfn_cache_on_remove
+	fsys.extents = make(map[Extent_Cache_Key][]fs.Extent_Run, allocator)
+	fsys.free_sectors = fs.alloc_cache_count_free(&fsys.vol)
 	return fsys
 }
 
 // destroy_fs_for_test tears down an FS created by init_fs_for_test.  Does not
 // close the volume (the caller owns it).
 destroy_fs_for_test :: proc(fsys: ^FS) {
+	extent_cache_invalidate_all(fsys)
 	lru.destroy(&fsys.path_cache, false)
 	lru.destroy(&fsys.lfn_cache, false)
 	fsys^ = {}
+}
+
+// resolve_extents_cached resolves an extent chain, caching the result so
+// repeated reads/writes on the same file skip the metadata walk.  The returned
+// slice is owned by the cache — callers must NOT delete it.
+resolve_extents_cached :: proc(fsys: ^FS, cluster: fs.Cluster, offset: fs.Sector_Offset) -> (runs: []fs.Extent_Run, ok: bool) {
+	key := Extent_Cache_Key{u64(cluster), u16(offset)}
+	if cached, hit := fsys.extents[key]; hit {
+		return cached, true
+	}
+
+	r, err := fs.resolve_extents(&fsys.vol, cluster, offset)
+	if err != .None {
+		return nil, false
+	}
+	
+	// Store a heap copy so the dynamic array can be freed; the cache owns it.
+	slice_copy, _ := slice.clone(r[:])
+	delete(r)
+	fsys.extents[key] = slice_copy
+	return slice_copy, true
+}
+
+// extent_cache_invalidate_all drops every cached extent chain.  Call after any
+// metadata mutation that can change a chain (write, truncate, fallocate,
+// unlink, rmdir, rename, xattr store/clear).  Do NOT call while borrowed
+// slices from this cache are still in use.
+extent_cache_invalidate_all :: proc(fsys: ^FS) {
+	for _, runs in fsys.extents {
+		delete(runs)
+	}
+	delete(fsys.extents)
+	fsys.extents = make(map[Extent_Cache_Key][]fs.Extent_Run)
+}
+
+// extent_cache_invalidate drops a single cached chain.  Use when a mutation
+// affects only one chain so other borrowed cached slices stay valid.
+extent_cache_invalidate :: proc(fsys: ^FS, cluster: fs.Cluster, offset: fs.Sector_Offset) {
+	key := Extent_Cache_Key{u64(cluster), u16(offset)}
+	if runs, ok := fsys.extents[key]; ok {
+		delete(runs)
+		delete_key(&fsys.extents, key)
+	}
+}
+
+// reinit_free_sectors recomputes the cached free-sector count from the volume.
+// Used after deallocation where the exact freed count isn't tracked.
+reinit_free_sectors :: proc(fsys: ^FS) {
+	fsys.free_sectors = fs.alloc_cache_count_free(&fsys.vol)
 }

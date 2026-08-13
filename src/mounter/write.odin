@@ -4,10 +4,8 @@ package mounter
 
 import "base:runtime"
 import "core:c"
-import "core:container/lru"
 import "core:log"
 import "core:mem"
-import "core:os"
 import "core:slice"
 import "core:sys/linux"
 import "core:sys/posix"
@@ -35,12 +33,11 @@ fused_write :: proc "c" (
 	}
 
 	fh := transmute(fs.File_Handle)(fi.fh)
-	runs, ext_err := fs.resolve_extents(&fsys.vol,data_cluster, data_offset)
-	defer delete(runs)
+	runs, ext_err := resolve_extents_cached(fsys, data_cluster, data_offset)
 
 	total_sectors := (u64(off) + u64(size) + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
 	current_sectors: u64
-	if ext_err == .None {
+	if ext_err {
 		for r in runs {
 			current_sectors += u64(r.count)
 		}
@@ -59,16 +56,17 @@ fused_write :: proc "c" (
 			data_cluster = new_c
 			data_offset = new_o
 		}
-		delete(runs)
-		runs, ext_err = fs.resolve_extents(&fsys.vol, data_cluster, data_offset)
+		// The chain changed; drop only its cached extents and re-resolve.
+		extent_cache_invalidate(fsys, data_cluster, data_offset)
+		runs, ext_err = resolve_extents_cached(fsys, data_cluster, data_offset)
 	}
-	if ext_err != .None {
+	if !ext_err {
 		log.errorf("write: %s → extents failed", path)
 		return fuse3.nix(.ENOENT)
 	}
 
-	// fsync after metadata allocation — ensures CE table and chain are durable.
-	os.sync(fsys.vol.disk)
+	// Metadata allocation is made durable by the journal's own sync
+	// (journal_v2_commit); no extra fsync needed here.
 	log.debugf("write: %s → enter write loop (runs=%d)", path, len(runs))
 	pos_in_file: u64 = 0
 	bytes_written: u64 = 0
@@ -78,13 +76,15 @@ fused_write :: proc "c" (
 	sector_rw: [fs.SECTOR_SIZE]u8
 	new_size := max(u64(entry.file_size), write_off + u64(size))
 	for run in runs {
+		run_start := pos_in_file
 		run_bytes := u64(run.count) * fs.SECTOR_SIZE
 		if pos_in_file + run_bytes <= write_off {
 			pos_in_file += run_bytes
 			continue
 		}
 
-		skip := write_off - pos_in_file
+		// skip is the file offset of the next write position relative to this run.
+		skip := (write_off + bytes_written) - pos_in_file
 		start_sec := u64(run.sector) + skip / fs.SECTOR_SIZE
 		byte_off := skip % fs.SECTOR_SIZE
 		remaining_in_run := u64(run.sector) + u64(run.count) - start_sec
@@ -132,13 +132,10 @@ fused_write :: proc "c" (
 			remaining = 0
 		}
 		if remaining == 0 {break}
-		pos_in_file = u64(run.sector + fs.Sector(run.count)) * fs.SECTOR_SIZE
+		// Advance to the next run's file-offset start.
+		pos_in_file = run_start + run_bytes
 	}
-	if new_size != u64(entry.file_size) {
-		os.sync(fsys.vol.disk)
-	}
-
-	log.debugf("write: %s off=%d size=%d → %d bytes (%v)", path, off, size, bytes_written, time.since(write_start))
+		log.debugf("write: %s off=%d size=%d → %d bytes (%v)", path, off, size, bytes_written, time.since(write_start))
 	return write_finish(fsys, &entry, fh, new_size, bytes_written)
 }
 
@@ -181,12 +178,11 @@ fused_write_buf :: proc "c" (
 	}
 
 	fh := transmute(fs.File_Handle)(fi.fh)
-	runs, ext_err := fs.resolve_extents(&fsys.vol,data_cluster, data_offset)
-	defer delete(runs)
+	runs, ext_err := resolve_extents_cached(fsys, data_cluster, data_offset)
 
 	total_sectors := (u64(off) + total_size + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
 	current_sectors: u64
-	if ext_err == .None {
+	if ext_err {
 		for r in runs {
 			current_sectors += u64(r.count)
 		}
@@ -205,10 +201,11 @@ fused_write_buf :: proc "c" (
 			data_cluster = new_c
 			data_offset = new_o
 		}
-		delete(runs)
-		runs, ext_err = fs.resolve_extents(&fsys.vol, data_cluster, data_offset)
+		// The chain changed; drop only its cached extents and re-resolve.
+		extent_cache_invalidate(fsys, data_cluster, data_offset)
+		runs, ext_err = resolve_extents_cached(fsys, data_cluster, data_offset)
 	}
-	if ext_err != .None {
+	if !ext_err {
 		log.errorf("write_buf: %s → extents failed", path)
 		return fuse3.nix(.ENOENT)
 	}
@@ -222,6 +219,7 @@ fused_write_buf :: proc "c" (
 	buf_idx: int
 	sector_rw: [fs.SECTOR_SIZE]u8
 	for run in runs {
+		run_start := pos_in_file
 		run_bytes := u64(run.count) * fs.SECTOR_SIZE
 		if pos_in_file + run_bytes <= write_off {
 			pos_in_file += run_bytes
@@ -233,7 +231,7 @@ fused_write_buf :: proc "c" (
 		byte_off := skip % fs.SECTOR_SIZE
 		remaining_in_run := u64(run.sector) + u64(run.count) - start_sec
 		for (byte_off > 0 || remaining_in_run > 0) && buf_idx < int(buf.count) {
-			b := bufs[buf_idx]
+			b := &bufs[buf_idx]
 			buf_remaining := u64(b.size)
 			if byte_off > 0 && remaining_in_run > 0 && buf_remaining > 0 {
 				if !fs.sector_read(&fsys.vol, fs.Sector(start_sec), sector_rw[:]) {break}
@@ -315,10 +313,8 @@ fused_write_buf :: proc "c" (
 			}
 		}
 		if buf_idx >= int(buf.count) {break}
-		pos_in_file = u64(run.sector + fs.Sector(run.count)) * fs.SECTOR_SIZE
-	}
-	if new_size != u64(entry.file_size) {
-		os.sync(fsys.vol.disk)
+		// Advance to the next run's file-offset start.
+		pos_in_file = run_start + run_bytes
 	}
 
 	log.debugf("write_buf: %s off=%d → %d bytes (%v)", path, off, bytes_written, time.since(write_start))
@@ -344,9 +340,8 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 
 	new_sectors := (u64(size) + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
 	current_sectors: u64
-	runs, ext_err := fs.resolve_extents(&fsys.vol, data_cluster, data_offset)
-	defer delete(runs)
-	if ext_err == .None {
+	runs, ext_err := resolve_extents_cached(fsys, data_cluster, data_offset)
+	if ext_err {
 		for r in runs {
 			current_sectors += u64(r.count)
 		}
@@ -406,7 +401,6 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 		if aerr != .None {
 			return fuse3.nix(.ENOSPC)
 		}
-		os.sync(fsys.vol.disk)
 	}
 
 	set_entry_time_to_now(&entry)
@@ -415,8 +409,7 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 		return fuse3.nix(.EIO)
 	}
 
-	os.sync(fsys.vol.disk)
-	lru.remove(&fsys.path_cache, string(path))
+	path_cache_invalidate_all(fsys)
 	log.debugf("truncate: %s → %d", path, size)
 	return 0
 }
@@ -494,9 +487,8 @@ fused_fallocate :: proc "c" (path: cstring, mode: c.int, off: posix.off_t, lengt
 	alloc_len := u64(length)
 	total_sectors := (alloc_start + alloc_len + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
 	current_sectors: u64
-	runs, ext_err := fs.resolve_extents(&fsys.vol, data_cluster, data_offset)
-	defer delete(runs)
-	if ext_err == .None {
+	runs, ext_err := resolve_extents_cached(fsys, data_cluster, data_offset)
+	if ext_err {
 		for r in runs {
 			current_sectors += u64(r.count)
 		}
@@ -535,7 +527,6 @@ fused_fallocate :: proc "c" (path: cstring, mode: c.int, off: posix.off_t, lengt
 			if !zok {
 				return fuse3.nix(.EIO)
 			}
-			os.sync(fsys.vol.disk)
 		}
 	}
 	if mode & fuse3.FALLOC_FL_KEEP_SIZE == 0 {
@@ -549,7 +540,6 @@ fused_fallocate :: proc "c" (path: cstring, mode: c.int, off: posix.off_t, lengt
 		return fuse3.nix(.EIO)
 	}
 
-	os.sync(fsys.vol.disk)
 	path_cache_invalidate_all(fsys)
 	log.debugf("fallocate: %s off=%d len=%d mode=%d", path, off, length, mode)
 	return 0
@@ -598,15 +588,13 @@ fused_copy_file_range :: proc "c" (
 	}
 
 	dst_fh := transmute(fs.File_Handle)(fi_out.fh)
-	src_runs, src_err := fs.resolve_extents(&fsys.vol,src_cluster, src_offset)
-	defer delete(src_runs)
-	if src_err != .None {
+	src_runs, src_err := resolve_extents_cached(fsys, src_cluster, src_offset)
+	if !src_err {
 		return c.ssize_t(-int(fuse3.nix(.ENOENT)))
 	}
 
-	dst_runs, dst_err := fs.resolve_extents(&fsys.vol, dst_cluster, dst_offset)
-	defer delete(dst_runs)
-	if dst_err != .None {dst_runs = {}}
+	dst_runs, dst_err := resolve_extents_cached(fsys, dst_cluster, dst_offset)
+	if !dst_err {dst_runs = {}}
 
 	src_off := u64(off_in)
 	dst_off := u64(off_out)
@@ -624,9 +612,10 @@ fused_copy_file_range :: proc "c" (
 			dst_offset = new_o
 		}
 
-		delete(dst_runs)
-		dst_runs, dst_err = fs.resolve_extents(&fsys.vol, dst_cluster, dst_offset)
-		if dst_err != .None {return c.ssize_t(-int(fuse3.nix(.ENOENT)))}
+		// Invalidate only the dst chain so the borrowed src_runs stay valid.
+		extent_cache_invalidate(fsys, dst_cluster, dst_offset)
+		dst_runs, dst_err = resolve_extents_cached(fsys, dst_cluster, dst_offset)
+		if !dst_err {return c.ssize_t(-int(fuse3.nix(.ENOENT)))}
 	}
 
 	read_sector: [fs.SECTOR_SIZE]u8

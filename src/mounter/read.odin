@@ -124,9 +124,9 @@ fused_readdir :: proc "c" (
 
 	dir_cluster := fs.Cluster(entry.stored_cluster)
 	dir_offset := fs.Sector_Offset(entry.sector_index)
-	dir_runs, dir_err := fs.resolve_extents(&fsys.vol,dir_cluster, dir_offset)
-
+	dir_runs, dir_err := fs.resolve_extents(&fsys.vol, dir_cluster, dir_offset)
 	defer delete(dir_runs)
+
 	sync.mutex_unlock(&fsys.mu)
 	if dir_err != .None {
 		log.debugf("readdir: %s → extent resolve failed", path)
@@ -230,9 +230,8 @@ fused_read :: proc "c" (
 		return fuse3.nix(.ENOENT)
 	}
 
-	runs, ext_err := fs.resolve_extents(&fsys.vol, data_cluster, data_offset)
-	defer delete(runs)
-	if ext_err != .None {
+	runs, ext_ok := resolve_extents_cached(fsys, data_cluster, data_offset)
+	if !ext_ok {
 		return fuse3.nix(.ENOENT)
 	}
 
@@ -314,9 +313,8 @@ fused_read_buf :: proc "c" (
 		return fuse3.nix(.ENOENT)
 	}
 
-	runs, ext_err := fs.resolve_extents(&fsys.vol, data_cluster, data_offset)
-	defer delete(runs)
-	if ext_err != .None {
+	runs, ext_ok := resolve_extents_cached(fsys, data_cluster, data_offset)
+	if !ext_ok {
 		return fuse3.nix(.ENOENT)
 	}
 
@@ -403,9 +401,8 @@ fused_readlink :: proc "c" (path: cstring, buf: [^]c.char, size: c.size_t) -> c.
 		return fuse3.nix(.EIO)
 	}
 
-	runs, ext_err := fs.resolve_extents(&fsys.vol, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index))
-	defer delete(runs)
-	if ext_err != .None {
+	runs, ext_ok := resolve_extents_cached(fsys, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index))
+	if !ext_ok {
 		return fuse3.nix(.EIO)
 	}
 

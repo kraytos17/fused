@@ -276,7 +276,8 @@ release builds. Leaked allocations are reported at unmount time.
 tests/
 ├── fused_test/                    Python test package
 │   ├── suites/
-│   │   └── stress.py              Multi-threaded stress test (reader + writer workers)
+│   │   ├── stress.py              Multi-threaded stress test (reader + writer workers)
+│   │   └── bench.py               Throughput benchmark (write/read/statfs/readdir)
 │   ├── mount.py                   FUSE mount context manager (contextlib.contextmanager)
 │   └── io.py                      read/write helpers, run_cli, make_file/make_dir context managers
 ├── conftest.py                    Pytest fixtures: mounted_fs, fused_bin, disker_bin, imgdump_bin
@@ -304,6 +305,7 @@ tests/
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |
 | 6. FUSE stress | `make smoke-mt` inside `unshare -rUm` (stress.py) |
+| 7. Benchmark | `make bench` (bench.py — write/read/statfs/readdir MB/s) |
 
 ### Test isolation
 

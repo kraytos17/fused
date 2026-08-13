@@ -119,6 +119,8 @@ run :: proc() {
 
 	fsys.vol = vol
 	fsys.disk_raw_fd = c.int(os.fd(vol.disk))
+	fsys.extents = make(map[Extent_Cache_Key][]fs.Extent_Run)
+	fsys.free_sectors = fs.alloc_cache_count_free(&vol)
 	log.debugf("opened %s → raw_fd=%d", image_path, fsys.disk_raw_fd)
 	log.infof("mounted: rev=%d cluster_size=%d clusters=%d root=%d",
 		vol.master.rev_max, vol.master.cluster_size, vol.master.cluster_map_size, vol.master.root_cluster)

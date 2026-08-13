@@ -187,9 +187,8 @@ fused_lseek :: proc "c" (path: cstring, off: posix.off_t, whence: c.int, fi: ^fu
 		return posix.off_t(-int(fuse3.nix(.ENOENT)))
 	}
 
-	runs, ext_err := fs.resolve_extents(&fsys.vol, data_cluster, data_offset)
-	defer delete(runs)
-	if ext_err != .None {
+	runs, ext_ok := resolve_extents_cached(fsys, data_cluster, data_offset)
+	if !ext_ok {
 		return posix.off_t(-int(fuse3.nix(.ENOENT)))
 	}
 
@@ -237,7 +236,7 @@ fused_statfs :: proc "c" (path: cstring, stbuf: ^posix.statvfs_t) -> c.int {
 	fsys := get_fs()
 	context.logger = fsys.logger
 	total_sectors := u64(fsys.vol.image_size) / fs.SECTOR_SIZE
-	free_sectors := fs.alloc_cache_count_free(&fsys.vol)
+	free_sectors := fsys.free_sectors
 	stbuf^ = {
 		f_bsize   = c.ulong(fs.SECTOR_SIZE),
 		f_frsize  = c.ulong(fs.SECTOR_SIZE),

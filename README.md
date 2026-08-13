@@ -131,6 +131,7 @@ make ci                         # full pipeline: build → check → audit → t
 make smoke                      # basic FUSE ops (isolated namespace, needs /dev/fuse)
 make smoke-rw                   # read-write + persistence
 make smoke-errors               # error path tests
+make bench                      # throughput benchmark (write/read/statfs/readdir)
 ```
 
 Two test layers: Odin unit tests (`make test`) exercise the `fs` library and
@@ -174,6 +175,7 @@ logrotate, or pipe-based rotation:
 | `smoke-rw` | Read-write FUSE test (pytest) |
 | `smoke-mt` | Multi-threaded stress test |
 | `smoke-errors` | FUSE error-path tests (pytest) |
+| `bench` | Throughput benchmark (`bench.py`: write/read/statfs/readdir) |
 | `ci` | build + check + audit + test + pytest + all smoke tests |
 
 The compiler defaults to `-thread-count:4` (override with `THREAD_COUNT=N`).
@@ -227,6 +229,13 @@ in `src/fs/structure.odin` carries a compile-time
 - **Two in-memory caches.** LRU bitmap cache (1024 cluster entries) and
   LRU path-resolution cache (128 entries) — no filesystem-size-scaled
   arrays.
+
+- **Extent cache.** File-data extent chains are cached in-process
+  (`FS.extents`), so repeated reads/writes skip the per-cluster metadata
+  walk. Directory chains are never cached (they change under mutation);
+  invalidation is single-key at extend branches. `statfs` uses a cached
+  free-sector count instead of scanning every cluster. See
+  [`docs/PERF.md`](docs/PERF.md).
 
 ## Remaining work
 

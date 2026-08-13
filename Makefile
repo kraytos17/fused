@@ -33,7 +33,7 @@ HARNESS       := PYTHONPATH=$(TEST_DIR) bash $(TEST_DIR)/run_in_namespace.sh
 .PHONY: all build format imgdump \
         create-image mount unmount \
         test pytest check audit vet ci \
-        smoke smoke-rw smoke-mt smoke-errors \
+        smoke smoke-rw smoke-mt smoke-errors bench \
         clean help
 
 all:
@@ -106,6 +106,13 @@ smoke-errors: build create-image
 		-v --tb=short \
 		--fused=build/fused --image=fused.img --mount=$(MOUNTPOINT) --logs=$(LOGS_DIR)
 
+bench: build
+	@rm -f bench.img
+	@$(BUILD_DIR)/format --force --output=bench.img --size=16M
+	@$(HARNESS) 120 python3 -m fused_test.suites.bench \
+		--fused=build/fused --image=bench.img --mount=$(MOUNTPOINT) --logs=$(LOGS_DIR) --size=4
+	@rm -f bench.img
+
 clean:
 	@rm -rf $(BUILD_DIR) $(LOGS_DIR) $(MOUNTPOINT) $(IMAGE) /dev/shm/fused_test.img
 	@fusermount3 -u $(MOUNTPOINT) 2>/dev/null || true
@@ -126,14 +133,15 @@ help:
 	@echo "  clean            remove build/ logs/ mnt/ fused.img"
 	@echo ""
 	@echo "Tests:"
-	@echo "  test             Odin unit tests (63)"
+	@echo "  test             Odin unit tests (77)"
 	@echo "  pytest           Python integration tests (50)"
 	@echo "  check            struct size cross-check"
-	@echo "  audit            verify begin_op usage (35 callbacks)"
+	@echo "  audit            verify begin_op usage (39 callbacks)"
 	@echo "  smoke            basic FUSE ops (pytest, isolated ns)"
 	@echo "  smoke-rw         read-write + persistence (pytest, isolated ns)"
 	@echo "  smoke-errors     error path tests (pytest, isolated ns)"
 	@echo "  smoke-mt         multi-threaded stress (isolated ns)"
+	@echo "  bench            throughput benchmark (bench.py)"
 	@echo "  ci               full CI pipeline"
 	@echo ""
 	@echo "Vet:"
