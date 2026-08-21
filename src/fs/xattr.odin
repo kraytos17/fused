@@ -27,10 +27,8 @@ _xattr_chain_locate :: proc(vol: ^Volume, entry: ^Directory_Entry) -> (cluster: 
 	if read_cluster_entry_table(vol, Cluster(entry.xattr_cluster), &ce_buf) != .None {
 		return {}, 0, false
 	}
-	for &t in ce_buf {
-		if .XAttr in t.state && .Allocated in t.state {
-			return Cluster(entry.xattr_cluster), Sector_Offset(t.sector_start), true
-		}
+	if idx, found := ce_find_by_state(ce_buf, {.XAttr, .Allocated}); found {
+		return Cluster(entry.xattr_cluster), Sector_Offset(ce_buf[idx].sector_start), true
 	}
 	return {}, 0, false
 }
@@ -46,10 +44,8 @@ _xattr_chain_free :: proc(vol: ^Volume, cluster: u64) -> FS_Error {
 	if read_cluster_entry_table(vol, Cluster(cluster), &ce_buf) != .None {
 		return .Entry_Not_Found
 	}
-	for &t in ce_buf {
-		if .XAttr in t.state && .Allocated in t.state {
-			return deallocate_sectors(vol, Cluster(cluster), Sector_Offset(t.sector_start))
-		}
+	if idx, found := ce_find_by_state(ce_buf, {.XAttr, .Allocated}); found {
+		return deallocate_sectors(vol, Cluster(cluster), Sector_Offset(ce_buf[idx].sector_start))
 	}
 	return .Entry_Not_Found
 }

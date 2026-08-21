@@ -52,11 +52,8 @@ resolve_lfn :: proc(vol: ^Volume, entry: ^Directory_Entry, allocator := context.
 	}
 
 	target: Cluster_Entry
-	for &t in ce_buf {
-		if t.sector_start == ptr.sector && .Allocated in t.state {
-			target = t
-			break
-		}
+	if idx, found := ce_find_by_offset(ce_buf, Sector_Offset(ptr.sector)); found && .Allocated in ce_buf[idx].state {
+		target = ce_buf[idx]
 	}
 	if target.allocation_size == 0 {
 		return "", false

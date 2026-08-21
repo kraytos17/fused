@@ -126,25 +126,14 @@ allocate_sectors :: proc(
 	prev_entry:   Cluster_Entry
 	prev_has_prev := false
 
-	is_v2 := .Journal_V2 in vol.master.features
-	jrnl_txn_v6: Intent_Txn
-	jrnl_ok := false
-	jrnl_v2_txn: Journal_Txn
-
-	if is_v2 {
-		journal_v2_begin(&vol.master, &jrnl_v2_txn)
-	} else {
-		if !intent_log_begin(vol) {
-			return 0, 0, .Sector_Write_Error
-		}
+	backend := journal_backend_for(&vol.master)
+	jrnl: Journal_Txn_Handle
+	committed := false
+	if !backend.begin(vol, &jrnl) {
+		return 0, 0, .Sector_Write_Error
 	}
-	defer if !jrnl_ok {
-		if is_v2 {
-			journal_v2_commit(vol, &jrnl_v2_txn)
-			journal_v2_finish(vol, jrnl_v2_txn.seq)
-		} else {
-			intent_log_commit(vol, nil)
-		}
+	defer if !committed {
+		backend.abort(vol, &jrnl)
 	}
 
 	start_hint := vol.cache.hint
@@ -209,19 +198,7 @@ allocate_sectors :: proc(
 
 		table[free_idx] = new_entry
 		write_cluster_entry_table(vol, Cluster(cluster_idx), &table) or_return
-		if is_v2 {
-			journal_v2_add_entry(&jrnl_v2_txn, Journal_Entry{
-				cluster           = cluster_idx,
-				ce_index          = u8(free_idx),
-				state             = transmute(u8)new_entry.state,
-				sector_start      = free_start,
-				alloc_size        = take,
-				next_cluster      = new_entry.next_cluster,
-				next_sector_index = new_entry.next_sector_index,
-			})
-		} else {
-			intent_txn_add(&jrnl_txn_v6, cluster_idx, free_idx, take, transmute(u8)new_entry.state)
-		}
+		backend.add(vol, &jrnl, journal_entry_from_cluster_entry(new_entry, cluster_idx, u8(free_idx)))
 		if is_first {
 			first_cluster = Cluster(cluster_idx)
 			first_offset  = Sector_Offset(free_start)
@@ -231,27 +208,12 @@ allocate_sectors :: proc(
 			prev_entry.next_sector_index  = u16(free_start)
 			prev_table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 			if read_cluster_entry_table(vol, prev_cluster, &prev_table) == .None {
-				for &e in prev_table {
-					if e.sector_start == u16(prev_offset) && .Allocated in e.state {
-						e = prev_entry
-						break
-					}
+				if pidx, pok := ce_find_by_offset(prev_table, prev_offset); pok && .Allocated in prev_table[pidx].state {
+					prev_table[pidx] = prev_entry
 				}
 
 				write_cluster_entry_table(vol, prev_cluster, &prev_table) or_return
-				if is_v2 {
-					journal_v2_add_entry(&jrnl_v2_txn, Journal_Entry{
-						cluster           = u64(prev_cluster),
-						ce_index          = u8(prev_offset),
-						state             = transmute(u8)prev_entry.state,
-						sector_start      = prev_entry.sector_start,
-						alloc_size        = prev_entry.allocation_size,
-						next_cluster      = prev_entry.next_cluster,
-						next_sector_index = prev_entry.next_sector_index,
-					})
-				} else {
-					intent_txn_add(&jrnl_txn_v6, u64(prev_cluster), int(prev_offset), prev_entry.allocation_size, transmute(u8)prev_entry.state)
-				}
+				backend.add(vol, &jrnl, journal_entry_from_cluster_entry(prev_entry, u64(prev_cluster), u8(prev_offset)))
 			}
 		}
 
@@ -280,25 +242,19 @@ allocate_sectors :: proc(
 		}
 
 		vol.cache.hint = (u64(first_cluster) + 1) % vol.master.cluster_map_size
-		jrnl_ok = true
-		if is_v2 {
-			journal_v2_commit(vol, &jrnl_v2_txn)
-			journal_v2_finish(vol, jrnl_v2_txn.seq)
-		} else {
-			intent_log_commit(vol, jrnl_txn_v6.entries[:jrnl_txn_v6.count])
+		if !backend.commit(vol, &jrnl) {
+			return 0, 0, .Sector_Write_Error
 		}
+		committed = true
 		return start_cluster, start_offset, .None
 	}
 
 	log.debugf("allocate: ok — %d sectors across %d clusters", sectors_needed, first_cluster)
 	vol.cache.hint = (u64(first_cluster) + 1) % vol.master.cluster_map_size
-	jrnl_ok = true
-	if is_v2 {
-		journal_v2_commit(vol, &jrnl_v2_txn)
-		journal_v2_finish(vol, jrnl_v2_txn.seq)
-	} else {
-		intent_log_commit(vol, jrnl_txn_v6.entries[:jrnl_txn_v6.count])
+	if !backend.commit(vol, &jrnl) {
+		return 0, 0, .Sector_Write_Error
 	}
+	committed = true
 	return first_cluster, first_offset, .None
 }
 
@@ -316,19 +272,14 @@ deallocate_sectors :: proc(
 		return .None
 	}
 
-	is_v2 := .Journal_V2 in vol.master.features
-	jrnl_v2_txn: Journal_Txn
-	dj_entries: [MAX_JOURNAL_ENTRIES_v6]Intent_Log_Entry
-	dj_count := 0
-	if is_v2 {
-		journal_v2_begin(&vol.master, &jrnl_v2_txn)
-	} else {
-		if !intent_log_begin(vol) {
-			return .Sector_Write_Error
-		}
+	backend := journal_backend_for(&vol.master)
+	jrnl: Journal_Txn_Handle
+	committed := false
+	if !backend.begin(vol, &jrnl) {
+		return .Sector_Write_Error
 	}
-	defer if !is_v2 {
-		intent_log_commit(vol, dj_entries[:dj_count])
+	defer if !committed {
+		backend.abort(vol, &jrnl)
 	}
 
 	current_cluster := start_cluster
@@ -349,51 +300,25 @@ deallocate_sectors :: proc(
 
 		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 		read_cluster_entry_table(vol, current_cluster, &table) or_return
-		freed_idx: int = -1
-		for &e, ei in table {
-			if e.sector_start == u16(current_offset) {
-				e = entry
-				freed_idx = ei
-				break
-			}
-		}
-		if freed_idx < 0 {
+		freed_idx, fidx_ok := ce_find_by_offset(table, current_offset)
+		if !fidx_ok {
 			return .Entry_Not_Found
 		}
 
+		table[freed_idx] = entry
 		write_cluster_entry_table(vol, current_cluster, &table) or_return
-		if is_v2 {
-			journal_v2_add_entry(&jrnl_v2_txn, Journal_Entry{
-				cluster           = u64(current_cluster),
-				ce_index          = u8(freed_idx),
-				state             = transmute(u8)entry.state,
-				sector_start      = entry.sector_start,
-				alloc_size        = entry.allocation_size,
-				next_cluster      = entry.next_cluster,
-				next_sector_index = entry.next_sector_index,
-			})
-		} else if dj_count < MAX_JOURNAL_ENTRIES_v6 {
-			dj_entries[dj_count] = Intent_Log_Entry{
-				cluster    = u64(current_cluster),
-				sector_offset = 0,
-				ce_index   = u8(freed_idx),
-				alloc_size = 0,
-				state      = 0,
-			}
-			dj_count += 1
-		}
+		backend.add(vol, &jrnl, journal_entry_from_cluster_entry(entry, u64(current_cluster), u8(freed_idx)))
 		if entry.next_cluster == 0 {
 			break
 		}
 		current_cluster = Cluster(entry.next_cluster)
 		current_offset  = Sector_Offset(entry.next_sector_index)
 	}
-	if is_v2 {
-		journal_v2_commit(vol, &jrnl_v2_txn)
-		journal_v2_finish(vol, jrnl_v2_txn.seq)
-	} else {
-		intent_log_commit(vol, dj_entries[:dj_count])
+	if !backend.commit(vol, &jrnl) {
+		return .Sector_Write_Error
 	}
+
+	committed = true
 	log.debugf("deallocate: ok — cluster=%d offset=%d", start_cluster, start_offset)
 	return .None
 }
@@ -415,11 +340,8 @@ link_tail_to_new :: proc(vol: ^Volume, start_cluster: Cluster, start_offset: Sec
 			tail.next_sector_index = u16(first_offset)
 			tail_table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 			if read_cluster_entry_table(vol, tc, &tail_table) == .None {
-				for &e in tail_table {
-					if e.sector_start == u16(cursor.offset) && .Allocated in e.state {
-						e = tail
-						break
-					}
+				if tidx, tok := ce_find_by_offset(tail_table, cursor.offset); tok && .Allocated in tail_table[tidx].state {
+					tail_table[tidx] = tail
 				}
 				if write_cluster_entry_table(vol, tc, &tail_table) != .None {
 					return false

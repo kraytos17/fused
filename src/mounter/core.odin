@@ -87,7 +87,9 @@ end_op :: proc (fsys: ^FS) {
 }
 
 // fs_error_to_errno translates an FS_Error to a POSIX errno value.
-// Unknown errors fall through to EIO.
+// Unknown errors fall through to EIO (the `case:` default is deliberate —
+// a new FS_Error value is a mapping decision, not a compile error; keep it
+// in sync with `FS_Error` in src/fs/structure.odin).
 fs_error_to_errno :: proc(err: fs.FS_Error) -> c.int {
 	#partial switch err {
 	case .None:                return 0
@@ -160,11 +162,18 @@ _set_time_fields_now :: proc(year: ^u16, dt: ^fs.Packed_Date_Time) {
 	dt^ = fs.Packed_Date_Time{month = u32(int(mo)), date = u32(d), hour = u32(h), minute = u32(m), second = u32(s)}
 }
 
+// fh_parts unpacks a packed file handle into its identity fields (the
+// directory location of the entry it refers to).
+fh_parts :: proc "contextless" (fh: u64) -> (dir_cluster: fs.Cluster, dir_offset: fs.Sector_Offset, entry_index: int) {
+	f := transmute(fs.File_Handle)(fh)
+	return fs.Cluster(f.dir_cluster), fs.Sector_Offset(f.dir_offset), int(f.entry_index)
+}
+
 // read_entry_from_fh reads a Directory_Entry from a packed File_Handle,
 // returning the entry, its data cluster, data offset, and whether it succeeded.
 read_entry_from_fh :: proc(fsys: ^FS, fh: u64) -> (fs.Directory_Entry, fs.Cluster, fs.Sector_Offset, bool) {
-	fh_packed := transmute(fs.File_Handle)(fh)
-	e, err := fs.read_entry_at_index(&fsys.vol, fs.Cluster(fh_packed.dir_cluster), fs.Sector_Offset(fh_packed.dir_offset), int(fh_packed.entry_index))
+	dir_cluster, dir_offset, entry_index := fh_parts(fh)
+	e, err := fs.read_entry_at_index(&fsys.vol, dir_cluster, dir_offset, entry_index)
 	if err != .None {
 		return {}, 0, 0, false
 	}
@@ -256,10 +265,11 @@ resolve_entry :: proc(fsys: ^FS, path: cstring, fi: ^fuse3.File_Info) -> (
 	entry_idx: int, data_cluster: fs.Cluster, data_offset: fs.Sector_Offset, ok: bool,
 ) {
 	if fi != nil {
-		fh := transmute(fs.File_Handle)(fi.fh)
 		e, dc, ddo, rok := read_entry_from_fh(fsys, fi.fh)
 		if !rok { return {}, 0, 0, 0, 0, 0, false }
-		return e, fs.Cluster(fh.dir_cluster), fs.Sector_Offset(fh.dir_offset), int(fh.entry_index), dc, ddo, true
+
+		dir_cluster, dir_offset, fh_entry_idx := fh_parts(fi.fh)
+		return e, dir_cluster, dir_offset, fh_entry_idx, dc, ddo, true
 	}
 
 	e, c, o, i, rok := resolve_path_cached(fsys, string(path), context.temp_allocator)
@@ -268,7 +278,7 @@ resolve_entry :: proc(fsys: ^FS, path: cstring, fi: ^fuse3.File_Info) -> (
 }
 
 // init_fs_for_test builds an FS for direct callback unit testing (no live FUSE
-// mount).  The caller installs it as the FUSE context private_data via
+// mount). The caller installs it as the FUSE context private_data via
 // fuse3.set_test_context, and must call destroy_fs_for_test when done.
 init_fs_for_test :: proc(vol: fs.Volume, allocator := context.allocator) -> (fsys: FS) {
 	fsys.vol = vol
@@ -277,16 +287,23 @@ init_fs_for_test :: proc(vol: fs.Volume, allocator := context.allocator) -> (fsy
 	if fi, err := os.fstat(vol.disk, context.temp_allocator); err == nil {
 		fsys.vol.image_size = fs.Byte_Offset(u64(fi.size))
 	}
+	init_fs_state(&fsys, allocator)
+	return fsys
+}
 
+// init_fs_state initialises the caches, lock tables, and free-sector count
+// shared by the FUSE daemon (run) and the test harness (init_fs_for_test).
+// fsys.vol must already be set.
+init_fs_state :: proc(fsys: ^FS, allocator := context.allocator) {
 	lru.init(&fsys.path_cache, 128, allocator, allocator)
 	fsys.path_cache.on_remove = path_cache_on_remove
 	lru.init(&fsys.lfn_cache, 256, allocator, allocator)
 	fsys.lfn_cache.on_remove = lfn_cache_on_remove
+
 	fsys.extents = make(map[Extent_Cache_Key][]fs.Extent_Run, allocator)
 	fsys.free_sectors = fs.alloc_cache_count_free(&fsys.vol)
 	fsys.locks = make(map[File_Identity][dynamic]Region_Lock, allocator)
 	fsys.flock_locks = make(map[File_Identity][dynamic]Flock_State, allocator)
-	return fsys
 }
 
 // destroy_fs_for_test tears down an FS created by init_fs_for_test.  Does not

@@ -46,6 +46,15 @@ resolve_extents :: proc(vol: ^Volume, start_cluster: Cluster, start_offset: Sect
 	return runs, .None
 }
 
+// chain_sector_count sums the sectors across an extent run list.
+chain_sector_count :: proc(runs: []Extent_Run) -> u64 {
+	n: u64
+	for r in runs {
+		n += u64(r.count)
+	}
+	return n
+}
+
 // read_chain reads the full extent chain starting at (cluster, offset) into a
 // contiguous buffer. The caller owns the returned slice and must delete it.
 read_chain :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset, allocator := context.allocator) -> (data: []u8, err: FS_Error) {

@@ -28,7 +28,7 @@ read-write FUSE mounting (41 of 43 `fuse_operations` callbacks implemented).
 | **`cmd/mount/`** | Binary entry point — `package main`, calls `mounter.run()`. | `src/mounter/` |
 | **`cmd/format/`** | Standalone image formatter. Produces valid disk images without libfuse3. | `src/fs/` |
 | **`cmd/dump/`** | Read-only image dumper. Walks the image structure and prints it in human-readable or JSON form. | `src/fs/` |
-| **`tests/`** | Odin unit tests (81), Python pytest integration (56), struct-size cross-checks, context audit. | — |
+| **`tests/`** | Odin unit tests (85), Python pytest integration (56), struct-size cross-checks, context audit. | — |
 
 ## On-disk format (rev 8)
 
@@ -292,6 +292,28 @@ layout change, highest-revision feature first, V4 fallback). A future
 revision that changes the entry layout adds one table row instead of editing
 two parallel `if` chains.
 
+### Journal backends (`src/fs/journal.odin`)
+
+The two journal implementations (rev 6 intent log, rev 7+ v2 WAL) sit behind
+a single `Journal_Backend` procedure table selected once per operation by
+`journal_backend_for(&vol.master)`:
+
+- `begin` / `add` / `commit` / `abort` / `recover` — `allocate_sectors`,
+  `deallocate_sectors`, and `volume_open` call through the table instead of
+  branching on `.Journal_V2` at every journaling step. A third journal format
+  is a third backend value, not more `if` arms.
+- **Discard-on-error**: `abort` is the unified error path. The v6 adapter
+  clears its (possibly empty) log sector and bumps seq; the v2 adapter is a
+  no-op (nothing is persisted before commit).
+- `Journal_Entry` construction from a `Cluster_Entry` write is centralized in
+  `journal_entry_from_cluster_entry`.
+- Fixes folded in during unification: the v2 `add` cap now matches the
+  transaction array (34) instead of one record (21), so large allocations
+  keep full journal coverage; the `Intent_Log` CRC field moved to the
+  sector's final 4 bytes (`_pad: [20]u8`), where the `[:SECTOR_SIZE-4]` CRC
+  range excludes it — previously the field overlapped the hashed range and
+  the v6 recovery check could never pass.
+
 ### Error handling
 
 `src/fs/` defines `FS_Error :: enum { None, Cluster_Not_Found, No_Space, ... }`.
@@ -351,6 +373,7 @@ tests/
 ├── test_common.odin               Shared Odin test helpers
 ├── mounter_test.odin              13 mounter-callback unit tests
 ├── lock_test.odin                 4 lock/flock unit tests (direct fused_lock/fused_flock calls)
+├── journal_test.odin              4 journal-backend tests (v6 image + unified table)
 └── *.odin                         66 Odin unit tests (allocation, cache, directory, write,
                                     fs, validate, display, LFN, struct sizes, xattr)
 ```
@@ -360,7 +383,7 @@ tests/
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `make test` (81 Odin tests: 66 fs + 13 mounter + 4 lock) |
+| 2. Unit tests | `make test` (85 Odin tests: 66 fs + 13 mounter + 4 lock + 4 journal) |
 | 3. Tool integration | `make pytest -m tool` (17 format + imgdump tests) |
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |
@@ -387,12 +410,5 @@ master record includes `rev_min`, `rev_max`, and `features` fields.
 
 ### Deferred refactors
 
-- **Unify the journal backends behind one interface.** `allocate_sectors` /
-  `deallocate_sectors` branch on `.Journal_V2` three times each, and
-  `volume_open` dispatches recovery. When a third journal format is ever
-  added, introduce a `Journal_Backend{begin, add, commit, finish, recover}`
-  table selected once per operation. **Recorded decision**: both backends
-  unify on "discard on error" (v2 behavior) — the v6 intent log's current
-  commit-on-error path is not preserved.
 - **`vfsops` domain layer** — only if a second front-end (CLI tool, NFS
   export, headless fuzz harness) is planned; otherwise deferred indefinitely.

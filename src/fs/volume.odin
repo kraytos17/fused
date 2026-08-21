@@ -63,11 +63,7 @@ volume_open :: proc(path: string) -> (vol: Volume, err: FS_Error) {
 
 	vol.master = master
 	alloc_cache_init(&vol.cache, &vol.master)
-	if .Journal_V2 in master.features {
-		journal_v2_recover(&vol)
-	} else {
-		intent_log_recover(&vol)
-	}
+	journal_backend_for(&master).recover(&vol)
 	return vol, .None
 }
 

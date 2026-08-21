@@ -286,15 +286,18 @@ Jv2_Header :: struct #packed {
 #assert(size_of(Jv2_Header) == SECTOR_SIZE)
 
 // Intent_Log — single sector (512 bytes), rev 6 format.
+// crc sits at the sector's final 4 bytes so it is outside the
+// `[:SECTOR_SIZE-4]` CRC range (a shorter _pad would put crc inside the
+// hashed range and the check could never pass).
 Intent_Log :: struct #packed {
 	magic:   u16,
 	seq:     u64,
 	count:   u16,
 	entries: [MAX_JOURNAL_ENTRIES_v6]Intent_Log_Entry,
-	_pad:    [12]u8,
+	_pad:    [20]u8,
 	crc:     u32,
 }
-#assert(size_of(Intent_Log) <= SECTOR_SIZE)
+#assert(size_of(Intent_Log) == SECTOR_SIZE)
 MAX_JOURNAL_ENTRIES_v6 :: 34
 
 #assert(size_of(Intent_Log_Entry) == 14)

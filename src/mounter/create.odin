@@ -10,30 +10,56 @@ import "core:sys/posix"
 import "src:fuse3"
 import "src:fs"
 
+// Prepare_Slot_Result distinguishes why prepare_parent_slot failed so
+// callers map it to the correct errno.
+Prepare_Slot_Result :: enum {
+	Ok,
+	Parent_Not_Found,
+	Name_Exists,
+	Dir_Full,
+}
+
+// prepare_parent_slot resolves a path's parent directory and finds a free
+// entry slot in it, sharing the preamble of create/mkdir/symlink.  The
+// returned name is the final path component.
+prepare_parent_slot :: proc(fsys: ^FS, path: string) -> (res: Prepare_Slot_Result, dcluster: fs.Cluster, dsec: fs.Sector_Offset, didx: int, name: string) {
+	parent, base_name := os.split_path(path)
+	parent_entry, _, _, _, pok := resolve_path_cached(fsys, parent, context.temp_allocator)
+	if !pok {
+		return .Parent_Not_Found, {}, 0, 0, ""
+	}
+
+	dir_cluster := fs.Cluster(parent_entry.stored_cluster)
+	dir_offset := fs.Sector_Offset(parent_entry.sector_index)
+	if check_name_exists(fsys, dir_cluster, dir_offset, base_name) {
+		return .Name_Exists, {}, 0, 0, ""
+	}
+
+	slot_c, slot_o, slot_i, slot_ok := find_or_extend_dir(fsys, dir_cluster, dir_offset)
+	if !slot_ok {
+		return .Dir_Full, {}, 0, 0, ""
+	}
+	return .Ok, slot_c, slot_o, slot_i, base_name
+}
+
 // fused_create creates a new file (FUSE create callback).
 fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
 	defer end_op(fsys)
 
-	parent, name := os.split_path(string(path))
-	parent_entry, _, _, _, ok := resolve_path_cached(fsys, parent, context.temp_allocator)
-	if !ok {
+	res, dcluster, dsec, didx, name := prepare_parent_slot(fsys, string(path))
+	switch res {
+	case .Parent_Not_Found:
 		log.debugf("create: %s → parent ENOENT", path)
 		return fuse3.nix(.ENOENT)
-	}
-
-	dir_cluster := fs.Cluster(parent_entry.stored_cluster)
-	dir_offset := fs.Sector_Offset(parent_entry.sector_index)
-	if check_name_exists(fsys, dir_cluster, dir_offset, name) {
+	case .Name_Exists:
 		log.debugf("create: %s → EEXIST", path)
 		return fuse3.nix(.EEXIST)
-	}
-
-	dcluster, dsec, didx, slot_ok := find_or_extend_dir(fsys, dir_cluster, dir_offset)
-	if !slot_ok {
+	case .Dir_Full:
 		log.debugf("create: %s → ENOSPC (dir full)", path)
 		return fuse3.nix(.ENOSPC)
+	case .Ok:
 	}
 
 	flags := fs.Dir_Flags{.Allocated, .Exists}
@@ -65,21 +91,15 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 	fsys := begin_op()
 	defer end_op(fsys)
 
-	parent, name := os.split_path(string(path))
-	parent_entry, _, _, _, ok := resolve_path_cached(fsys, parent, context.temp_allocator)
-	if !ok {
+	res, dcluster, dsec, didx, name := prepare_parent_slot(fsys, string(path))
+	switch res {
+	case .Parent_Not_Found:
 		return fuse3.nix(.ENOENT)
-	}
-
-	dir_cluster := fs.Cluster(parent_entry.stored_cluster)
-	dir_offset := fs.Sector_Offset(parent_entry.sector_index)
-	if check_name_exists(fsys, dir_cluster, dir_offset, name) {
+	case .Name_Exists:
 		return fuse3.nix(.EEXIST)
-	}
-
-	dcluster, dsec, didx, slot_ok := find_or_extend_dir(fsys, dir_cluster, dir_offset)
-	if !slot_ok {
+	case .Dir_Full:
 		return fuse3.nix(.ENOSPC)
+	case .Ok:
 	}
 
 	new_cluster, new_offset, derr := fs.allocate_sectors(&fsys.vol, 0, 0, 1, .Directory)
@@ -127,21 +147,15 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 	defer end_op(fsys)
 
 	target_str := string(target)
-	parent, name := os.split_path(string(linkpath))
-	parent_entry, _, _, _, ok := resolve_path_cached(fsys, parent, context.temp_allocator)
-	if !ok {
+	res, dcluster, dsec, didx, name := prepare_parent_slot(fsys, string(linkpath))
+	switch res {
+	case .Parent_Not_Found:
 		return fuse3.nix(.ENOENT)
-	}
-
-	dir_cluster := fs.Cluster(parent_entry.stored_cluster)
-	dir_offset := fs.Sector_Offset(parent_entry.sector_index)
-	if check_name_exists(fsys, dir_cluster, dir_offset, name) {
+	case .Name_Exists:
 		return fuse3.nix(.EEXIST)
-	}
-
-	dcluster, dsec, didx, slot_ok := find_or_extend_dir(fsys, dir_cluster, dir_offset)
-	if !slot_ok {
+	case .Dir_Full:
 		return fuse3.nix(.ENOSPC)
+	case .Ok:
 	}
 
 	sectors_needed := (u64(len(target_str)) + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE

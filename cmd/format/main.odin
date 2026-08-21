@@ -12,7 +12,6 @@ import "core:flags"
 import "core:log"
 import "core:os"
 import "core:strconv"
-import "core:time"
 import "src:fs"
 
 // DEMO_CONTENT is the embedded demo file content (a small binary blob).
@@ -60,8 +59,6 @@ writer_write :: proc(w: ^Writer, data: []u8) -> bool {
 	return true
 }
 
-// main formats a disk image: parses flags, writes master record, cluster map,
-// journal region, root directory, and an optional demo file.
 main :: proc() {
 	context = runtime.default_context()
 
@@ -114,11 +111,6 @@ main :: proc() {
 	}
 	defer os.close(fd)
 
-	trunc_err := os.truncate(fd, i64(size))
-	if trunc_err != nil {
-		log.errorf("truncate to %d failed: %v", size, trunc_err)
-		os.exit(1)
-	}
 	if f.verbose {
 		log.infof("formatting %s: size=%d cluster_size=%d",
 			f.output, size, cluster_size)
@@ -142,139 +134,26 @@ main :: proc() {
 	}
 	defer if needs_free { delete(demo_data) }
 
-	w: Writer
-	writer_init(&w, fd)
-	total_sectors := size / fs.SECTOR_SIZE
-	total_clusters := total_sectors / cluster_size
-
-	cme_per_sector := u64(fs.CLUSTER_MAP_ENTRIES_PER_SECTOR)
-	cm_sectors := (total_clusters + cme_per_sector - 1) / cme_per_sector
-	journal_sectors := max(64, total_clusters / 10)
-	metadata_sectors := 1 + cm_sectors + journal_sectors
-	reserved_clusters := (metadata_sectors + cluster_size - 1) / cluster_size
-	root_cluster := reserved_clusters
-
-	master: fs.Master_Record
-	master.sig = fs.FUSED_SIG
-	master.rev_min = 8
-	master.rev_max = 8
-	master.features = fs.Features{.Uid_Gid, .Journal_V2, .XAttr}
-	master.cluster_map_offset = 1
-	master.cluster_map_size = total_clusters
-	master.cluster_size = cluster_size
-	ce_sectors := u64(1)
-	master.root_sector_index = u16(ce_sectors)
-	master.root_cluster = root_cluster
-	master.end_sig = 0x0BB0
-	// Compute journal region size: max(64, total_clusters / 10) sectors
-	journal_sectors = max(64, total_clusters / 10)
-	fs.journal_v2_set_region_size(&master, journal_sectors)
-	fs.journal_seq_init(&master)
-	{
-		master_buf: [fs.SECTOR_SIZE]u8
-		(^fs.Master_Record)(&master_buf[0])^ = master
-		if !writer_write(&w, master_buf[:]) {
-			log.errorf("write master failed")
-			os.exit(1)
-		}
-	}
-	{
-		report_interval := max(1, cm_sectors / 10)
-		for sec_idx: u64; sec_idx < cm_sectors; sec_idx += 1 {
-			sec_buf: [fs.SECTOR_SIZE]u8
-			entries := (^[fs.CLUSTER_MAP_ENTRIES_PER_SECTOR]fs.Cluster_Map_Entry)(&sec_buf[0])
-			base := int(sec_idx) * fs.CLUSTER_MAP_ENTRIES_PER_SECTOR
-			for ei in 0 ..< fs.CLUSTER_MAP_ENTRIES_PER_SECTOR {
-				ci := base + ei
-				if u64(ci) >= total_clusters { break }
-				switch {
-				case u64(ci) < reserved_clusters:
-					entries[ei] = {flags = {.Reserved, .Full}}
-				case u64(ci) == reserved_clusters:
-					entries[ei] = {flags = {.Allocated}}
-				}
-			}
-			if !writer_write(&w, sec_buf[:]) {
-				log.errorf("write cluster map failed")
-				os.exit(1)
-			}
-			if f.verbose && cm_sectors > 100 && sec_idx % report_interval == 0 {
-				log.infof("  cluster map: %d/%d sectors", sec_idx + 1, cm_sectors)
-			}
-		}
-	}
-
-	// Zero the journal region (right after CME table)
-	jrnl_start := fs.intent_log_sector(&master)
-	jrnl_sectors := fs.journal_v2_region_size(&master)
-	w.pos = i64(u64(jrnl_start) * fs.SECTOR_SIZE)
-	jrnl_zero: [fs.SECTOR_SIZE]u8
-	for i: u64; i < jrnl_sectors; i += 1 {
-		if !writer_write(&w, jrnl_zero[:]) { os.exit(1) }
-	}
-
-	root_sector := i64(u64(root_cluster) * cluster_size)
-	w.pos = root_sector * fs.SECTOR_SIZE
-	{
-		ce_buf: [fs.SECTOR_SIZE]u8
-		ce_table := (^[fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry)(&ce_buf[0])
-		ce_table[0] = {
-			state            = {.Allocated, .Cluster_Map},
-			allocation_size  = 1,
-			sector_start     = 0,
-		}
-		ce_table[1] = {
-			state            = {.Allocated, .Directory},
-			allocation_size  = 1,
-			sector_start     = 1,
-		}
-		if len(demo_data) > 0 {
-			demo_sectors := u16((len(demo_data) + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE)
-			ce_table[2] = {
-				state            = {.Allocated, .File_Content},
-				allocation_size  = demo_sectors,
-				sector_start     = 2,
-			}
-		}
-		if !writer_write(&w, ce_buf[:]) {
-			log.errorf("write CE table failed")
-			os.exit(1)
-		}
-
-		dir_buf: [fs.SECTOR_SIZE]u8
-		if len(demo_data) > 0 {
-			now := time.now()
-			y, mo, d := time.date(now)
-			h, m, s := time.clock(now)
-			entry := fs.Directory_Entry{
-				flags          = {.Allocated, .Exists},
-				sector_index   = 2,
-				stored_cluster = root_cluster,
-				year           = u16(y),
-				date_time      = {month = u32(int(mo)), date = u32(d), hour = u32(h), minute = u32(m), second = u32(s)},
-				atime_year     = u16(y),
-				atime_date_time= {month = u32(int(mo)), date = u32(d), hour = u32(h), minute = u32(m), second = u32(s)},
-				file_size      = u64(len(demo_data)),
-			}
-			copy(entry.file_name[:], "Kernel")
-			(^fs.Directory_Entry)(&dir_buf[0])^ = entry
-		}
-		if !writer_write(&w, dir_buf[:]) {
-			log.errorf("write directory entry failed")
-			os.exit(1)
-		}
-		if len(demo_data) > 0 {
-			content_buf: [fs.SECTOR_SIZE]u8
-			copy(content_buf[:], demo_data)
-			if !writer_write(&w, content_buf[:]) {
-				log.errorf("write file content failed")
-				os.exit(1)
-			}
-		}
+	if ferr := fs.format_image(fd, {
+		size         = size,
+		cluster_size = cluster_size,
+		features     = fs.Features{.Uid_Gid, .Journal_V2, .XAttr},
+		rev_min      = 8,
+		rev_max      = 8,
+		demo_data    = demo_data,
+	}); ferr != .None {
+		log.errorf("format failed: %v", ferr)
+		os.exit(1)
 	}
 
 	if f.verbose {
 		image_mb := f64(size) / (1024.0 * 1024.0)
+		total_clusters := (size / fs.SECTOR_SIZE) / cluster_size
+		cme_per_sector := u64(fs.CLUSTER_MAP_ENTRIES_PER_SECTOR)
+		cm_sectors := (total_clusters + cme_per_sector - 1) / cme_per_sector
+		journal_sectors := max(64, total_clusters / 10)
+		metadata_sectors := 1 + cm_sectors + journal_sectors
+		reserved_clusters := (metadata_sectors + cluster_size - 1) / cluster_size
 		log.infof("done: %s  (%.1f MB, %d clusters  %d/sector CME  %d CME sectors  %d reserved)",
 			f.output, image_mb, total_clusters, fs.CLUSTER_MAP_ENTRIES_PER_SECTOR, cm_sectors, reserved_clusters)
 	}

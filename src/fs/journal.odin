@@ -192,7 +192,7 @@ journal_v2_begin :: proc(master: ^Master_Record, txn: ^Journal_Txn) {
 }
 
 journal_v2_add_entry :: proc(txn: ^Journal_Txn, entry: Journal_Entry) -> bool {
-	if txn.count >= JOURNAL_ENTRIES_PER_RECORD {
+	if txn.count >= MAX_JOURNAL_ENTRIES_v6 {
 		log.errorf("journal_v2: transaction full (%d entries)", txn.count)
 		return false
 	}
@@ -330,4 +330,111 @@ journal_v2_recover :: proc(vol: ^Volume) {
 	if replayed > 0 {
 		log.infof("journal: replayed %d entries", replayed)
 	}
+}
+
+// Journal_Txn_Handle carries the per-transaction state of the active journal
+// backend. Only the selected backend's half is used.
+Journal_Txn_Handle :: struct {
+	v6: Intent_Txn,
+	v2: Journal_Txn,
+}
+
+// journal_entry_from_cluster_entry builds a full redo Journal_Entry from a
+// Cluster_Entry write so allocation/deallocation construct it in one place.
+journal_entry_from_cluster_entry :: proc(ce: Cluster_Entry, cluster: u64, ce_index: u8) -> Journal_Entry {
+	return Journal_Entry{
+		cluster           = cluster,
+		ce_index          = ce_index,
+		state             = transmute(u8)ce.state,
+		sector_start      = ce.sector_start,
+		alloc_size        = ce.allocation_size,
+		next_cluster      = ce.next_cluster,
+		next_sector_index = ce.next_sector_index,
+	}
+}
+
+// Journal_Backend abstracts the two journal implementations (rev 6 intent
+// log, rev 7+ v2 WAL) behind one interface so allocation/deallocation branch
+// on the backend exactly once instead of at every journaling step.
+//
+// Semantics:
+//   begin  — open a transaction; may fail for the intent log (I/O).
+//   add    — record one CE-table write; returns false when the txn is full.
+//   commit — persist the transaction and advance the master journal state.
+//   abort  — discard the transaction. The v6 backend clears its (possibly
+//            empty) log sector and bumps seq; the v2 backend has written
+//            nothing yet, so it is a no-op. Both discard on error.
+//   recover — replay/clear leftover state from a previous crash.
+Journal_Backend :: struct {
+	begin:   proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool,
+	add:     proc(vol: ^Volume, h: ^Journal_Txn_Handle, e: Journal_Entry) -> bool,
+	commit:  proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool,
+	abort:   proc(vol: ^Volume, h: ^Journal_Txn_Handle),
+	recover: proc(vol: ^Volume),
+}
+
+// v6 backend — intent log (rev 6). The add adapter packs the subset of
+// Journal_Entry fields the intent log tracks; recovery only warns, so the
+// dropped redo fields are irrelevant to replay.
+_j_v6_begin :: proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool {
+	h.v6 = {}
+	return intent_log_begin(vol)
+}
+
+_j_v6_add :: proc(vol: ^Volume, h: ^Journal_Txn_Handle, e: Journal_Entry) -> bool {
+	return intent_txn_add(&h.v6, e.cluster, int(e.ce_index), e.alloc_size, e.state)
+}
+
+_j_v6_commit :: proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool {
+	return intent_log_commit(vol, h.v6.entries[:h.v6.count])
+}
+
+_j_v6_abort :: proc(vol: ^Volume, h: ^Journal_Txn_Handle) {
+	intent_log_commit(vol, nil)
+}
+
+// v2 backend — physical redo-log WAL (rev 7+).
+_j_v2_begin :: proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool {
+	journal_v2_begin(&vol.master, &h.v2)
+	return true
+}
+
+_j_v2_add :: proc(vol: ^Volume, h: ^Journal_Txn_Handle, e: Journal_Entry) -> bool {
+	return journal_v2_add_entry(&h.v2, e)
+}
+
+_j_v2_commit :: proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool {
+	if !journal_v2_commit(vol, &h.v2) {
+		return false
+	}
+	journal_v2_finish(vol, h.v2.seq)
+	return true
+}
+
+_j_v2_abort :: proc(vol: ^Volume, h: ^Journal_Txn_Handle) {
+	// Nothing was persisted before commit; discarding is a no-op.
+}
+
+JOURNAL_V6_BACKEND :: Journal_Backend{
+	begin   = _j_v6_begin,
+	add     = _j_v6_add,
+	commit  = _j_v6_commit,
+	abort   = _j_v6_abort,
+	recover = intent_log_recover,
+}
+
+JOURNAL_V2_BACKEND :: Journal_Backend{
+	begin   = _j_v2_begin,
+	add     = _j_v2_add,
+	commit  = _j_v2_commit,
+	abort   = _j_v2_abort,
+	recover = journal_v2_recover,
+}
+
+// journal_backend_for selects the journal backend for a volume's feature set.
+journal_backend_for :: proc(master: ^Master_Record) -> Journal_Backend {
+	if .Journal_V2 in master.features {
+		return JOURNAL_V2_BACKEND
+	}
+	return JOURNAL_V6_BACKEND
 }

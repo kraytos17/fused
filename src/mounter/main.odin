@@ -13,7 +13,6 @@ package mounter
 
 import "base:runtime"
 import "core:c"
-import "core:container/lru"
 import "core:fmt"
 import "core:log"
 import "core:mem"
@@ -119,10 +118,7 @@ run :: proc() {
 
 	fsys.vol = vol
 	fsys.disk_raw_fd = c.int(os.fd(vol.disk))
-	fsys.extents = make(map[Extent_Cache_Key][]fs.Extent_Run)
-	fsys.free_sectors = fs.alloc_cache_count_free(&vol)
-	fsys.locks = make(map[File_Identity][dynamic]Region_Lock)
-	fsys.flock_locks = make(map[File_Identity][dynamic]Flock_State)
+	init_fs_state(fsys)
 	log.debugf("opened %s → raw_fd=%d", image_path, fsys.disk_raw_fd)
 	log.infof("mounted: rev=%d cluster_size=%d clusters=%d root=%d",
 		vol.master.rev_max, vol.master.cluster_size, vol.master.cluster_map_size, vol.master.root_cluster)
@@ -187,10 +183,6 @@ run :: proc() {
 		append(&dynamic_argv, "-f")
 	}
 
-	lru.init(&fsys.path_cache, 128, context.allocator, context.allocator)
-	fsys.path_cache.on_remove = path_cache_on_remove
-	lru.init(&fsys.lfn_cache, 256, context.allocator, context.allocator)
-	fsys.lfn_cache.on_remove = lfn_cache_on_remove
 	rc := fuse3.run(c.int(len(dynamic_argv)), raw_data(dynamic_argv[:]), &ops, fsys)
 	if rc != 0 {
 		log.errorf("fuse_main returned %d", rc)

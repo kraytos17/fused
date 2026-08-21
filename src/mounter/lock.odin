@@ -51,8 +51,8 @@ Flock_State :: struct {
 
 // file_identity_from_fh derives a File_Identity from a packed file handle.
 file_identity_from_fh :: proc(fh: u64) -> File_Identity {
-	f := transmute(fs.File_Handle)(fh)
-	return File_Identity{f.dir_cluster, f.dir_offset, f.entry_index}
+	dir_cluster, dir_offset, entry_index := fh_parts(fh)
+	return File_Identity{u64(dir_cluster), u16(dir_offset), u16(entry_index)}
 }
 
 // file_identity_from_entry derives a File_Identity from a resolved directory

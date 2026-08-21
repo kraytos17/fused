@@ -45,6 +45,28 @@ read_cluster_entry_table :: proc(vol: ^Volume, cluster: Cluster, table: ^[CLUSTE
 	return .None
 }
 
+// ce_find_by_offset returns the index of the first Cluster_Entry in the
+// table whose sector_start matches offset.
+ce_find_by_offset :: proc(table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry, offset: Sector_Offset) -> (idx: int, ok: bool) {
+	for e, i in table {
+		if e.sector_start == u16(offset) {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// ce_find_by_state returns the index of the first Cluster_Entry in the table
+// whose state carries all of the given flags.
+ce_find_by_state :: proc(table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry, state: Cluster_Entry_State) -> (idx: int, ok: bool) {
+	for e, i in table {
+		if (state & e.state) == state {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
 // find_cluster_entry searches the cluster entry table for an entry whose
 // sector_start matches the given sector_offset. Optionally returns the
 // full table and the matching index via out parameters. Returns

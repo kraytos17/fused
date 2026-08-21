@@ -41,7 +41,7 @@ src/
     xattr.odin                  Extended-attribute blob read/write
     validate.odin                 MasterRecord validation
     display.odin                    Human-readable flag formatters
-  mounter/            FUSE callbacks (41 wired), package mounter
+  mounter/            FUSE callbacks, package mounter
     core.odin            FS struct, begin_op/end_op, resolve_path
     dir.odin               Directory slot helpers
     read.odin                 fused_getattr, fused_readdir, fused_read
@@ -50,7 +50,7 @@ src/
     xattr.odin                     fused_setxattr, fused_getxattr, fused_listxattr, fused_removexattr
     lock.odin                      fused_lock (POSIX), fused_flock (BSD)
     misc.odin                        fused_utimens, fused_chmod, fused_lseek, fused_statfs
-tests/                81 Odin unit tests + 56 Python pytest integration tests
+tests/
 ```
 
 ## Prerequisites
@@ -126,8 +126,8 @@ fusermount3 -u mnt              # or by hand
 ### 6. Test
 
 ```bash
-make test                       # 81 Odin unit tests
-make pytest                     # 56 Python integration tests
+make test                       # Odin unit tests
+make pytest                     # Python integration tests
 make ci                         # full pipeline: build → check → audit → test → tool → FUSE smoke
 make smoke                      # basic FUSE ops (isolated namespace, needs /dev/fuse)
 make smoke-rw                   # read-write + persistence
@@ -168,10 +168,10 @@ logrotate, or pipe-based rotation:
 | `mount` | Build, then mount in foreground |
 | `unmount` | `fusermount3 -u mnt` |
 | `clean` | Remove `build/`, `logs/`, `mnt/`, `fused.img`; kill any running mount |
-| `test` | Odin unit tests (81) |
-| `pytest` | Python integration tests (56) |
+| `test` | Odin unit tests |
+| `pytest` | Python integration tests |
 | `check` | Struct-size cross-check (Odin compile-time `#assert`s) |
-| `audit` | Verify every `proc "c"` callback uses `begin_op` (39 callbacks) |
+| `audit` | Verify every `proc "c"` callback uses `begin_op` |
 | `smoke` | Basic FUSE smoke test in an isolated namespace (pytest) |
 | `smoke-rw` | Read-write FUSE test (pytest) |
 | `smoke-mt` | Multi-threaded stress test |
