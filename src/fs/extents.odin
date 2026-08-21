@@ -45,3 +45,85 @@ resolve_extents :: proc(vol: ^Volume, start_cluster: Cluster, start_offset: Sect
 	}
 	return runs, .None
 }
+
+// read_chain reads the full extent chain starting at (cluster, offset) into a
+// contiguous buffer. The caller owns the returned slice and must delete it.
+read_chain :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset, allocator := context.allocator) -> (data: []u8, err: FS_Error) {
+	runs, rerr := resolve_extents(vol, cluster, offset)
+	defer delete(runs)
+	if rerr != .None {
+		return {}, rerr
+	}
+
+	total := 0
+	for r in runs {
+		total += int(r.count) * SECTOR_SIZE
+	}
+
+	data = make([]u8, total, allocator)
+	pos := 0
+	for r in runs {
+		for si in 0 ..< int(r.count) {
+			if !sector_read(vol, Sector(u64(r.sector) + u64(si)), data[pos:pos + SECTOR_SIZE]) {
+				delete(data, allocator)
+				return {}, .Sector_Read_Error
+			}
+			pos += SECTOR_SIZE
+		}
+	}
+	return data, .None
+}
+
+// write_chain writes a byte buffer across the extent chain starting at
+// (cluster, offset). The final sector is zero-padded when the buffer is not
+// sector-aligned. The chain must be large enough to hold len(data).
+write_chain :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset, data: []u8) -> FS_Error {
+	runs, rerr := resolve_extents(vol, cluster, offset)
+	defer delete(runs)
+	if rerr != .None {
+		return rerr
+	}
+
+	pos := 0
+	for r in runs {
+		for si in 0 ..< int(r.count) {
+			if pos >= len(data) {
+				return .None
+			}
+
+			sec := Sector(u64(r.sector) + u64(si))
+			if pos + SECTOR_SIZE <= len(data) {
+				if !sector_write(vol, sec, data[pos:pos + SECTOR_SIZE]) {
+					return .Sector_Write_Error
+				}
+			} else {
+				buf: [SECTOR_SIZE]u8
+				copy(buf[:], data[pos:])
+				if !sector_write(vol, sec, buf[:]) {
+					return .Sector_Write_Error
+				}
+			}
+			pos += SECTOR_SIZE
+		}
+	}
+	return .None
+}
+
+// walk_chain_sectors iterates the sectors of an extent chain, calling visit
+// for each one. The visitor reads the sector itself and returns false to stop
+// the walk early.
+walk_chain_sectors :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset, visit: proc(sector: Sector, user: rawptr) -> bool, user: rawptr) -> FS_Error {
+	runs, rerr := resolve_extents(vol, cluster, offset)
+	defer delete(runs)
+	if rerr != .None {
+		return rerr
+	}
+	for r in runs {
+		for si in 0 ..< int(r.count) {
+			if !visit(Sector(u64(r.sector) + u64(si)), user) {
+				return .None
+			}
+		}
+	}
+	return .None
+}

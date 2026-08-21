@@ -143,6 +143,9 @@ fused_release :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
+	// Drop this owner's locks when the fd closes (kernel releases a
+	// process's locks when its last fd to the file closes).
+	locks_remove_owner(fsys, file_identity_from_fh(fi.fh), fi.lock_owner)
 	log.debugf("release: %s → ok", path)
 	return 0
 }
@@ -302,6 +305,10 @@ fused_init :: proc "c" (conn_info: ^fuse3.Conn_Info, cfg: ^fuse3.Config) -> rawp
 	conn_info.time_gran = 1
 	conn_info.max_background = 16
 	conn_info.congestion_threshold = 12
+	// Advertise remote locking support so the kernel forwards FUSE_LOCK and
+	// FUSE_FLOCK requests (POSIX locks and BSD flock) to us instead of
+	// handling them in-kernel.
+	conn_info.want |= FUSE_POSIX_LOCKS | FUSE_FLOCK_LOCKS
 	log.debugf("init: fused rev %d, cluster_size=%d", fsys.vol.master.rev_max, fsys.vol.master.cluster_size)
 	return fsys
 }

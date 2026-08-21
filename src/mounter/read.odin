@@ -124,14 +124,8 @@ fused_readdir :: proc "c" (
 
 	dir_cluster := fs.Cluster(entry.stored_cluster)
 	dir_offset := fs.Sector_Offset(entry.sector_index)
-	dir_runs, dir_err := fs.resolve_extents(&fsys.vol, dir_cluster, dir_offset)
-	defer delete(dir_runs)
 
 	sync.mutex_unlock(&fsys.mu)
-	if dir_err != .None {
-		log.debugf("readdir: %s → extent resolve failed", path)
-		return fuse3.nix(.ENOENT)
-	}
 	if rc := fuse3.fill_dir(filler, buf, ".", nil); rc != 0 {
 		return rc
 	}
@@ -139,46 +133,62 @@ fused_readdir :: proc "c" (
 		return rc
 	}
 
-	e: int
-	sector_buf: [fs.SECTOR_SIZE]u8
-	for run in dir_runs {
-		n := int(run.count)
-		for si in 0 ..< n {
-			sec := fs.Sector(u64(run.sector) + u64(si))
-			if !fs.sector_read(&fsys.vol, sec, sector_buf[:]) {
-				log.debugf("readdir: %s → sector read failed at %d", path, sec)
-				break
-			}
-			for i in 0 ..< depc {
-				if .Exists in get_dir_entry(sector_buf[:], i, fsys.vol.master.features).flags {
-					name := fs.entry_short_name(get_dir_entry(sector_buf[:], i, fsys.vol.master.features))
-					if .LFN in get_dir_entry(sector_buf[:], i, fsys.vol.master.features).flags {
-						// LFN cache is read-only after setup, safe without lock
-						sec_off := fs.Sector_Offset(u64(run.sector) + u64(si) - u64(dir_cluster) * fsys.vol.master.cluster_size)
-						cache_k := lfn_cache_key(dir_cluster, sec_off, i)
-						if cached, hit := lru.get(&fsys.lfn_cache, cache_k); hit {
-							name = cached
-						} else {
-							lfn, l_ok := fs.resolve_lfn(&fsys.vol, get_dir_entry(sector_buf[:], i, fsys.vol.master.features))
-							if l_ok {
-								name = lfn
-								c := strings.clone(name, context.allocator)
-								lru.set(&fsys.lfn_cache, cache_k, c)
-							}
+	visit := proc(sec: fs.Sector, user: rawptr) -> bool {
+		s := (^struct {
+			fsys: ^FS, depc: int, sector_buf: [fs.SECTOR_SIZE]u8,
+			dir_cluster: fs.Cluster, filler: fuse3.Fill_Dir_Proc, buf: rawptr,
+			e: int, stop_rc: c.int,
+		})(user)
+		if !fs.sector_read(&s.fsys.vol, sec, s.sector_buf[:]) {
+			s.stop_rc = fuse3.nix(.EIO)
+			return false
+		}
+		for i in 0 ..< s.depc {
+			if .Exists in get_dir_entry(s.sector_buf[:], i, s.fsys.vol.master.features).flags {
+				name := fs.entry_short_name(get_dir_entry(s.sector_buf[:], i, s.fsys.vol.master.features))
+				if .LFN in get_dir_entry(s.sector_buf[:], i, s.fsys.vol.master.features).flags {
+					// LFN cache is read-only after setup, safe without lock
+					sec_off := fs.Sector_Offset(u64(sec) - u64(s.dir_cluster) * s.fsys.vol.master.cluster_size)
+					cache_k := lfn_cache_key(s.dir_cluster, sec_off, i)
+					if cached, hit := lru.get(&s.fsys.lfn_cache, cache_k); hit {
+						name = cached
+					} else {
+						lfn, l_ok := fs.resolve_lfn(&s.fsys.vol, get_dir_entry(s.sector_buf[:], i, s.fsys.vol.master.features))
+						if l_ok {
+							name = lfn
+							c := strings.clone(name, context.allocator)
+							lru.set(&s.fsys.lfn_cache, cache_k, c)
 						}
 					}
-
-					name_cstr := strings.clone_to_cstring(name) or_continue
-					if rc := fuse3.fill_dir(filler, buf, name_cstr, nil); rc != 0 {
-						delete(name_cstr)
-						return rc
-					}
-					delete(name_cstr)
-					e += 1
 				}
+
+				name_cstr := strings.clone_to_cstring(name) or_continue
+				if rc := fuse3.fill_dir(s.filler, s.buf, name_cstr, nil); rc != 0 {
+					delete(name_cstr)
+					s.stop_rc = rc
+					return false
+				}
+				delete(name_cstr)
+				s.e += 1
 			}
 		}
+		return true
 	}
+
+	user := struct {
+		fsys: ^FS, depc: int, sector_buf: [fs.SECTOR_SIZE]u8,
+		dir_cluster: fs.Cluster, filler: fuse3.Fill_Dir_Proc, buf: rawptr,
+		e: int, stop_rc: c.int,
+	}{fsys = fsys, depc = depc, dir_cluster = dir_cluster, filler = filler, buf = buf}
+	if werr := fs.walk_chain_sectors(&fsys.vol, dir_cluster, dir_offset, visit, &user); werr != .None {
+		log.debugf("readdir: %s → extent resolve failed", path)
+		return fuse3.nix(.ENOENT)
+	}
+	if user.stop_rc != 0 {
+		return user.stop_rc
+	}
+
+	e := user.e
 	log.debugf("readdir: %s → ok %d entries", path, e)
 	return 0
 }

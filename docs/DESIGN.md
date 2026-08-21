@@ -4,7 +4,7 @@
 
 fused is a FUSE filesystem daemon implemented in Odin. It provides a libfuse3
 FFI binding, a cluster-based on-disk format (rev 8 with feature flags), and
-read-write FUSE mounting (39 of 43 `fuse_operations` callbacks implemented).
+read-write FUSE mounting (41 of 43 `fuse_operations` callbacks implemented).
 
 ```
 ┌─────────────┐     ┌──────────────────┐     ┌──────────────┐
@@ -24,11 +24,11 @@ read-write FUSE mounting (39 of 43 `fuse_operations` callbacks implemented).
 |---|---|---|
 | **`src/fuse3/`** | FFI binding to libfuse3. 43 `fuse_operations` callbacks, 12 cross-FFI structs with compile-time `#assert(size_of)`, 43 callback offsets verified against C ground truth. | `libfuse3.so` (system) |
 | **`src/fs/`** | Filesystem logic operating on raw disk images. No FUSE dependency. `Volume` struct bundles disk fd, master record, and alloc cache. | `core:os` |
-| **`src/mounter/`** | FUSE callbacks (39 of 43 wired) as `package mounter`. Each `fused_*` callback uses `begin_op()`/`end_op()` for locking. Translates `FS_Error` to negated errno via `fs_error_to_errno`. | `src/fs/`, `src/fuse3/` |
+| **`src/mounter/`** | FUSE callbacks (41 of 43 wired) as `package mounter`. Each `fused_*` callback uses `begin_op()`/`end_op()` for locking. Translates `FS_Error` to negated errno via `fs_error_to_errno`. | `src/fs/`, `src/fuse3/` |
 | **`cmd/mount/`** | Binary entry point — `package main`, calls `mounter.run()`. | `src/mounter/` |
 | **`cmd/format/`** | Standalone image formatter. Produces valid disk images without libfuse3. | `src/fs/` |
 | **`cmd/dump/`** | Read-only image dumper. Walks the image structure and prints it in human-readable or JSON form. | `src/fs/` |
-| **`tests/`** | Odin unit tests (77), Python pytest integration (50), struct-size cross-checks, context audit. | — |
+| **`tests/`** | Odin unit tests (81), Python pytest integration (56), struct-size cross-checks, context audit. | — |
 
 ## On-disk format (rev 8)
 
@@ -233,9 +233,64 @@ fd to the disk fd for the write side.
   `core:container/lru`. Eliminates redundant cluster-entry table reads. ~19 KB
   at default cluster size regardless of filesystem size.
 
+### Advisory locks (`src/mounter/lock.odin`)
+
+`lock` and `flock` are tracked entirely in memory per mount — no on-disk
+format change, matching advisory-lock semantics (state is process-lifetime and
+lost on unmount).
+
+- **POSIX region locks** (`lock`, F_SETLK/F_SETLKW/F_GETLK): a per-file list
+  of `Region_Lock{owner, pid, start, len, exclusive}` keyed by a stable
+  `File_Identity` derived from the packed file handle
+  `(dir_cluster, dir_offset, entry_index)`. A write request conflicts with any
+  overlapping other-owner lock; a read request only with another owner's
+  exclusive lock. F_GETLK reports the first conflicting exclusive lock or
+  returns UNLCK. F_SETLKW is treated as non-blocking F_SETLK because a
+  blocking wait would deadlock the single-threaded callback.
+- **BSD flock** (`flock`): per-file holder list; any number of owners may hold
+  LOCK_SH, LOCK_EX excludes all others. Conflicts always return EAGAIN (the
+  callback cannot sleep, so LOCK_NB is the only viable behavior).
+- **Cleanup**: `fused_release` drops the releasing owner's locks (the kernel
+  releases a process's locks when its last fd closes); `unlink`/`rmdir`
+  drop all lock state for the removed entry. The kernel only forwards lock
+  ops when the INIT handshake advertises `FUSE_POSIX_LOCKS | FUSE_FLOCK_LOCKS`
+  (set in `fused_init`).
+
 - **Path-resolution cache** (`src/mounter/core.odin`): LRU cache (128 entries).
   Avoids tree walks on repeated `getattr`/`open`/`readdir` calls. Invalidated
   on all mutations.
+
+### Chain helpers (`src/fs/extents.odin`, `src/fs/directory.odin`)
+
+All extent-chain I/O goes through four shared helpers so sector arithmetic
+exists in one place instead of being re-derived at every call site:
+
+- `read_chain` / `write_chain` — whole-chain read/write of a contiguous byte
+  buffer (used by `xattr_load`/`xattr_store`/`read_directory_entries`).
+  `write_chain` zero-pads the final sector.
+- `walk_chain_sectors` — iterates a chain's sectors with a per-sector visitor
+  (used by `find_free_slot_in_extent`, `check_name_exists`, `fused_readdir`).
+- `read_entry_at_index` / `write_entry_at_index` — locate a directory entry by
+  chain-relative index with pure run arithmetic, reading only the target
+  sector (used by `read_entry_from_fh` and `write_entry_back`).
+
+### Directory-entry removal
+
+`remove_directory_entry` (`src/mounter/create.odin`) is the single
+implementation of the removal sequence (deallocate content chain → clear
+xattr chain → drop lock state → clear flags → write entry back), shared by
+`fused_unlink`, `fused_rmdir`, and both `fused_rename` overwrite branches. It
+also closes the stale-lock leak where rename-overwrite previously skipped
+lock cleanup, and unifies error mapping (`fs_error_to_errno`) across all four
+call sites.
+
+### Directory-entry layout dispatch
+
+`dir_entry_size` / `dir_entries_per_sector` are table-driven from
+`DIR_ENTRY_LAYOUTS` (a `Dir_Entry_Layout{feature, size, per_sector}` row per
+layout change, highest-revision feature first, V4 fallback). A future
+revision that changes the entry layout adds one table row instead of editing
+two parallel `if` chains.
 
 ### Error handling
 
@@ -254,7 +309,7 @@ Functions producing variable-length results return `[dynamic]T` allocated on
 `mem.Tracking_Allocator` guarded behind `when ODIN_DEBUG` — zero overhead in
 release builds. Leaked allocations are reported at unmount time.
 
-## FUSE callbacks (39 of 43 wired)
+## FUSE callbacks
 
 | Category | Callbacks |
 |---|---|
@@ -265,8 +320,10 @@ release builds. Leaked allocations are reported at unmount time.
 | **Directory** | `mkdir`, `rmdir`, `opendir`, `releasedir`, `fsyncdir` |
 | **File ops** | `open`, `release`, `flush`, `fsync`, `unlink`, `rename` |
 | **Links** | `symlink`, `readlink`, `link` (returns ENOSYS) |
+| **Locks** | `lock` (POSIX region locks), `flock` (BSD whole-file) |
+| **xattr** | `setxattr`, `getxattr`, `listxattr`, `removexattr` |
 | **Stubs** | `mknod`, `ioctl` (return ENOSYS) |
-| **Not yet** | `lock`, `flock`, `bmap`, `poll`, `setxattr`, `getxattr`, `listxattr`, `removexattr` |
+| **Not yet** | `bmap`, `poll` |
 
 ## Testing
 
@@ -287,11 +344,14 @@ tests/
 ├── test_imgdump.py                10 imgdump tool tests (pytest)
 ├── test_basic.py                  7 FUSE smoke tests (pytest)
 ├── test_rw.py                     13 read-write tests (pytest)
+├── test_xattr.py                  xattr tests (pytest)
+├── test_lock.py                   6 lock/flock tests (pytest, cross-process)
 ├── ci.py                          CI orchestrator (calls make + pytest)
 ├── run_in_namespace.sh            Thin shell: exec unshare -rUm timeout "$@"
 ├── test_common.odin               Shared Odin test helpers
-├── mounter_test.odin              12 mounter-callback unit tests (errno mapping, direct fused_* calls)
-└── *.odin                         65 Odin unit tests (allocation, cache, directory, write,
+├── mounter_test.odin              13 mounter-callback unit tests
+├── lock_test.odin                 4 lock/flock unit tests (direct fused_lock/fused_flock calls)
+└── *.odin                         66 Odin unit tests (allocation, cache, directory, write,
                                     fs, validate, display, LFN, struct sizes, xattr)
 ```
 
@@ -300,7 +360,7 @@ tests/
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `make test` (77 Odin tests: 65 fs + 12 mounter callbacks) |
+| 2. Unit tests | `make test` (81 Odin tests: 66 fs + 13 mounter + 4 lock) |
 | 3. Tool integration | `make pytest -m tool` (17 format + imgdump tests) |
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |
@@ -322,5 +382,17 @@ master record includes `rev_min`, `rev_max`, and `features` fields.
 
 ## Remaining work
 
-4 of 43 `fuse_operations` callbacks are not yet wired:
-`lock`, `flock`, `bmap`, `poll`.
+2 of 43 `fuse_operations` callbacks are not yet wired:
+`bmap`, `poll`.
+
+### Deferred refactors
+
+- **Unify the journal backends behind one interface.** `allocate_sectors` /
+  `deallocate_sectors` branch on `.Journal_V2` three times each, and
+  `volume_open` dispatches recovery. When a third journal format is ever
+  added, introduce a `Journal_Backend{begin, add, commit, finish, recover}`
+  table selected once per operation. **Recorded decision**: both backends
+  unify on "discard on error" (v2 behavior) — the v6 intent log's current
+  commit-on-error path is not preserved.
+- **`vfsops` domain layer** — only if a second front-end (CLI tool, NFS
+  export, headless fuzz harness) is planned; otherwise deferred indefinitely.

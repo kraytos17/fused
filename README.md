@@ -2,7 +2,7 @@
 
 A FUSE filesystem daemon written in Odin, backed by a cluster-based on-disk
 format (rev 8, feature flags, uid/gid support, journaling, extended
-attributes). 39 of 43 `fuse_operations` callbacks are implemented.
+attributes). 41 of 43 `fuse_operations` callbacks are implemented.
 Multi-threaded by default, with a `sync.Mutex` guarding cache mutation.
 Zero-copy I/O via `splice(2)`.
 Long filenames (up to 255 characters) are supported through bump-allocated
@@ -41,15 +41,16 @@ src/
     xattr.odin                  Extended-attribute blob read/write
     validate.odin                 MasterRecord validation
     display.odin                    Human-readable flag formatters
-  mounter/            FUSE callbacks (39 wired), package mounter
+  mounter/            FUSE callbacks (41 wired), package mounter
     core.odin            FS struct, begin_op/end_op, resolve_path
     dir.odin               Directory slot helpers
     read.odin                 fused_getattr, fused_readdir, fused_read
     write.odin                  fused_write, fused_truncate, fused_copy_file_range
     create.odin                    fused_create, fused_mkdir, fused_symlink, fused_rename
     xattr.odin                     fused_setxattr, fused_getxattr, fused_listxattr, fused_removexattr
+    lock.odin                      fused_lock (POSIX), fused_flock (BSD)
     misc.odin                        fused_utimens, fused_chmod, fused_lseek, fused_statfs
-tests/                77 Odin unit tests + 50 Python pytest integration tests
+tests/                81 Odin unit tests + 56 Python pytest integration tests
 ```
 
 ## Prerequisites
@@ -125,8 +126,8 @@ fusermount3 -u mnt              # or by hand
 ### 6. Test
 
 ```bash
-make test                       # 77 Odin unit tests
-make pytest                     # 50 Python integration tests
+make test                       # 81 Odin unit tests
+make pytest                     # 56 Python integration tests
 make ci                         # full pipeline: build → check → audit → test → tool → FUSE smoke
 make smoke                      # basic FUSE ops (isolated namespace, needs /dev/fuse)
 make smoke-rw                   # read-write + persistence
@@ -167,8 +168,8 @@ logrotate, or pipe-based rotation:
 | `mount` | Build, then mount in foreground |
 | `unmount` | `fusermount3 -u mnt` |
 | `clean` | Remove `build/`, `logs/`, `mnt/`, `fused.img`; kill any running mount |
-| `test` | Odin unit tests (77) |
-| `pytest` | Python integration tests (50) |
+| `test` | Odin unit tests (81) |
+| `pytest` | Python integration tests (56) |
 | `check` | Struct-size cross-check (Odin compile-time `#assert`s) |
 | `audit` | Verify every `proc "c"` callback uses `begin_op` (39 callbacks) |
 | `smoke` | Basic FUSE smoke test in an isolated namespace (pytest) |
@@ -226,6 +227,12 @@ in `src/fs/structure.odin` carries a compile-time
   directory entry's `xattr_cluster`. Linux limits apply (255-byte names,
   64 KB values). See [`docs/DESIGN.md`](docs/DESIGN.md).
 
+- **Advisory locks.** `lock` (POSIX `fcntl` region locks: F_SETLK /
+  F_SETLKW / F_GETLK) and `flock` (BSD whole-file locks, multiple shared
+  holders) are tracked in-memory per mount. Locks are advisory and lost on
+  unmount; F_SETLKW treats a busy lock as a non-blocking conflict
+  (`EAGAIN`) since FUSE callbacks cannot sleep.
+
 - **Two in-memory caches.** LRU bitmap cache (1024 cluster entries) and
   LRU path-resolution cache (128 entries) — no filesystem-size-scaled
   arrays.
@@ -239,5 +246,6 @@ in `src/fs/structure.odin` carries a compile-time
 
 ## Remaining work
 
-4 of 43 `fuse_operations` callbacks remain unwired: `lock`, `flock`,
-`bmap`, `poll`.
+2 of 43 `fuse_operations` callbacks remain unwired: `bmap`, `poll`.
+Planned refactors (journal-backend unification, an optional `vfsops` domain
+layer) are recorded in [`docs/DESIGN.md`](docs/DESIGN.md).

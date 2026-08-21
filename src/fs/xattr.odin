@@ -69,29 +69,12 @@ xattr_load :: proc(vol: ^Volume, entry: ^Directory_Entry, allocator := context.a
 		return attrs, .Entry_Not_Found
 	}
 
-	runs, rerr := resolve_extents(vol, cluster, offset)
-	defer delete(runs)
+	data, rerr := read_chain(vol, cluster, offset, allocator)
+	defer delete(data, allocator)
 	if rerr != .None {
 		return attrs, rerr
 	}
 
-	total := 0
-	for r in runs {
-		total += int(r.count) * SECTOR_SIZE
-	}
-
-	data := make([]u8, total, allocator)
-	defer delete(data, allocator)
-
-	pos := 0
-	for r in runs {
-		for si in 0 ..< int(r.count) {
-			if !sector_read(vol, Sector(u64(r.sector) + u64(si)), data[pos:pos + SECTOR_SIZE]) {
-				return attrs, .Sector_Read_Error
-			}
-			pos += SECTOR_SIZE
-		}
-	}
 	_xattr_deserialize_into(&attrs, data[:], allocator)
 	return attrs, .None
 }
@@ -145,34 +128,8 @@ xattr_store :: proc(vol: ^Volume, entry: ^Directory_Entry, attrs: []XAttr) -> FS
 	if aerr != .None {
 		return aerr
 	}
-
-	runs, rerr := resolve_extents(vol, new_c, new_o)
-	defer delete(runs)
-	if rerr != .None {
-		return rerr
-	}
-
-	pos := 0
-	for r in runs {
-		for si in 0 ..< int(r.count) {
-			if pos >= len(data) {
-				break
-			}
-
-			sec := Sector(u64(r.sector) + u64(si))
-			if pos + SECTOR_SIZE <= len(data) {
-				if !sector_write(vol, sec, data[pos:pos + SECTOR_SIZE]) {
-					return .Sector_Write_Error
-				}
-			} else {
-				buf: [SECTOR_SIZE]u8
-				copy(buf[:], data[pos:])
-				if !sector_write(vol, sec, buf[:]) {
-					return .Sector_Write_Error
-				}
-			}
-			pos += SECTOR_SIZE
-		}
+	if werr := write_chain(vol, new_c, new_o, data); werr != .None {
+		return werr
 	}
 	if old_cluster != 0 {
 		if cerr := _xattr_chain_free(vol, old_cluster); cerr != .None {

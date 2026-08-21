@@ -53,6 +53,10 @@ FS :: struct {
 	extents:     map[Extent_Cache_Key][]fs.Extent_Run,
 	// free_sectors caches the volume's free sector count so statfs is O(1).
 	free_sectors: u64,
+	// locks holds POSIX fcntl region locks per file (in-memory, advisory).
+	locks:       map[File_Identity][dynamic]Region_Lock,
+	// flock_locks holds BSD flock holders per file (in-memory, advisory).
+	flock_locks: map[File_Identity][dynamic]Flock_State,
 }
 
 // Extent_Cache_Key identifies a resolved extent chain by its start cluster and
@@ -160,34 +164,11 @@ _set_time_fields_now :: proc(year: ^u16, dt: ^fs.Packed_Date_Time) {
 // returning the entry, its data cluster, data offset, and whether it succeeded.
 read_entry_from_fh :: proc(fsys: ^FS, fh: u64) -> (fs.Directory_Entry, fs.Cluster, fs.Sector_Offset, bool) {
 	fh_packed := transmute(fs.File_Handle)(fh)
-	runs, ext_err := fs.resolve_extents(&fsys.vol, fs.Cluster(fh_packed.dir_cluster), fs.Sector_Offset(fh_packed.dir_offset))
-	defer delete(runs)
-	if ext_err != .None {
+	e, err := fs.read_entry_at_index(&fsys.vol, fs.Cluster(fh_packed.dir_cluster), fs.Sector_Offset(fh_packed.dir_offset), int(fh_packed.entry_index))
+	if err != .None {
 		return {}, 0, 0, false
 	}
-
-	depc := dir_entries_per_buf(fsys.vol.master.features)
-	remaining := int(fh_packed.entry_index)
-	buf: [fs.SECTOR_SIZE]u8
-	for run in runs {
-		n := int(run.count)
-		for si in 0 ..< n {
-			if remaining < depc {
-				sec := fs.Sector(u64(run.sector) + u64(si))
-				if !fs.sector_read(&fsys.vol, sec, buf[:]) {
-					return {}, 0, 0, false
-				}
-
-				e := get_dir_entry(buf[:], remaining, fsys.vol.master.features)^
-				if .Exists not_in e.flags {
-					return {}, 0, 0, false
-				}
-				return e, fs.Cluster(e.stored_cluster), fs.Sector_Offset(e.sector_index), true
-			}
-			remaining -= depc
-		}
-	}
-	return {}, 0, 0, false
+	return e, fs.Cluster(e.stored_cluster), fs.Sector_Offset(e.sector_index), true
 }
 
 // Path_Cache_Value holds a cached path resolution result.
@@ -303,6 +284,8 @@ init_fs_for_test :: proc(vol: fs.Volume, allocator := context.allocator) -> (fsy
 	fsys.lfn_cache.on_remove = lfn_cache_on_remove
 	fsys.extents = make(map[Extent_Cache_Key][]fs.Extent_Run, allocator)
 	fsys.free_sectors = fs.alloc_cache_count_free(&fsys.vol)
+	fsys.locks = make(map[File_Identity][dynamic]Region_Lock, allocator)
+	fsys.flock_locks = make(map[File_Identity][dynamic]Flock_State, allocator)
 	return fsys
 }
 
@@ -310,6 +293,15 @@ init_fs_for_test :: proc(vol: fs.Volume, allocator := context.allocator) -> (fsy
 // close the volume (the caller owns it).
 destroy_fs_for_test :: proc(fsys: ^FS) {
 	extent_cache_invalidate_all(fsys)
+	for _, recs in fsys.locks {
+		delete(recs)
+	}
+	for _, fls in fsys.flock_locks {
+		delete(fls)
+	}
+
+	delete(fsys.locks)
+	delete(fsys.flock_locks)
 	lru.destroy(&fsys.path_cache, false)
 	lru.destroy(&fsys.lfn_cache, false)
 	fsys^ = {}
@@ -328,8 +320,7 @@ resolve_extents_cached :: proc(fsys: ^FS, cluster: fs.Cluster, offset: fs.Sector
 	if err != .None {
 		return nil, false
 	}
-	
-	// Store a heap copy so the dynamic array can be freed; the cache owns it.
+
 	slice_copy, _ := slice.clone(r[:])
 	delete(r)
 	fsys.extents[key] = slice_copy

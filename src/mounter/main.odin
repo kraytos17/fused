@@ -121,6 +121,8 @@ run :: proc() {
 	fsys.disk_raw_fd = c.int(os.fd(vol.disk))
 	fsys.extents = make(map[Extent_Cache_Key][]fs.Extent_Run)
 	fsys.free_sectors = fs.alloc_cache_count_free(&vol)
+	fsys.locks = make(map[File_Identity][dynamic]Region_Lock)
+	fsys.flock_locks = make(map[File_Identity][dynamic]Flock_State)
 	log.debugf("opened %s → raw_fd=%d", image_path, fsys.disk_raw_fd)
 	log.infof("mounted: rev=%d cluster_size=%d clusters=%d root=%d",
 		vol.master.rev_max, vol.master.cluster_size, vol.master.cluster_map_size, vol.master.root_cluster)
@@ -161,6 +163,8 @@ run :: proc() {
 		lseek      = fused_lseek,
 		statfs     = fused_statfs,
 		fsyncdir   = fused_fsyncdir,
+		lock       = fused_lock,
+		flock      = fused_flock,
 		mknod      = fused_mknod,
 		ioctl      = fused_ioctl,
 		link       = fused_link,

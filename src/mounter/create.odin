@@ -186,6 +186,34 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 	return 0
 }
 
+// remove_directory_entry deletes a directory entry: deallocates its content
+// chain (if any), clears its xattr chain, drops lock state, and clears the
+// entry flags. Shared by unlink, rmdir, and rename-overwrite so the removal
+// sequence has a single implementation.
+remove_directory_entry :: proc(
+	fsys:   ^FS,
+	entry:  ^fs.Directory_Entry,
+	cluster: fs.Cluster,
+	offset: fs.Sector_Offset,
+	idx:    int,
+) -> fs.FS_Error {
+	if entry.stored_cluster != 0 {
+		if derr := fs.deallocate_sectors(&fsys.vol, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index)); derr != .None {
+			return derr
+		}
+	}
+	if xerr := fs.xattr_clear(&fsys.vol, entry); xerr != .None {
+		return xerr
+	}
+
+	locks_remove_identity(fsys, file_identity_from_entry(cluster, offset, idx))
+	entry.flags = {}
+	if !write_entry_back(fsys, entry, cluster, offset, idx) {
+		return .Sector_Write_Error
+	}
+	return .None
+}
+
 // fused_unlink removes a file (FUSE unlink callback).
 fused_unlink :: proc "c" (path: cstring) -> c.int {
 	context = runtime.default_context()
@@ -201,20 +229,10 @@ fused_unlink :: proc "c" (path: cstring) -> c.int {
 		log.debugf("unlink: %s → EISDIR", path)
 		return fuse3.nix(.EISDIR)
 	}
-	if entry.stored_cluster != 0 {
-		if derr := fs.deallocate_sectors(&fsys.vol, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index)); derr != .None {
-			return fs_error_to_errno(derr)
-		}
-	}
 
 	log.debugf("unlink: %s xattr_cluster=%d", path, entry.xattr_cluster)
-	if xerr := fs.xattr_clear(&fsys.vol, &entry); xerr != .None {
-		return fs_error_to_errno(xerr)
-	}
-
-	entry.flags = {}
-	if !write_entry_back(fsys, &entry, cluster, offset, idx) {
-		return fuse3.nix(.EIO)
+	if err := remove_directory_entry(fsys, &entry, cluster, offset, idx); err != .None {
+		return fs_error_to_errno(err)
 	}
 
 	path_cache_invalidate_all(fsys)
@@ -246,18 +264,8 @@ fused_rmdir :: proc "c" (path: cstring) -> c.int {
 			return fuse3.nix(.ENOTEMPTY)
 		}
 	}
-	if entry.stored_cluster != 0 {
-		if derr := fs.deallocate_sectors(&fsys.vol, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index)); derr != .None {
-			return fs_error_to_errno(derr)
-		}
-	}
-	if xerr := fs.xattr_clear(&fsys.vol, &entry); xerr != .None {
-		return fs_error_to_errno(xerr)
-	}
-
-	entry.flags = {}
-	if !write_entry_back(fsys, &entry, cluster, offset, idx) {
-		return fuse3.nix(.EIO)
+	if err := remove_directory_entry(fsys, &entry, cluster, offset, idx); err != .None {
+		return fs_error_to_errno(err)
 	}
 
 	path_cache_invalidate_all(fsys)
@@ -298,18 +306,8 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	if old_cluster == new_parent_c && old_offset == new_parent_o {
 		if dst_entry, _, _, dst_idx, dst_ok := resolve_path_cached(fsys, string(newpath), context.temp_allocator); dst_ok {
 			if .Directory not_in dst_entry.flags {
-				if dst_entry.stored_cluster != 0 {
-					if derr := fs.deallocate_sectors(&fsys.vol, fs.Cluster(dst_entry.stored_cluster), fs.Sector_Offset(dst_entry.sector_index)); derr != .None {
-						return fuse3.nix(.EIO)
-					}
-				}
-				if xerr := fs.xattr_clear(&fsys.vol, &dst_entry); xerr != .None {
-					return fuse3.nix(.EIO)
-				}
-
-				dst_entry.flags = {}
-				if !write_entry_back(fsys, &dst_entry, new_parent_c, new_parent_o, dst_idx) {
-					return fuse3.nix(.EIO)
+				if err := remove_directory_entry(fsys, &dst_entry, new_parent_c, new_parent_o, dst_idx); err != .None {
+					return fs_error_to_errno(err)
 				}
 			} else {
 				log.debugf("rename: %s → %s → EISDIR (destination is dir)", oldpath, newpath)
@@ -348,18 +346,8 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	if dst_entry, _, _, dst_idx_resolved, dst_ok := resolve_path_cached(fsys, string(newpath), context.temp_allocator); dst_ok {
 		dst_idx = dst_idx_resolved
 		if .Directory not_in dst_entry.flags {
-			if dst_entry.stored_cluster != 0 {
-				if derr := fs.deallocate_sectors(&fsys.vol, fs.Cluster(dst_entry.stored_cluster), fs.Sector_Offset(dst_entry.sector_index)); derr != .None {
-					return fuse3.nix(.EIO)
-				}
-			}
-			if xerr := fs.xattr_clear(&fsys.vol, &dst_entry); xerr != .None {
-				return fuse3.nix(.EIO)
-			}
-
-			dst_entry.flags = {}
-			if !write_entry_back(fsys, &dst_entry, new_parent_c, new_parent_o, dst_idx) {
-				return fuse3.nix(.EIO)
+			if err := remove_directory_entry(fsys, &dst_entry, new_parent_c, new_parent_o, dst_idx); err != .None {
+				return fs_error_to_errno(err)
 			}
 		} else {
 			log.debugf("rename: %s → %s → EISDIR (destination is dir)", oldpath, newpath)

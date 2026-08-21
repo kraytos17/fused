@@ -171,15 +171,33 @@ DIR_ENTRIES_PER_SECTOR_V6 :: 8
 DIR_ENTRIES_PER_SECTOR :: DIR_ENTRIES_PER_SECTOR_V6
 DIR_ENTRY_SIZE :: DIR_ENTRY_SIZE_V6
 
+// Dir_Entry_Layout binds a feature flag to the directory-entry size and
+// entries-per-sector it implies.  dir_entry_size / dir_entries_per_sector
+// walk this table (highest-revision feature first) and fall back to the V4
+// defaults when no layout feature is present.  A future revision that changes
+// the entry layout adds one row here instead of editing two parallel chains.
+Dir_Entry_Layout :: struct {
+	feature:   Feature_Flag,
+	size:      u16,
+	per_sector: u16,
+}
+
+DIR_ENTRY_LAYOUTS :: [2]Dir_Entry_Layout{
+	{.XAttr,   DIR_ENTRY_SIZE_V6, DIR_ENTRIES_PER_SECTOR_V6},
+	{.Uid_Gid, DIR_ENTRY_SIZE_V5, DIR_ENTRIES_PER_SECTOR_V5},
+}
+
 dir_entry_size :: proc(features: Features) -> u16 {
-	if .XAttr in features {return DIR_ENTRY_SIZE_V6}
-	if .Uid_Gid in features {return DIR_ENTRY_SIZE_V5}
+	for layout in DIR_ENTRY_LAYOUTS {
+		if layout.feature in features {return layout.size}
+	}
 	return DIR_ENTRY_SIZE_V4
 }
 
 dir_entries_per_sector :: proc(features: Features) -> u16 {
-	if .XAttr in features {return DIR_ENTRIES_PER_SECTOR_V6}
-	if .Uid_Gid in features {return DIR_ENTRIES_PER_SECTOR_V5}
+	for layout in DIR_ENTRY_LAYOUTS {
+		if layout.feature in features {return layout.per_sector}
+	}
 	return DIR_ENTRIES_PER_SECTOR_V4
 }
 
