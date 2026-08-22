@@ -23,12 +23,12 @@ read-write FUSE mounting (41 of 43 `fuse_operations` callbacks implemented).
 | Package | Purpose | Depends on |
 |---|---|---|
 | **`src/fuse3/`** | FFI binding to libfuse3. 43 `fuse_operations` callbacks, 12 cross-FFI structs with compile-time `#assert(size_of)`, 43 callback offsets verified against C ground truth. | `libfuse3.so` (system) |
-| **`src/fs/`** | Filesystem logic operating on raw disk images. No FUSE dependency. `Volume` struct bundles disk fd, master record, and alloc cache. | `core:os` |
-| **`src/mounter/`** | FUSE callbacks (41 of 43 wired) as `package mounter`. Each `fused_*` callback uses `begin_op()`/`end_op()` for locking. Translates `FS_Error` to negated errno via `fs_error_to_errno`. | `src/fs/`, `src/fuse3/` |
+| **`src/fs/`** | Filesystem logic operating on raw disk images. No FUSE dependency. `Volume` struct bundles disk fd, master record, and alloc cache. `format_image` owns image construction (shared by the format tool and tests). | `core:os` |
+| **`src/mounter/`** | FUSE callbacks as `package mounter`. Each `fused_*` callback uses `begin_op()`/`end_op()` for locking. Translates `FS_Error` to negated errno via `fs_error_to_errno`. | `src/fs/`, `src/fuse3/` |
 | **`cmd/mount/`** | Binary entry point — `package main`, calls `mounter.run()`. | `src/mounter/` |
 | **`cmd/format/`** | Standalone image formatter. Produces valid disk images without libfuse3. | `src/fs/` |
 | **`cmd/dump/`** | Read-only image dumper. Walks the image structure and prints it in human-readable or JSON form. | `src/fs/` |
-| **`tests/`** | Odin unit tests (85), Python pytest integration (56), struct-size cross-checks, context audit. | — |
+| **`tests/`** | Odin unit tests, Python pytest integration, struct-size cross-checks, context audit. | — |
 
 ## On-disk format (rev 8)
 
@@ -233,6 +233,29 @@ fd to the disk fd for the write side.
   `core:container/lru`. Eliminates redundant cluster-entry table reads. ~19 KB
   at default cluster size regardless of filesystem size.
 
+### Mounter helpers (`src/mounter/`)
+
+Shared call-site plumbing so FUSE callbacks stay thin:
+
+- `init_fs_state` — one initialisation for the caches, lock tables, and
+  free-sector count, used by both the daemon (`run`) and the test harness
+  (`init_fs_for_test`), so the two can't drift.
+- `prepare_parent_slot` — the create/mkdir/symlink preamble (resolve parent
+  → check name → find or extend a slot) returns a `Prepare_Slot_Result`
+  (Ok / Parent_Not_Found / Name_Exists / Dir_Full) so each caller maps the
+  exact errno.
+- `fh_parts` — unpacks the packed file handle into its identity fields
+  (dir cluster, offset, entry index); `remove_directory_entry` (see below)
+  and the lock table key off the same identity.
+- `ce_find_by_offset` / `ce_find_by_state` (`src/fs/clustermap.odin`) — the
+  "scan a CE table for an entry" loop, shared by allocation, deallocation,
+  LFN resolution, and xattr chain location.
+- `mutate_entry_at` — the read-modify-write wrapper for `chmod`/`chown`/
+  `utimens` (and xattr entry writes), resolving, calling a caller-supplied
+  mutator, writing back, and invalidating.
+- `truncate_chain_at` (`src/fs/clustermap.odin`) — the CE-chain walk for
+  `fused_truncate`'s shrink path, shared out of the file-truncation logic.
+
 ### Advisory locks (`src/mounter/lock.odin`)
 
 `lock` and `flock` are tracked entirely in memory per mount — no on-disk
@@ -313,6 +336,44 @@ a single `Journal_Backend` procedure table selected once per operation by
   sector's final 4 bytes (`_pad: [20]u8`), where the `[:SECTOR_SIZE-4]` CRC
   range excludes it — previously the field overlapped the hashed range and
   the v6 recovery check could never pass.
+
+### Write path (`src/mounter/write_data.odin` + `src/mounter/write.odin`)
+
+File-data writes share one range engine plus per-source providers, so the
+run-walk bookkeeping (skip runs before the write offset, partial head /
+whole-sector bulk / partial tail per run) exists once instead of three
+near-identical loops:
+
+- `write_range_to_runs` / `read_range_from_runs` — the shared loops.
+  Iterates cached extent runs; each run does a partial-head RMW sector,
+  whole-sector bulk, and a partial-tail RMW sector. `write_range_to_runs`
+  consumes from a `Buf_Source`, `read_range_from_runs` delivers into a
+  `Read_Sink`. A partial sector never spans source/sink segments.
+- `Buf_Source` / `Read_Sink` — `copy`/`copy_to` (partial sector), `bulk`
+  (whole sectors; the provider owns the I/O, including splice for
+  `FUSE_BUF_IS_FD`), `remaining`. Providers:
+  - `Mem_Source` / `Mem_Read_Sink` — one contiguous buffer (`fused_write` /
+    `fused_read`).
+  - `Bufvec_Source` — a FUSE bufvec with per-buf advance and splice to the
+    raw disk fd for `FUSE_BUF_IS_FD` bufs (`fused_write_buf`);
+    `fused_read_buf` now uses `collect_read_slices` to avoid the double walk.
+    fd-backed bufs at unaligned offsets panic (documented limitation).
+  - `Zero_Source` — zero-fill (`zero_file_range`, used by fallocate).
+- `ensure_chain_covers` — the shared "resolve → count → extend if short →
+  invalidate → re-resolve" preamble for write/write_buf/truncate/fallocate/
+  copy_file_range. Invalidates only the given chain's extent-cache entry so
+  borrowed runs of other chains stay valid; `extended` reports whether
+  allocation ran. `chain_sector_count` sums a run list.
+
+### Image construction (`src/fs/format.odin`)
+
+`format_image(fd, Format_Params)` owns the whole image layout — geometry
+(cluster map, journal region, reserved/root clusters), MasterRecord, cluster
+map, zeroed journal region, and the root cluster (CE table, root directory
+entry, optional `/Kernel` demo file). The `format` tool (`cmd/format`) and
+the test harness (`tests/journal_test.odin`'s rev-6 image) both drive it;
+`features`/`rev` are parameters, so a future revision-variant image is a
+parameter rather than a code fork.
 
 ### Error handling
 

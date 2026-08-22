@@ -75,7 +75,7 @@ fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 	if !write_entry_with_lfn(fsys, &new_entry, name) {
 		return fuse3.nix(.ENOSPC)
 	}
-	if !fs.write_directory_entry_at(&fsys.vol, dcluster, dsec, didx, &new_entry) {
+	if fs.write_directory_entry_at(&fsys.vol, dcluster, dsec, didx, &new_entry) != .None {
 		return fuse3.nix(.EIO)
 	}
 
@@ -107,6 +107,7 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 		return fuse3.nix(.ENOSPC)
 	}
 
+	fsys.free_sectors -= 1
 	dir_runs, dr_err := fs.resolve_extents(&fsys.vol, new_cluster, new_offset)
 	defer delete(dir_runs)
 	if dr_err != .None || len(dir_runs) == 0 {
@@ -114,7 +115,7 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 	}
 
 	zero: [fs.SECTOR_SIZE]u8
-	if !fs.sector_write(&fsys.vol, dir_runs[0].sector, zero[:]) {
+	if fs.sector_write(&fsys.vol, dir_runs[0].sector, zero[:]) != .None {
 		return fuse3.nix(.EIO)
 	}
 
@@ -131,7 +132,7 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 	if len(name) < 16 {
 		new_entry.file_name[len(name)] = 0
 	}
-	if !fs.write_directory_entry_at(&fsys.vol, dcluster, dsec, didx, &new_entry) {
+	if fs.write_directory_entry_at(&fsys.vol, dcluster, dsec, didx, &new_entry) != .None {
 		return fuse3.nix(.EIO)
 	}
 
@@ -164,6 +165,7 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 		return fuse3.nix(.ENOSPC)
 	}
 
+	fsys.free_sectors -= sectors_needed
 	{
 		runs, r_err := fs.resolve_extents(&fsys.vol, new_c, new_o)
 		defer delete(runs)
@@ -173,7 +175,7 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 
 		buf: [fs.SECTOR_SIZE]u8
 		copy(buf[:], transmute([]u8)(target_str))
-		if !fs.sector_write(&fsys.vol, runs[0].sector, buf[:]) {
+		if fs.sector_write(&fsys.vol, runs[0].sector, buf[:]) != .None {
 			return fuse3.nix(.EIO)
 		}
 	}
@@ -191,7 +193,7 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 	if !write_entry_with_lfn(fsys, &new_entry, name) {
 		return fuse3.nix(.ENOSPC)
 	}
-	if !fs.write_directory_entry_at(&fsys.vol, dcluster, dsec, didx, &new_entry) {
+	if fs.write_directory_entry_at(&fsys.vol, dcluster, dsec, didx, &new_entry) != .None {
 		return fuse3.nix(.EIO)
 	}
 
@@ -225,6 +227,7 @@ remove_directory_entry :: proc(
 	if !write_entry_back(fsys, entry, cluster, offset, idx) {
 		return .Sector_Write_Error
 	}
+	reinit_free_sectors(fsys)
 	return .None
 }
 
@@ -376,7 +379,7 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	if !set_entry_name(fsys, &entry, new_name) {
 		return fuse3.nix(.ENOSPC)
 	}
-	if !fs.write_directory_entry_at(&fsys.vol, dst_cluster, dst_sec, dst_slot_idx, &entry) {
+	if fs.write_directory_entry_at(&fsys.vol, dst_cluster, dst_sec, dst_slot_idx, &entry) != .None {
 		return fuse3.nix(.EIO)
 	}
 

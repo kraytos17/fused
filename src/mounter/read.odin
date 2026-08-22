@@ -18,6 +18,18 @@ import "core:time"
 import "src:fuse3"
 import "src:fs"
 
+@(private="file")
+Readdir_Ctx :: struct {
+	fsys:        ^FS,
+	depc:      int,
+	sector_buf:  [fs.SECTOR_SIZE]u8,
+	dir_cluster: fs.Cluster,
+	filler:      fuse3.Fill_Dir_Proc,
+	buf:         rawptr,
+	e:           int,
+	stop_rc:     c.int,
+}
+
 // fused_getattr returns file or directory attributes (stat) for a path (FUSE
 // getattr callback).
 fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Info) -> c.int {
@@ -32,48 +44,40 @@ fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Inf
 	}
 
 	stbuf^ = {}
-	is_link := .Link in entry.flags
-	is_dir := .Directory in entry.flags
-	if is_link {
-		mode := posix.mode_t{
-			posix.Mode_Bits.IFREG, posix.Mode_Bits.IFCHR, .IRUSR, .IWUSR, .IRGRP, .IROTH,
-		}
-		if .No_Write in entry.flags || .Read_Only in entry.flags {
-			mode -= {.IWUSR, .IWGRP, .IWOTH}
-		}
-		if .No_Read in entry.flags {
-			mode -= {.IRUSR, .IRGRP, .IROTH}
-		}
 
-		stbuf.st_mode = mode
-		stbuf.st_nlink = 1
-		stbuf.st_size = posix.off_t(entry.file_size)
-	} else if is_dir {
-		mode := posix.mode_t{
-			posix.Mode_Bits.IFDIR, .IRUSR, .IXUSR, .IRGRP, .IXGRP, .IROTH, .IXOTH,
-		}
-		if .No_Read in entry.flags {
-			mode -= {.IRUSR, .IRGRP, .IROTH}
-		}
-		if .No_Write in entry.flags {
-			mode -= {.IWUSR, .IWGRP, .IWOTH}
-		}
-		if .No_Execute in entry.flags {
-			mode -= {.IXUSR, .IXGRP, .IXOTH}
-		}
-		stbuf.st_mode = mode
-		stbuf.st_nlink = 2
-	} else {
-		mode := posix.mode_t{posix.Mode_Bits.IFREG, .IRUSR, .IWUSR, .IRGRP, .IROTH}
-		if .No_Write in entry.flags || .Read_Only in entry.flags {
-			mode -= {.IWUSR, .IWGRP, .IWOTH}
-		}
-		if .No_Read in entry.flags {
-			mode -= {.IRUSR, .IRGRP, .IROTH}
-		}
+	// Mode construction is table-driven: pick a base profile by entry kind,
+	// then clear permission bits that the entry's flags deny. A new Dir_Flag
+	// that affects permissions only needs one subtraction line here.
+	base_mode: posix.mode_t
+	base_nlink: posix.nlink_t
+	switch {
+	case .Link in entry.flags:
+		base_mode = {.IFREG, .IFCHR, .IRUSR, .IWUSR, .IRGRP, .IROTH}
+		base_nlink = posix.nlink_t(1)
+	case .Directory in entry.flags:
+		base_mode = {.IFDIR, .IRUSR, .IXUSR, .IRGRP, .IXGRP, .IROTH, .IXOTH}
+		base_nlink = posix.nlink_t(2)
+	case:
+		base_mode = {.IFREG, .IRUSR, .IWUSR, .IRGRP, .IROTH}
+		base_nlink = posix.nlink_t(1)
+	}
+	if .No_Read in entry.flags {
+		base_mode -= {.IRUSR, .IRGRP, .IROTH}
+	}
+	if .No_Write in entry.flags || .Read_Only in entry.flags {
+		base_mode -= {.IWUSR, .IWGRP, .IWOTH}
+	}
+	// Directories gate execute separately; regular files and links never had it.
+	if .Directory in entry.flags && .No_Execute in entry.flags {
+		base_mode -= {.IXUSR, .IXGRP, .IXOTH}
+	} else if .Directory not_in entry.flags {
+		// Links and regular files: No_Execute is not applicable (they never
+		// had exec bits in base_mode), so nothing to clear.
+	}
 
-		stbuf.st_mode = mode
-		stbuf.st_nlink = 1
+	stbuf.st_mode = base_mode
+	stbuf.st_nlink = base_nlink
+	if .Directory not_in entry.flags {
 		stbuf.st_size = posix.off_t(entry.file_size)
 	}
 
@@ -134,61 +138,53 @@ fused_readdir :: proc "c" (
 	}
 
 	visit := proc(sec: fs.Sector, user: rawptr) -> bool {
-		s := (^struct {
-			fsys: ^FS, depc: int, sector_buf: [fs.SECTOR_SIZE]u8,
-			dir_cluster: fs.Cluster, filler: fuse3.Fill_Dir_Proc, buf: rawptr,
-			e: int, stop_rc: c.int,
-		})(user)
-		if !fs.sector_read(&s.fsys.vol, sec, s.sector_buf[:]) {
-			s.stop_rc = fuse3.nix(.EIO)
+		ctx := (^Readdir_Ctx)(user)
+		if fs.sector_read(&ctx.fsys.vol, sec, ctx.sector_buf[:]) != .None {
+			ctx.stop_rc = fuse3.nix(.EIO)
 			return false
 		}
-		for i in 0 ..< s.depc {
-			if .Exists in get_dir_entry(s.sector_buf[:], i, s.fsys.vol.master.features).flags {
-				name := fs.entry_short_name(get_dir_entry(s.sector_buf[:], i, s.fsys.vol.master.features))
-				if .LFN in get_dir_entry(s.sector_buf[:], i, s.fsys.vol.master.features).flags {
+		for i in 0 ..< ctx.depc {
+			if .Exists in get_dir_entry(ctx.sector_buf[:], i, ctx.fsys.vol.master.features).flags {
+				name := fs.entry_short_name(get_dir_entry(ctx.sector_buf[:], i, ctx.fsys.vol.master.features))
+				if .LFN in get_dir_entry(ctx.sector_buf[:], i, ctx.fsys.vol.master.features).flags {
 					// LFN cache is read-only after setup, safe without lock
-					sec_off := fs.Sector_Offset(u64(sec) - u64(s.dir_cluster) * s.fsys.vol.master.cluster_size)
-					cache_k := lfn_cache_key(s.dir_cluster, sec_off, i)
-					if cached, hit := lru.get(&s.fsys.lfn_cache, cache_k); hit {
+					sec_off := fs.Sector_Offset(u64(sec) - u64(ctx.dir_cluster) * ctx.fsys.vol.master.cluster_size)
+					cache_k := lfn_cache_key(ctx.dir_cluster, sec_off, i)
+					if cached, hit := lru.get(&ctx.fsys.lfn_cache, cache_k); hit {
 						name = cached
 					} else {
-						lfn, l_ok := fs.resolve_lfn(&s.fsys.vol, get_dir_entry(s.sector_buf[:], i, s.fsys.vol.master.features))
+						lfn, l_ok := fs.resolve_lfn(&ctx.fsys.vol, get_dir_entry(ctx.sector_buf[:], i, ctx.fsys.vol.master.features))
 						if l_ok {
 							name = lfn
 							c := strings.clone(name, context.allocator)
-							lru.set(&s.fsys.lfn_cache, cache_k, c)
+							lru.set(&ctx.fsys.lfn_cache, cache_k, c)
 						}
 					}
 				}
 
 				name_cstr := strings.clone_to_cstring(name) or_continue
-				if rc := fuse3.fill_dir(s.filler, s.buf, name_cstr, nil); rc != 0 {
+				if rc := fuse3.fill_dir(ctx.filler, ctx.buf, name_cstr, nil); rc != 0 {
 					delete(name_cstr)
-					s.stop_rc = rc
+					ctx.stop_rc = rc
 					return false
 				}
 				delete(name_cstr)
-				s.e += 1
+				ctx.e += 1
 			}
 		}
 		return true
 	}
 
-	user := struct {
-		fsys: ^FS, depc: int, sector_buf: [fs.SECTOR_SIZE]u8,
-		dir_cluster: fs.Cluster, filler: fuse3.Fill_Dir_Proc, buf: rawptr,
-		e: int, stop_rc: c.int,
-	}{fsys = fsys, depc = depc, dir_cluster = dir_cluster, filler = filler, buf = buf}
-	if werr := fs.walk_chain_sectors(&fsys.vol, dir_cluster, dir_offset, visit, &user); werr != .None {
+	ctx := Readdir_Ctx{fsys = fsys, depc = depc, dir_cluster = dir_cluster, filler = filler, buf = buf}
+	if werr := fs.walk_chain_sectors(&fsys.vol, dir_cluster, dir_offset, visit, &ctx); werr != .None {
 		log.debugf("readdir: %s → extent resolve failed", path)
 		return fuse3.nix(.ENOENT)
 	}
-	if user.stop_rc != 0 {
-		return user.stop_rc
+	if ctx.stop_rc != 0 {
+		return ctx.stop_rc
 	}
 
-	e := user.e
+	e := ctx.e
 	log.debugf("readdir: %s → ok %d entries", path, e)
 	return 0
 }
@@ -245,62 +241,15 @@ fused_read :: proc "c" (
 		return fuse3.nix(.ENOENT)
 	}
 
-	pos_in_file: u64 = 0
-	bytes_read: u64 = 0
-	sector_buf: [fs.SECTOR_SIZE]u8
-	for run in runs {
-		run_bytes := u64(run.count) * fs.SECTOR_SIZE
-		if pos_in_file + run_bytes <= u64(off) {
-			pos_in_file += run_bytes
-			continue
-		}
-
-		skip_in_run := u64(off) - pos_in_file
-		start_sector := u64(run.sector) + skip_in_run / fs.SECTOR_SIZE
-		byte_offset := skip_in_run % fs.SECTOR_SIZE
-		remaining_in_run := u64(run.sector) + u64(run.count) - start_sector
-		if byte_offset > 0 && remaining_in_run > 0 {
-			if !fs.sector_read(&fsys.vol, fs.Sector(start_sector), sector_buf[:]) {break}
-
-			avail := u64(len(sector_buf[byte_offset:]))
-			need := min(avail, u64(size) - bytes_read)
-			mem.copy(rawptr(buf[bytes_read:]), raw_data(sector_buf[byte_offset:]), int(need))
-
-			bytes_read += need
-			pos_in_file += u64(byte_offset) + need
-			start_sector += 1
-			remaining_in_run -= 1
-			byte_offset = 0
-			if bytes_read >= u64(size) {break}
-		}
-		if remaining_in_run > 0 && bytes_read < u64(size) {
-			need_bytes := min(remaining_in_run * fs.SECTOR_SIZE, u64(size) - bytes_read)
-			aligned_sectors := need_bytes / fs.SECTOR_SIZE
-			if aligned_sectors > 0 {
-				bulk_buf := buf[bytes_read:bytes_read + aligned_sectors * fs.SECTOR_SIZE]
-				if !fs.sector_read(&fsys.vol, fs.Sector(start_sector), bulk_buf) {break}
-
-				bytes_read += aligned_sectors * fs.SECTOR_SIZE
-				pos_in_file += aligned_sectors * fs.SECTOR_SIZE
-				start_sector += aligned_sectors
-				remaining_in_run -= aligned_sectors
-				if bytes_read >= u64(size) {break}
-			}
-			if remaining_in_run > 0 && bytes_read < u64(size) {
-				if !fs.sector_read(&fsys.vol, fs.Sector(start_sector), sector_buf[:]) {break}
-
-				need := min(u64(size) - bytes_read, fs.SECTOR_SIZE)
-				mem.copy(rawptr(buf[bytes_read:]), raw_data(sector_buf[:]), int(need))
-				bytes_read += need
-				pos_in_file += need
-			}
-		}
-		if bytes_read >= u64(size) {
-			break
-		}
-		pos_in_file = u64(run.sector + fs.Sector(run.count)) * fs.SECTOR_SIZE
+	mem_sink := Mem_Read_Sink{fsys = fsys, buf = ([^]u8)(buf), size = u64(size), remaining = u64(size)}
+	sink := Read_Sink{
+		user      = &mem_sink,
+		copy_to   = _mem_read_copy_to,
+		bulk      = _mem_read_bulk,
+		remaining = _mem_read_remaining,
 	}
 
+	bytes_read := read_range_from_runs(fsys, runs, u64(off), &sink)
 	log.debugf("read: %s off=%d size=%d → %d bytes (%v)", path, off, size, bytes_read, time.since(read_start))
 	return c.int(bytes_read)
 }
@@ -328,30 +277,13 @@ fused_read_buf :: proc "c" (
 		return fuse3.nix(.ENOENT)
 	}
 
-	remaining := u64(size)
-	req_off := u64(off)
-	total_provided: u64
-	buf_count: int
-	for run in runs {
-		run_bytes := u64(run.count) * fs.SECTOR_SIZE
-		if req_off >= run_bytes {
-			req_off -= run_bytes
-			continue
-		}
-
-		avail := min(run_bytes - req_off, remaining)
-		if avail > 0 {
-			buf_count += 1
-			total_provided += avail
-			remaining -= avail
-			req_off = 0
-		}
-		if remaining == 0 {break}
-	}
-	if buf_count == 0 {
+	slices, total_provided := collect_read_slices(runs, u64(off), u64(size), context.temp_allocator)
+	defer delete(slices)
+	if len(slices) == 0 {
 		return fuse3.nix(.ENOENT)
 	}
 
+	buf_count := len(slices)
 	alloc_size := c.size_t(size_of(fuse3.Bufvec) + (buf_count - 1) * size_of(fuse3.Buf))
 	bv := (^fuse3.Bufvec)(posix.malloc(alloc_size))
 	if bv == nil {
@@ -361,31 +293,14 @@ fused_read_buf :: proc "c" (
 	bv.count = c.size_t(buf_count)
 	bv.idx = 0
 	bv.off = 0
-	remaining = u64(size)
-	req_off = u64(off)
 	bufs := slice.from_ptr(&bv._buf[0], int(bv.count))
-	idx := 0
-	for run in runs {
-		run_bytes := u64(run.count) * fs.SECTOR_SIZE
-		if req_off >= run_bytes {
-			req_off -= run_bytes
-			continue
-		}
-
-		avail := min(run_bytes - req_off, remaining)
-		if avail == 0 {continue}
-
-		buf_entry := &bufs[idx]
-		buf_entry.size = c.size_t(avail)
-		buf_entry.flags = fuse3.FUSE_BUF_IS_FD | fuse3.FUSE_BUF_FD_SEEK
-		buf_entry.fd = fsys.disk_raw_fd
-		buf_entry.pos = posix.off_t(u64(run.sector) * fs.SECTOR_SIZE + req_off)
-		buf_entry.mem = nil
-		buf_entry.mem_size = 0
-		idx += 1
-		remaining -= avail
-		req_off = 0
-		if remaining == 0 {break}
+	for s, i in slices {
+		bufs[i].size = c.size_t(s.len)
+		bufs[i].flags = fuse3.FUSE_BUF_IS_FD | fuse3.FUSE_BUF_FD_SEEK
+		bufs[i].fd = fsys.disk_raw_fd
+		bufs[i].pos = posix.off_t(u64(s.sector) * fs.SECTOR_SIZE)
+		bufs[i].mem = nil
+		bufs[i].mem_size = 0
 	}
 
 	bufp^ = bv
@@ -417,7 +332,7 @@ fused_readlink :: proc "c" (path: cstring, buf: [^]c.char, size: c.size_t) -> c.
 	}
 
 	sector_buf: [fs.SECTOR_SIZE]u8
-	if !fs.sector_read(&fsys.vol, runs[0].sector, sector_buf[:]) {
+	if fs.sector_read(&fsys.vol, runs[0].sector, sector_buf[:]) != .None {
 		return fuse3.nix(.EIO)
 	}
 

@@ -78,6 +78,8 @@ fused_setxattr :: proc "c" (path: cstring, name: cstring, value: [^]c.char, size
 	if serr := fs.xattr_store(&fsys.vol, &entry, attrs[:]); serr != .None {
 		return fuse3.nix(.EIO)
 	}
+
+	reinit_free_sectors(fsys)
 	if !write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx) {
 		return fuse3.nix(.EIO)
 	}
@@ -184,6 +186,8 @@ fused_removexattr :: proc "c" (path: cstring, name: cstring) -> c.int {
 	if !removed {
 		return fuse3.nix(.ENODATA)
 	}
+
+	reinit_free_sectors(fsys)
 	if !write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx) {
 		return fuse3.nix(.EIO)
 	}

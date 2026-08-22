@@ -28,7 +28,7 @@ test_lfn_create_and_read :: proc(t: ^testing.T) {
 	copy(entry.file_name[:], long_name)
 	entry.file_name[15] = 0
 
-	testing.expect(t, fs.write_directory_entry_at(&vol, fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(rce.sector_start), 0, &entry), "write LFN entry")
+	testing.expect(t, fs.write_directory_entry_at(&vol, fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(rce.sector_start), 0, &entry) == .None, "write LFN entry")
 
 	dirs, dirs_err := fs.read_directory_entries(&vol, fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(vol.master.root_sector_index))
 	defer delete(dirs)
@@ -53,7 +53,7 @@ test_resolve_path_extended_dir :: proc(t: ^testing.T) {
 		}
 		name := fmt.tprintf("file_%02d", i)
 		copy(entry.file_name[:], name)
-		testing.expect(t, fs.write_directory_entry_at(&vol, fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(rce.sector_start), i, &entry), fmt.tprintf("write entry %d", i))
+		testing.expect(t, fs.write_directory_entry_at(&vol, fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(rce.sector_start), i, &entry) == .None, fmt.tprintf("write entry %d", i))
 	}
 
 	dirs, dirs_err := fs.read_directory_entries(&vol, fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(vol.master.root_sector_index))
@@ -82,14 +82,14 @@ test_lseek_hole_data :: proc(t: ^testing.T) {
 	// Write data to sector 0
 	buf0: [fs.SECTOR_SIZE]u8
 	for j in 0 ..< 4 {buf0[j] = 0xAA}
-	testing.expect(t, fs.sector_write(&vol, runs[0].sector, buf0[:]), "write sector 0")
+	testing.expect(t, fs.sector_write(&vol, runs[0].sector, buf0[:]) == .None, "write sector 0")
 
 	// Write data to sector 3
 	last_run := runs[len(runs)-1]
 	last_sec := fs.Sector(u64(last_run.sector) + u64(last_run.count) - 1)
 	buf3: [fs.SECTOR_SIZE]u8
 	for j in 0 ..< 4 {buf3[j] = 0xBB}
-	testing.expect(t, fs.sector_write(&vol, last_sec, buf3[:]), "write last sector")
+	testing.expect(t, fs.sector_write(&vol, last_sec, buf3[:]) == .None, "write last sector")
 
 	// Verify extents are correct
 	_, ext_err2 := fs.resolve_extents(&vol, fc, fo)
@@ -116,7 +116,7 @@ test_resolve_lfn_actual_resolution :: proc(t: ^testing.T) {
 	long_name := "this_is_a_very_long_filename_exceeding_16_bytes_abcdefghij"
 	sector_buf: [fs.SECTOR_SIZE]u8
 	copy(sector_buf[:], long_name)
-	testing.expect(t, fs.sector_write(&vol, lfn_runs[0].sector, sector_buf[:]), "write LFN data")
+	testing.expect(t, fs.sector_write(&vol, lfn_runs[0].sector, sector_buf[:]) == .None, "write LFN data")
 
 	// Find the ClusterEntry that was allocated for the LFN data
 	lfn_entry, find_err := fs.find_cluster_entry(&vol, lfn_c, lfn_o)
@@ -140,7 +140,7 @@ test_resolve_lfn_actual_resolution :: proc(t: ^testing.T) {
 	// Write the entry to the root directory at index 1 (index 0 is Kernel)
 	rce, rce_err := fs.find_cluster_entry(&vol, fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(vol.master.root_sector_index))
 	testing.expectf(t, rce_err == .None, "root cluster entry")
-	testing.expect(t, fs.write_directory_entry_at(&vol, fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(rce.sector_start), 1, &entry), "write LFN dir entry")
+	testing.expect(t, fs.write_directory_entry_at(&vol, fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(rce.sector_start), 1, &entry) == .None, "write LFN dir entry")
 
 	// Read directory entries back
 	dirs, dirs_err := fs.read_directory_entries(&vol, fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(vol.master.root_sector_index))

@@ -4,6 +4,7 @@ SRC_DIR       := src
 MOUNTER_DIR   := cmd/mount
 FORMAT_DIR    := cmd/format
 IMGDUMP_DIR   := cmd/dump
+CHECK_DIR     := cmd/check
 TEST_DIR      := tests
 BUILD_DIR     := $(or $(BUILD_DIR),build)
 LOGS_DIR      := $(or $(LOGS_DIR),logs)
@@ -30,9 +31,9 @@ TIMING_FLAG   := $(if $(SHOW_TIMINGS),-show-timings,)
 ODIN_VERSION  := $(shell $(ODIN) version 2>&1 | head -1)
 HARNESS       := PYTHONPATH=$(TEST_DIR) bash $(TEST_DIR)/run_in_namespace.sh
 
-.PHONY: all build format imgdump \
+.PHONY: all build format imgdump check-tool \
         create-image mount unmount \
-        test pytest check audit vet ci \
+        test pytest check audit vet ci doctor \
         smoke smoke-rw smoke-mt smoke-errors bench \
         clean help
 
@@ -42,6 +43,7 @@ all:
 	$(ODIN) build $(MOUNTER_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/$(BINARY) $(FULL_BUILD) $(FUSE_LINK) $(TIMING_FLAG)
 	$(ODIN) build $(FORMAT_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/format $(FULL_BUILD) $(TIMING_FLAG)
 	$(ODIN) build $(IMGDUMP_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/imgdump $(FULL_BUILD) $(TIMING_FLAG)
+	$(ODIN) build $(CHECK_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/check $(FULL_BUILD) $(TIMING_FLAG)
 	@./$(BUILD_DIR)/format --force --size=1M --output=fused.img
 	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS) $(TIMING_FLAG)
 
@@ -56,6 +58,10 @@ format:
 imgdump:
 	@mkdir -p $(BUILD_DIR)
 	$(ODIN) build $(IMGDUMP_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/imgdump $(BASE_DEBUG) $(TIMING_FLAG)
+
+check-tool:
+	@mkdir -p $(BUILD_DIR)
+	$(ODIN) build $(CHECK_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/check $(BASE_DEBUG) $(TIMING_FLAG)
 
 create-image: format
 	@$(BUILD_DIR)/format --force --size=1M --output=fused.img
@@ -77,15 +83,23 @@ check:
 	@$(ODIN) test $(TEST_DIR) $(COLLECTIONS) -define:ODIN_TEST_NAMES=tests.test_struct_sizes -o:none -debug 2>&1 | grep -E "^\[(INFO|ERROR|PASS|FAIL)" || true
 
 audit:
-	@odin run tools/audit/ -collection:src=src -file
+	@odin run tools/audit/ -collection:src=src -file -- $(AUDIT_FLAGS)
 
 vet:
-	@for d in cmd/format cmd/mount; do \
+	@for d in cmd/format cmd/mount cmd/dump cmd/check; do \
 		$(ODIN) build $$d $(COLLECTIONS) -warnings-as-errors $(VET_FLAGS) -out:/dev/null || exit 1; \
 	done
 
 ci: build create-image imgdump
 	@PYTHONPATH=$(TEST_DIR) python3 tests/ci.py
+
+doctor: build create-image check-tool
+	@echo "==> doctor: audit --strict + vet + free_sectors coherence"
+	@$(MAKE) --no-print-directory audit AUDIT_FLAGS=--strict
+	@$(MAKE) --no-print-directory vet check
+	@echo "==> doctor: image check (fused.img)"
+	@./$(BUILD_DIR)/check fused.img --log-level=warn || (echo "doctor: image check FAILED"; exit 1)
+	@echo "doctor: ok — image coherent"
 
 smoke: build create-image
 	@$(HARNESS) 60 uv run pytest tests/test_basic.py tests/test_errors.py \
@@ -128,6 +142,7 @@ help:
 	@echo "  build            debug fused binary       -> build/fused"
 	@echo "  format           image formatter          -> build/format"
 	@echo "  imgdump          image inspector          -> build/imgdump"
+	@echo "  check-tool       image check (fsck-like)  -> build/check"
 	@echo "  create-image     format 1MB test image    -> fused.img"
 	@echo "  mount            build + mount in foreground"
 	@echo "  clean            remove build/ logs/ mnt/ fused.img"
@@ -136,13 +151,14 @@ help:
 	@echo "  test             Odin unit tests"
 	@echo "  pytest           Python integration tests"
 	@echo "  check            struct size cross-check"
-	@echo "  audit            verify begin_op usage"
+	@echo "  audit            verify begin_op + attribute audits"
 	@echo "  smoke            basic FUSE ops (pytest, isolated ns)"
 	@echo "  smoke-rw         read-write + persistence (pytest, isolated ns)"
 	@echo "  smoke-errors     error path tests (pytest, isolated ns)"
 	@echo "  smoke-mt         multi-threaded stress (isolated ns)"
 	@echo "  bench            throughput benchmark (bench.py)"
 	@echo "  ci               full CI pipeline"
+	@echo "  doctor           audit + vet + image coherence check"
 	@echo ""
 	@echo "Vet:"
 	@echo "  vet              type-check + strict-style"

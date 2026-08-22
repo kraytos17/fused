@@ -40,7 +40,7 @@ make_v6_image :: proc(t: ^testing.T) -> (ok: bool) {
 // read_intent_log_sector reads the intent-log sector raw.
 read_intent_log_sector :: proc(vol: ^fs.Volume) -> (log: fs.Intent_Log, ok: bool) {
 	buf: [fs.SECTOR_SIZE]u8
-	if !fs.sector_read(vol, fs.intent_log_sector(&vol.master), buf[:]) {
+	if fs.sector_read(vol, fs.intent_log_sector(&vol.master), buf[:]) != .None {
 		return {}, false
 	}
 	return (^fs.Intent_Log)(&buf[0])^, true
@@ -136,7 +136,7 @@ test_v6_dirty_log_recover :: proc(t: ^testing.T) {
 	// CRC over the sector minus its final 4 bytes, exactly as the writer does.
 	dirty.crc = hash.crc32(dirty_buf[:fs.SECTOR_SIZE - 4])
 	(^fs.Intent_Log)(&dirty_buf[0])^ = dirty
-	testing.expect(t, fs.sector_write(&vol, fs.intent_log_sector(&master), dirty_buf[:]), "dirty log write")
+	testing.expect(t, fs.sector_write(&vol, fs.intent_log_sector(&master), dirty_buf[:]) == .None, "dirty log write")
 
 	// Reopen: validation + unified recovery should clear the log.
 	vol2, verr := fs.volume_open(V6_TEST_IMG)

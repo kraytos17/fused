@@ -5,6 +5,26 @@ package mounter
 import "core:mem"
 import "src:fs"
 
+@(private="file")
+Find_Slot_Ctx :: struct {
+	fsys:     ^FS,
+	depc:   int,
+	scan_buf: [fs.SECTOR_SIZE]u8,
+	dcluster: fs.Cluster,
+	dsec:     fs.Sector_Offset,
+	didx:     int,
+	found:    bool,
+}
+
+@(private="file")
+Check_Name_Ctx :: struct {
+	fsys:     ^FS,
+	depc:   int,
+	scan_buf: [fs.SECTOR_SIZE]u8,
+	name:     string,
+	found:    bool,
+}
+
 // write_entry_back writes a Directory_Entry back to its location on disk
 // (identified by cluster, offset, and entry index).
 write_entry_back :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, cluster: fs.Cluster, offset: fs.Sector_Offset, index: int) -> bool {
@@ -16,33 +36,30 @@ write_entry_back :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, cluster: fs.Clus
 find_free_slot_in_extent :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Sector_Offset) -> (dcluster: fs.Cluster, dsec: fs.Sector_Offset, didx: int, ok: bool) {
 	depc := dir_entries_per_buf(fsys.vol.master.features)
 	visit := proc(sec: fs.Sector, user: rawptr) -> bool {
-		s := (^struct { fsys: ^FS, depc: int, scan_buf: [fs.SECTOR_SIZE]u8, dcluster: fs.Cluster, dsec: fs.Sector_Offset, didx: int, found: bool })(user)
-		if !fs.sector_read(&s.fsys.vol, sec, s.scan_buf[:]) {
+		ctx := (^Find_Slot_Ctx)(user)
+		if fs.sector_read(&ctx.fsys.vol, sec, ctx.scan_buf[:]) != .None {
 			return false
 		}
-		for i in 0 ..< s.depc {
+		for i in 0 ..< ctx.depc {
 			zero_flags: fs.Dir_Flags
-			if get_dir_entry(s.scan_buf[:], i, s.fsys.vol.master.features).flags == zero_flags {
-				cluster := u64(sec) / s.fsys.vol.master.cluster_size
-				s.dcluster = fs.Cluster(cluster)
-				s.dsec = fs.Sector_Offset(u64(sec) - cluster * s.fsys.vol.master.cluster_size)
-				s.didx = i
-				s.found = true
+			if get_dir_entry(ctx.scan_buf[:], i, ctx.fsys.vol.master.features).flags == zero_flags {
+				cluster := u64(sec) / ctx.fsys.vol.master.cluster_size
+				ctx.dcluster = fs.Cluster(cluster)
+				ctx.dsec = fs.Sector_Offset(u64(sec) - cluster * ctx.fsys.vol.master.cluster_size)
+				ctx.didx = i
+				ctx.found = true
 				return false
 			}
 		}
 		return true
 	}
 
-	user := struct {
-		fsys: ^FS, depc: int, scan_buf: [fs.SECTOR_SIZE]u8,
-		dcluster: fs.Cluster, dsec: fs.Sector_Offset, didx: int, found: bool,
-	}{fsys = fsys, depc = depc}
-	fs.walk_chain_sectors(&fsys.vol, dir_cluster, dir_offset, visit, &user)
-	if !user.found {
+	ctx := Find_Slot_Ctx{fsys = fsys, depc = depc}
+	fs.walk_chain_sectors(&fsys.vol, dir_cluster, dir_offset, visit, &ctx)
+	if !ctx.found {
 		return {}, 0, 0, false
 	}
-	return user.dcluster, user.dsec, user.didx, true
+	return ctx.dcluster, ctx.dsec, ctx.didx, true
 }
 
 // find_or_extend_dir finds a free slot in a directory, extending the chain if
@@ -69,6 +86,7 @@ find_or_extend_dir :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Se
 		return {}, {}, 0, false
 	}
 
+	fsys.free_sectors -= 1
 	dir_runs, dir_err := fs.resolve_extents(&fsys.vol, dir_cluster, dir_offset)
 	defer delete(dir_runs)
 	if dir_err != .None {
@@ -79,7 +97,7 @@ find_or_extend_dir :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Se
 	last_run := dir_runs[len(dir_runs) - 1]
 	last_sec := fs.Sector(u64(last_run.sector) + u64(last_run.count) - 1)
 	ext_buf: [fs.SECTOR_SIZE]u8
-	if !fs.sector_read(&fsys.vol, last_sec, ext_buf[:]) {
+	if fs.sector_read(&fsys.vol, last_sec, ext_buf[:]) != .None {
 		return {}, {}, 0, false
 	}
 
@@ -101,15 +119,15 @@ find_or_extend_dir :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Se
 check_name_exists :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Sector_Offset, name: string) -> bool {
 	depc := dir_entries_per_buf(fsys.vol.master.features)
 	visit := proc(sec: fs.Sector, user: rawptr) -> bool {
-		s := (^struct { fsys: ^FS, depc: int, scan_buf: [fs.SECTOR_SIZE]u8, name: string, found: bool })(user)
-		if !fs.sector_read(&s.fsys.vol, sec, s.scan_buf[:]) {
+		ctx := (^Check_Name_Ctx)(user)
+		if fs.sector_read(&ctx.fsys.vol, sec, ctx.scan_buf[:]) != .None {
 			return false
 		}
-		for i in 0 ..< s.depc {
-			e := get_dir_entry(s.scan_buf[:], i, s.fsys.vol.master.features)
+		for i in 0 ..< ctx.depc {
+			e := get_dir_entry(ctx.scan_buf[:], i, ctx.fsys.vol.master.features)
 			if .Exists in e.flags {
-				if fs.entry_short_name(e) == s.name {
-					s.found = true
+				if fs.entry_short_name(e) == ctx.name {
+					ctx.found = true
 					return false
 				}
 			}
@@ -117,11 +135,9 @@ check_name_exists :: proc(fsys: ^FS, dir_cluster: fs.Cluster, dir_offset: fs.Sec
 		return true
 	}
 
-	user := struct {
-		fsys: ^FS, depc: int, scan_buf: [fs.SECTOR_SIZE]u8, name: string, found: bool,
-	}{fsys = fsys, depc = depc, name = name}
-	fs.walk_chain_sectors(&fsys.vol, dir_cluster, dir_offset, visit, &user)
-	return user.found
+	ctx := Check_Name_Ctx{fsys = fsys, depc = depc, name = name}
+	fs.walk_chain_sectors(&fsys.vol, dir_cluster, dir_offset, visit, &ctx)
+	return ctx.found
 }
 
 // write_entry_with_lfn writes a directory entry and sets its timestamps,
@@ -140,12 +156,15 @@ set_entry_name :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> b
 			if derr := fs.deallocate_sectors(&fsys.vol,fs.Cluster(ptr.cluster), fs.Sector_Offset(ptr.sector)); derr != .None {
 				return false
 			}
+			reinit_free_sectors(fsys)
 		}
 		entry.flags -= {.LFN}
 	}
 	if len(name) > 16 {
 		ptr, pok := fs.lfn_bump_write(&fsys.vol, &fsys.vol.lfn_bump, name)
 		if !pok { return false }
+
+		reinit_free_sectors(fsys)
 		(^fs.LFN_Pointer)(&entry.file_name[0])^ = ptr
 		entry.flags += {.LFN}
 	} else {

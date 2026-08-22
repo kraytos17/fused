@@ -71,7 +71,7 @@ test_fs_core :: proc(t: ^testing.T) {
 		n := min(int(run.count) * fs.SECTOR_SIZE, int(total) - cursor)
 		if n <= 0 {break}
 
-		testing.expect(t, fs.sector_read(&vol, run.sector, sector_buf[:n]), "sector_read")
+		testing.expect(t, fs.sector_read(&vol, run.sector, sector_buf[:n]) == .None, "sector_read")
 		copy(data[cursor:], sector_buf[:n])
 		cursor += n
 	}
@@ -187,7 +187,7 @@ test_sector_read_write_bulk :: proc(t: ^testing.T) {
 	}
 
 	write_ok := fs.sector_write_bulk(&vol, abs_sector, modified)
-	testing.expect(t, write_ok, "sector_write_bulk")
+	testing.expect(t, write_ok == .None, "sector_write_bulk")
 
 	readback := make([]u8, fs.SECTOR_SIZE)
 	defer delete(readback)

@@ -73,14 +73,14 @@ resolve_lfn :: proc(vol: ^Volume, entry: ^Directory_Entry, allocator := context.
 			return "", false
 		}
 
-		run_sector := Sector(u64(current_cluster) * vol.master.cluster_size + u64(current_entry.sector_start))
+		run_sector := sector_for(current_cluster, Sector_Offset(current_entry.sector_start), vol.master.cluster_size)
 		bytes_to_read := min(u64(current_entry.allocation_size) * SECTOR_SIZE, u64(ptr.size) - u64(len(data)))
 		if bytes_to_read == 0 {
 			break
 		}
 
 		n_read := min(bytes_to_read, SECTOR_SIZE - byte_offset)
-		if !sector_read(vol, run_sector, sector_buf[:]) {
+		if sector_read(vol, run_sector, sector_buf[:]) != .None {
 			return "", false
 		}
 
@@ -104,11 +104,11 @@ resolve_lfn :: proc(vol: ^Volume, entry: ^Directory_Entry, allocator := context.
 }
 
 // write_directory_entry_at writes a single Directory_Entry back to disk.
-write_directory_entry_at :: proc(vol: ^Volume, cluster: Cluster, sector_offset: Sector_Offset, entry_index: int, entry: ^Directory_Entry) -> bool {
+write_directory_entry_at :: proc(vol: ^Volume, cluster: Cluster, sector_offset: Sector_Offset, entry_index: int, entry: ^Directory_Entry) -> FS_Error {
 	buf: [SECTOR_SIZE]u8
-	table_sector := Sector(u64(cluster) * vol.master.cluster_size + u64(sector_offset))
-	if !sector_read(vol, table_sector, buf[:]) {
-		return false
+	table_sector := sector_for(cluster, sector_offset, vol.master.cluster_size)
+	if err := sector_read(vol, table_sector, buf[:]); err != .None {
+		return err
 	}
 
 	features := vol.master.features
@@ -150,7 +150,7 @@ read_entry_at_index :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offse
 	}
 
 	buf: [SECTOR_SIZE]u8
-	if !sector_read(vol, sec, buf[:]) {
+	if sector_read(vol, sec, buf[:]) != .None {
 		return {}, .Sector_Read_Error
 	}
 
@@ -172,7 +172,7 @@ write_entry_at_index :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offs
 	}
 
 	buf: [SECTOR_SIZE]u8
-	if !sector_read(vol, sec, buf[:]) {
+	if sector_read(vol, sec, buf[:]) != .None {
 		return .Sector_Read_Error
 	}
 
@@ -180,7 +180,7 @@ write_entry_at_index :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offs
 	des := int(dir_entry_size(features))
 	dst := (^Directory_Entry)(mem.ptr_offset(&buf[0], within * des))
 	dst^ = entry^
-	if !sector_write(vol, sec, buf[:]) {
+	if sector_write(vol, sec, buf[:]) != .None {
 		return .Sector_Write_Error
 	}
 	return .None

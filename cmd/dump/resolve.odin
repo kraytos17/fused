@@ -32,7 +32,7 @@ resolve_symlink_target :: proc(vol: ^fs.Volume, entry: ^fs.Directory_Entry, allo
 
 			sec := fs.Sector(u64(run.sector) + si)
 			sec_buf: [fs.SECTOR_SIZE]u8
-			if !fs.sector_read(vol, sec, sec_buf[:]) { return "" }
+			if fs.sector_read(vol, sec, sec_buf[:]) != .None { return "" }
 
 			n := min(remaining, fs.SECTOR_SIZE)
 			strings.write_string(&sb, string(sec_buf[:n]))

@@ -6,15 +6,21 @@ package fs
 import "core:os"
 
 // sector_read reads one 512-byte sector from disk at the given sector number
-sector_read :: proc(vol: ^Volume, sector: Sector, buf: []u8) -> (ok: bool) {
+sector_read :: proc(vol: ^Volume, sector: Sector, buf: []u8) -> FS_Error {
 	n, err := os.read_at(vol.disk, buf, i64(u64(sector) * SECTOR_SIZE))
-	return err == nil && n == len(buf)
+	if err != nil || n != len(buf) {
+		return .Sector_Read_Error
+	}
+	return .None
 }
 
 // sector_write writes one 512-byte sector to disk
-sector_write :: proc(vol: ^Volume, sector: Sector, buf: []u8) -> (ok: bool) {
+sector_write :: proc(vol: ^Volume, sector: Sector, buf: []u8) -> FS_Error {
 	n, err := os.write_at(vol.disk, buf, i64(u64(sector) * SECTOR_SIZE))
-	return err == nil && n == len(buf)
+	if err != nil || n != len(buf) {
+		return .Sector_Write_Error
+	}
+	return .None
 }
 
 // sector_read_bulk reads multiple sectors into a byte buffer
@@ -24,9 +30,17 @@ sector_read_bulk :: proc(vol: ^Volume, start_sector: Sector, buf: []u8) -> (n: i
 }
 
 // sector_write_bulk writes multiple sectors from a byte buffer
-sector_write_bulk :: proc(vol: ^Volume, start_sector: Sector, buf: []u8) -> (ok: bool) {
+sector_write_bulk :: proc(vol: ^Volume, start_sector: Sector, buf: []u8) -> FS_Error {
 	_, err := os.write_at(vol.disk, buf, i64(u64(start_sector) * SECTOR_SIZE))
-	return err == nil
+	if err != nil {
+		return .Sector_Write_Error
+	}
+	return .None
+}
+
+// sector_for returns the absolute sector for a (cluster, offset) pair.
+sector_for :: proc(cluster: Cluster, offset: Sector_Offset, cluster_size: u64) -> Sector {
+	return Sector(u64(cluster) * cluster_size + u64(offset))
 }
 
 // read_master_record reads and returns the Master_Record from sector 0

@@ -25,6 +25,21 @@ main :: proc() {
 
 	f: Flags
 	flags.parse_or_exit(&f, os.args, flags.Parsing_Style.Unix)
+	if len(f.overflow) > 0 {
+		for arg in f.overflow {
+			if arg == "--hex" {
+				log.errorf("--hex requires a value (e.g. --hex=/Kernel)")
+				os.exit(1)
+			}
+		}
+		log.errorf("unknown args: %v", f.overflow)
+		os.exit(1)
+	}
+	if f.json && f.hex_path != "" {
+		log.errorf("--json and --hex are mutually exclusive")
+		os.exit(1)
+	}
+
 	log_level := log.Level.Debug
 	switch f.log_level {
 	case "debug": log_level = log.Level.Debug
@@ -34,6 +49,7 @@ main :: proc() {
 	case "":
 	case:
 		log.errorf("unknown log level: %s (use debug|info|warn|error)", f.log_level)
+		os.exit(1)
 	}
 
 	context.logger = log.create_file_logger(os.stderr, log_level, log.Default_File_Logger_Opts)

@@ -39,13 +39,20 @@ src/
     path.odin                 Unified path resolution
     journal.odin                Intent log + journal v2 WAL
     xattr.odin                  Extended-attribute blob read/write
+    format.odin                 Image construction (format_image, shared with tests)
     validate.odin                 MasterRecord validation
     display.odin                    Human-readable flag formatters
   mounter/            FUSE callbacks, package mounter
     core.odin            FS struct, begin_op/end_op, resolve_path
     dir.odin               Directory slot helpers
     read.odin                 fused_getattr, fused_readdir, fused_read
-    write.odin                  fused_write, fused_truncate, fused_copy_file_range
+    write.odin                  fused_write, fused_write_buf, fused_truncate,
+                                fused_fallocate, fused_copy_file_range
+                                (single-pass RunCursor)
+    write_data.odin               shared range engines (write_range_to_runs /
+                                read_range_from_runs) + Buf/Read sinks
+                                (Mem/Bufvec/Zero) + ensure_chain_covers +
+                                RunCursor + collect_read_slices
     create.odin                    fused_create, fused_mkdir, fused_symlink, fused_rename
     xattr.odin                     fused_setxattr, fused_getxattr, fused_listxattr, fused_removexattr
     lock.odin                      fused_lock (POSIX), fused_flock (BSD)
@@ -237,15 +244,18 @@ in `src/fs/structure.odin` carries a compile-time
   LRU path-resolution cache (128 entries) — no filesystem-size-scaled
   arrays.
 
+- **I/O error handling.** Every `src/fs` I/O procedure returns `FS_Error`
+  (`Sector_Read_Error`/`Sector_Write_Error` etc.) and propagates via
+  `or_return`; the FUSE boundary maps it once via `fs_error_to_errno`.
+
 - **Extent cache.** File-data extent chains are cached in-process
   (`FS.extents`), so repeated reads/writes skip the per-cluster metadata
   walk. Directory chains are never cached (they change under mutation);
   invalidation is single-key at extend branches. `statfs` uses a cached
-  free-sector count instead of scanning every cluster. See
+  free-sector count kept coherent via delta updates on
+  `allocate`/`truncate`/`remove`/`xattr` (not a stale scan). See
   [`docs/PERF.md`](docs/PERF.md).
 
 ## Remaining work
 
 2 of 43 `fuse_operations` callbacks remain unwired: `bmap`, `poll`.
-Planned refactors (journal-backend unification, an optional `vfsops` domain
-layer) are recorded in [`docs/DESIGN.md`](docs/DESIGN.md).

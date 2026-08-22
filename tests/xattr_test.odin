@@ -29,7 +29,7 @@ test_xattr_roundtrip :: proc(t: ^testing.T) {
 
 	// Persist the entry pointer via write_directory_entry_at (as the mounter does).
 	testing.expect_value(t, entry.xattr_cluster != 0, true)
-	testing.expect(t, fs.write_directory_entry_at(&vol, res.cluster, res.offset, res.entry_index, &entry), "persist entry")
+	testing.expect(t, fs.write_directory_entry_at(&vol, res.cluster, res.offset, res.entry_index, &entry) == .None, "persist entry")
 
 	// Reload a fresh entry to simulate a fresh resolve.
 	entry2, _ := fs.resolve_path(&vol, "/Kernel")
@@ -63,7 +63,7 @@ test_xattr_roundtrip :: proc(t: ^testing.T) {
 	removed, rerr := fs.xattr_remove(&vol, &entry3, "user.size")
 	testing.expect(t, removed, "removed user.size")
 	testing.expect_value(t, rerr, fs.FS_Error.None)
-	testing.expect(t, fs.write_directory_entry_at(&vol, res.cluster, res.offset, res.entry_index, &entry3), "persist after remove")
+	testing.expect(t, fs.write_directory_entry_at(&vol, res.cluster, res.offset, res.entry_index, &entry3) == .None, "persist after remove")
 
 	_, found4 := fs.xattr_get(&vol, &entry3, "user.size")
 	testing.expect(t, !found4, "user.size gone after remove")
@@ -99,7 +99,7 @@ test_xattr_large_value :: proc(t: ^testing.T) {
 	attrs := []fs.XAttr{{name = "user.big", value = big}}
 	serr := fs.xattr_store(&vol, &entry, attrs)
 	testing.expect_value(t, serr, fs.FS_Error.None)
-	testing.expect(t, fs.write_directory_entry_at(&vol, res.cluster, res.offset, res.entry_index, &entry), "persist entry")
+	testing.expect(t, fs.write_directory_entry_at(&vol, res.cluster, res.offset, res.entry_index, &entry) == .None, "persist entry")
 
 	val, found := fs.xattr_get(&vol, &entry, "user.big")
 	defer delete(val)
@@ -114,5 +114,5 @@ test_xattr_large_value :: proc(t: ^testing.T) {
 
 	cerr := fs.xattr_clear(&vol, &entry)
 	testing.expect_value(t, cerr, fs.FS_Error.None)
-	testing.expect(t, fs.write_directory_entry_at(&vol, res.cluster, res.offset, res.entry_index, &entry), "persist clear")
+	testing.expect(t, fs.write_directory_entry_at(&vol, res.cluster, res.offset, res.entry_index, &entry) == .None, "persist clear")
 }

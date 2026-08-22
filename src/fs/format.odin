@@ -22,21 +22,50 @@ Format_Params :: struct {
 	demo_data:    []u8,
 }
 
+// Format_Geometry holds the derived layout numbers for an image size.
+Format_Geometry :: struct {
+	total_sectors:     u64,
+	total_clusters:    u64,
+	cm_sectors:        u64,
+	journal_sectors:   u64,
+	metadata_sectors:  u64,
+	reserved_clusters: u64,
+	root_cluster:      u64,
+}
+
+format_geometry :: proc(size, cluster_size: u64) -> Format_Geometry {
+	total_sectors := size / SECTOR_SIZE
+	total_clusters := total_sectors / cluster_size
+	cme_per_sector := u64(CLUSTER_MAP_ENTRIES_PER_SECTOR)
+	cm_sectors := (total_clusters + cme_per_sector - 1) / cme_per_sector
+	journal_sectors := max(64, total_clusters / 10)
+	metadata_sectors := 1 + cm_sectors + journal_sectors
+	reserved_clusters := (metadata_sectors + cluster_size - 1) / cluster_size
+	return {
+		total_sectors     = total_sectors,
+		total_clusters    = total_clusters,
+		cm_sectors        = cm_sectors,
+		journal_sectors   = journal_sectors,
+		metadata_sectors  = metadata_sectors,
+		reserved_clusters = reserved_clusters,
+		root_cluster      = reserved_clusters,
+	}
+}
+
 // format_image formats the open (empty) file fd as a fused image. The file
 // is truncated to size and written from sector 0.
+@(optimization_mode="favor_size")
 format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 	if terr := os.truncate(fd, i64(p.size)); terr != nil {
 		return .Sector_Write_Error
 	}
 
-	total_sectors := p.size / SECTOR_SIZE
-	total_clusters := total_sectors / p.cluster_size
-	cme_per_sector := u64(CLUSTER_MAP_ENTRIES_PER_SECTOR)
-	cm_sectors := (total_clusters + cme_per_sector - 1) / cme_per_sector
-	journal_sectors := max(64, total_clusters / 10)
-	metadata_sectors := 1 + cm_sectors + journal_sectors
-	reserved_clusters := (metadata_sectors + p.cluster_size - 1) / p.cluster_size
-	root_cluster := reserved_clusters
+	g := format_geometry(p.size, p.cluster_size)
+	total_clusters := g.total_clusters
+	cm_sectors := g.cm_sectors
+	journal_sectors := g.journal_sectors
+	reserved_clusters := g.reserved_clusters
+	root_cluster := g.root_cluster
 
 	master: Master_Record
 	master.sig = FUSED_SIG
@@ -58,7 +87,7 @@ format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 	{
 		master_buf: [SECTOR_SIZE]u8
 		(^Master_Record)(&master_buf[0])^ = master
-		if !sector_write(&vol, 0, master_buf[:]) {
+		if sector_write(&vol, 0, master_buf[:]) != .None {
 			return .Sector_Write_Error
 		}
 	}
@@ -79,7 +108,7 @@ format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 				entries[ei] = {flags = {.Allocated}}
 			}
 		}
-		if !sector_write(&vol, Sector(1 + sec_idx), cm_buf[:]) {
+		if sector_write(&vol, Sector(1 + sec_idx), cm_buf[:]) != .None {
 			return .Sector_Write_Error
 		}
 	}
@@ -87,7 +116,7 @@ format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 	// Zero the journal region (right after the CME table).
 	zero: [SECTOR_SIZE]u8
 	for i: u64; i < journal_sectors; i += 1 {
-		if !sector_write(&vol, Sector(1 + cm_sectors + i), zero[:]) {
+		if sector_write(&vol, Sector(1 + cm_sectors + i), zero[:]) != .None {
 			return .Sector_Write_Error
 		}
 	}
@@ -114,7 +143,7 @@ format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 			sector_start    = 2,
 		}
 	}
-	if !sector_write(&vol, Sector(root_sector), ce_buf[:]) {
+	if sector_write(&vol, Sector(root_sector), ce_buf[:]) != .None {
 		return .Sector_Write_Error
 	}
 
@@ -136,13 +165,13 @@ format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 		copy(entry.file_name[:], "Kernel")
 		(^Directory_Entry)(&dir_buf[0])^ = entry
 	}
-	if !sector_write(&vol, Sector(root_sector + 1), dir_buf[:]) {
+	if sector_write(&vol, Sector(root_sector + 1), dir_buf[:]) != .None {
 		return .Sector_Write_Error
 	}
 	if len(p.demo_data) > 0 {
 		content_buf: [SECTOR_SIZE]u8
 		copy(content_buf[:], p.demo_data)
-		if !sector_write(&vol, Sector(root_sector + 2), content_buf[:]) {
+		if sector_write(&vol, Sector(root_sector + 2), content_buf[:]) != .None {
 			return .Sector_Write_Error
 		}
 	}

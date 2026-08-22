@@ -13,7 +13,7 @@ read_cluster_map_entry :: proc(vol: ^Volume, cluster: Cluster) -> (entry: Cluste
 	entry_sector := Sector(vol.master.cluster_map_offset + u64(cluster) / CLUSTER_MAP_ENTRIES_PER_SECTOR)
 	entry_index  := u64(cluster) % CLUSTER_MAP_ENTRIES_PER_SECTOR
 	buf: [SECTOR_SIZE]u8
-	if !sector_read(vol, entry_sector, buf[:]) {
+	if sector_read(vol, entry_sector, buf[:]) != .None {
 		return {}, .Sector_Read_Error
 	}
 	entries := (^[CLUSTER_MAP_ENTRIES_PER_SECTOR]Cluster_Map_Entry)(&buf[0])
@@ -32,9 +32,9 @@ read_cluster_entry_table :: proc(vol: ^Volume, cluster: Cluster, table: ^[CLUSTE
 		return .Entry_Not_Found
 	}
 
-	table_sector := Sector(u64(cluster) * vol.master.cluster_size + u64(cme.sector_index))
+	table_sector := sector_for(cluster, Sector_Offset(cme.sector_index), vol.master.cluster_size)
 	buf: [SECTOR_SIZE]u8
-	if !sector_read(vol, table_sector, buf[:]) {
+	if sector_read(vol, table_sector, buf[:]) != .None {
 		return .Sector_Read_Error
 	}
 
@@ -101,13 +101,13 @@ write_cluster_map_entry :: proc(vol: ^Volume, cluster: Cluster, entry: ^Cluster_
 	entry_sector := Sector(vol.master.cluster_map_offset + u64(cluster) / CLUSTER_MAP_ENTRIES_PER_SECTOR)
 	entry_index  := u64(cluster) % CLUSTER_MAP_ENTRIES_PER_SECTOR
 	buf: [SECTOR_SIZE]u8
-	if !sector_read(vol, entry_sector, buf[:]) {
+	if sector_read(vol, entry_sector, buf[:]) != .None {
 		return .Sector_Read_Error
 	}
 
 	entries := (^[CLUSTER_MAP_ENTRIES_PER_SECTOR]Cluster_Map_Entry)(&buf[0])
 	entries[entry_index] = entry^
-	if !sector_write(vol, entry_sector, buf[:]) {
+	if sector_write(vol, entry_sector, buf[:]) != .None {
 		return .Sector_Write_Error
 	}
 	alloc_cache_invalidate(&vol.cache, u64(cluster))
@@ -123,13 +123,13 @@ write_cluster_entry_table :: proc(vol: ^Volume, cluster: Cluster, table: ^[CLUST
 		return .Entry_Not_Found
 	}
 
-	table_sector := Sector(u64(cluster) * vol.master.cluster_size + u64(cme.sector_index))
+	table_sector := sector_for(cluster, Sector_Offset(cme.sector_index), vol.master.cluster_size)
 	buf: [SECTOR_SIZE]u8
 	dst := (^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry)(&buf[0])
 	#unroll for i in 0 ..< CLUSTER_ENTRIES_PER_SECTOR {
 		dst[i] = table[i]
 	}
-	if !sector_write(vol, table_sector, buf[:]) {
+	if sector_write(vol, table_sector, buf[:]) != .None {
 		return .Sector_Write_Error
 	}
 	alloc_cache_invalidate(&vol.cache, u64(cluster))
@@ -144,6 +144,67 @@ write_cluster_entry_at :: proc(vol: ^Volume, cluster: Cluster, entry_index: int,
 	read_cluster_entry_table(vol, cluster, &table) or_return
 	table[entry_index] = entry^
 	return write_cluster_entry_table(vol, cluster, &table)
+}
+
+// truncate_chain_at shrinks an extent chain so that it covers exactly
+// new_sectors. It walks the CE chain from (cluster, offset), locates the
+// entry straddling new_sectors, truncates it (or deallocates it when
+// new_sectors falls on a boundary), and deallocates the tail. Returns
+// .None even when the chain is already shorter (no-op).
+@(cold)
+_truncate_io_err :: proc() -> FS_Error { return .Sector_Write_Error }
+
+truncate_chain_at :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset, new_sectors: u64) -> FS_Error {
+	cntr: u64
+	current_c := cluster
+	current_o := offset
+	for {
+		ce_idx: int
+		ce, ce_err := find_cluster_entry(vol, current_c, current_o, nil, &ce_idx)
+		if ce_err != .None {
+			break
+		}
+
+		before := cntr
+		cntr += u64(ce.allocation_size)
+		if cntr > new_sectors {
+			needed := new_sectors - before
+			if needed == 0 {
+				nc := Cluster(ce.next_cluster)
+				no := Sector_Offset(ce.next_sector_index)
+				if derr := deallocate_sectors(vol, current_c, current_o); derr != .None {
+					return derr
+				}
+				if nc != 0 {
+					if derr := deallocate_sectors(vol, nc, no); derr != .None {
+						return _truncate_io_err()
+					}
+				}
+			} else {
+				if ce.next_cluster != 0 {
+					nc := Cluster(ce.next_cluster)
+					no := Sector_Offset(ce.next_sector_index)
+					if derr := deallocate_sectors(vol, nc, no); derr != .None {
+						return _truncate_io_err()
+					}
+					ce.next_cluster = 0
+					ce.next_sector_index = 0
+				}
+
+				ce.allocation_size = u16(needed)
+				if write_cluster_entry_at(vol, current_c, ce_idx, &ce) != .None {
+					return _truncate_io_err()
+				}
+			}
+			break
+		}
+		if ce.next_cluster == 0 {
+			break
+		}
+		current_c = Cluster(ce.next_cluster)
+		current_o = Sector_Offset(ce.next_sector_index)
+	}
+	return .None
 }
 
 // Chain_Cursor holds the current position while walking a linked chain of

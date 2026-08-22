@@ -111,9 +111,9 @@ make_file_handle :: proc(cluster: Cluster, offset: Sector_Offset, idx: int) -> F
 	}
 
 	buf: [SECTOR_SIZE]u8
-	if !sector_read(vol, s.sector, buf[:]) { return {}, false }
+	if sector_read(vol, s.sector, buf[:]) != .None { return {}, false }
 	copy(buf[s.next_byte:], transmute([]u8)name)
-	if !sector_write(vol, s.sector, buf[:]) { return {}, false }
+	if sector_write(vol, s.sector, buf[:]) != .None { return {}, false }
 
 	ptr = {
 		cluster = u64(s.cluster),

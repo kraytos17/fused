@@ -29,10 +29,10 @@ test_write_fresh :: proc(t: ^testing.T) {
 	abs_sector := runs[0].sector
 	sector_buf: [fs.SECTOR_SIZE]u8
 	copy(sector_buf[:], HELLO[:])
-	testing.expect(t, fs.sector_write(&vol, abs_sector, sector_buf[:]), "sector_write")
+	testing.expect(t, fs.sector_write(&vol, abs_sector, sector_buf[:]) == .None, "sector_write")
 
 	read_buf: [fs.SECTOR_SIZE]u8
-	testing.expect(t, fs.sector_read(&vol, abs_sector, read_buf[:]), "sector_read")
+	testing.expect(t, fs.sector_read(&vol, abs_sector, read_buf[:]) == .None, "sector_read")
 	for i in 0 ..< len(HELLO) {
 		testing.expect(t, read_buf[i] == HELLO[i], "byte match")
 	}
@@ -55,7 +55,7 @@ test_write_append :: proc(t: ^testing.T) {
 
 	sector_buf: [fs.SECTOR_SIZE]u8
 	copy(sector_buf[:], HELLO[:])
-	testing.expect(t, fs.sector_write(&vol, abs_sector, sector_buf[:]), "first write")
+	testing.expect(t, fs.sector_write(&vol, abs_sector, sector_buf[:]) == .None, "first write")
 
 	fc2, fo2, aerr2 := fs.allocate_sectors(&vol, fc, fo, 2, .File_Content)
 	testing.expect_value(t, aerr2, fs.FS_Error.None)
@@ -72,12 +72,12 @@ test_write_append :: proc(t: ^testing.T) {
 	abs_sector2 := runs2[1].sector
 	sector_buf2: [fs.SECTOR_SIZE]u8
 	copy(sector_buf2[:], WORLD[:])
-	testing.expect(t, fs.sector_write(&vol, abs_sector2, sector_buf2[:]), "append write")
+	testing.expect(t, fs.sector_write(&vol, abs_sector2, sector_buf2[:]) == .None, "append write")
 
 	read1: [fs.SECTOR_SIZE]u8
 	read2: [fs.SECTOR_SIZE]u8
-	testing.expect(t, fs.sector_read(&vol, runs2[0].sector, read1[:]), "read sector 0")
-	testing.expect(t, fs.sector_read(&vol, runs2[1].sector, read2[:]), "read sector 1")
+	testing.expect(t, fs.sector_read(&vol, runs2[0].sector, read1[:]) == .None, "read sector 0")
+	testing.expect(t, fs.sector_read(&vol, runs2[1].sector, read2[:]) == .None, "read sector 1")
 	for i in 0 ..< len(HELLO) {
 		testing.expect(t, read1[i] == HELLO[i], "sector0 content")
 	}
@@ -107,7 +107,7 @@ test_directory_entry_persistence :: proc(t: ^testing.T) {
 
 	dir_buf: [fs.SECTOR_SIZE]u8
 	table_sector := fs.Sector(u64(root_cluster) * vol.master.cluster_size + u64(dir_sector))
-	testing.expect(t, fs.sector_read(&vol, table_sector, dir_buf[:]), "read dir sector")
+	testing.expect(t, fs.sector_read(&vol, table_sector, dir_buf[:]) == .None, "read dir sector")
 	entries := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(dir_buf[:]))
 
 	free_idx := -1
@@ -179,7 +179,7 @@ test_write_read_cycle :: proc(t: ^testing.T) {
 			for j in 0 ..< 4 {
 				sector_buf[j] = pattern[(sector_idx + j) % 4]
 			}
-			testing.expect(t, fs.sector_write(&vol, fs.Sector(u64(run.sector) + u64(si)), sector_buf[:]), "sector write")
+			testing.expect(t, fs.sector_write(&vol, fs.Sector(u64(run.sector) + u64(si)), sector_buf[:]) == .None, "sector write")
 			sector_idx += 1
 		}
 	}
@@ -190,7 +190,7 @@ test_write_read_cycle :: proc(t: ^testing.T) {
 		n := int(run.count)
 		for si in 0 ..< n {
 			read_buf: [fs.SECTOR_SIZE]u8
-			testing.expect(t, fs.sector_read(&vol, fs.Sector(u64(run.sector) + u64(si)), read_buf[:]), "sector read")
+			testing.expect(t, fs.sector_read(&vol, fs.Sector(u64(run.sector) + u64(si)), read_buf[:]) == .None, "sector read")
 			for j in 0 ..< 4 {
 				testing.expect(t, read_buf[j] == pattern[(sector_idx + j) % 4], "pattern byte")
 			}
@@ -221,11 +221,11 @@ test_sector_integrity :: proc(t: ^testing.T) {
 	for i in 0 ..< fs.SECTOR_SIZE {
 		ramp_buf[i] = u8(i & 0xFF)
 	}
-	testing.expect(t, fs.sector_write(&vol, sector, ramp_buf[:]), "write ramp")
+	testing.expect(t, fs.sector_write(&vol, sector, ramp_buf[:]) == .None, "write ramp")
 
 	// Read back and verify.
 	read_buf: [fs.SECTOR_SIZE]u8
-	testing.expect(t, fs.sector_read(&vol, sector, read_buf[:]), "read back")
+	testing.expect(t, fs.sector_read(&vol, sector, read_buf[:]) == .None, "read back")
 	for i in 0 ..< fs.SECTOR_SIZE {
 		if read_buf[i] != u8(i & 0xFF) {
 			testing.expect(t, false, "byte mismatch in ramp pattern")
@@ -251,10 +251,10 @@ test_write_zero_bytes :: proc(t: ^testing.T) {
 	// Write a known pattern first.
 	pat_buf: [fs.SECTOR_SIZE]u8
 	for i in 0 ..< fs.SECTOR_SIZE {pat_buf[i] = 0xAA}
-	testing.expect(t, fs.sector_write(&vol, sector, pat_buf[:]), "write pattern")
+	testing.expect(t, fs.sector_write(&vol, sector, pat_buf[:]) == .None, "write pattern")
 
 	// Write 0 bytes — should not change sector content.
-	testing.expect(t, fs.sector_write(&vol, sector, pat_buf[:0]), "zero-byte write")
+	testing.expect(t, fs.sector_write(&vol, sector, pat_buf[:0]) == .None, "zero-byte write")
 
 	read_buf: [fs.SECTOR_SIZE]u8
 	fs.sector_read(&vol, sector, read_buf[:])
@@ -279,13 +279,13 @@ test_write_overwrite :: proc(t: ^testing.T) {
 	// Write 0xAA... to sector.
 	sector_buf: [fs.SECTOR_SIZE]u8
 	for i in 0 ..< fs.SECTOR_SIZE {sector_buf[i] = 0xAA}
-	testing.expect(t, fs.sector_write(&vol, sector, sector_buf[:]), "write 0xAA")
+	testing.expect(t, fs.sector_write(&vol, sector, sector_buf[:]) == .None, "write 0xAA")
 
 	// Overwrite first 10 bytes with 0xBB.
 	sector_buf2: [fs.SECTOR_SIZE]u8
 	for i in 0 ..< 10 {sector_buf2[i] = 0xBB}
 	copy(sector_buf2[10:], sector_buf[10:])
-	testing.expect(t, fs.sector_write(&vol, sector, sector_buf2[:]), "overwrite first 10")
+	testing.expect(t, fs.sector_write(&vol, sector, sector_buf2[:]) == .None, "overwrite first 10")
 
 	// Read back and verify first 10 = 0xBB, rest = 0xAA.
 	read_buf: [fs.SECTOR_SIZE]u8
@@ -323,7 +323,7 @@ test_full_cluster_alloc :: proc(t: ^testing.T) {
 			for j in 0 ..< 4 {
 				pat_buf[j] = pattern[(sector_idx + j) % 4]
 			}
-			testing.expect(t, fs.sector_write(&vol, fs.Sector(u64(run.sector) + u64(si)), pat_buf[:]), "write sector")
+			testing.expect(t, fs.sector_write(&vol, fs.Sector(u64(run.sector) + u64(si)), pat_buf[:]) == .None, "write sector")
 			sector_idx += 1
 		}
 	}
@@ -334,7 +334,7 @@ test_full_cluster_alloc :: proc(t: ^testing.T) {
 		n := int(run.count)
 		for si in 0 ..< n {
 			rd_buf: [fs.SECTOR_SIZE]u8
-			testing.expect(t, fs.sector_read(&vol, fs.Sector(u64(run.sector) + u64(si)), rd_buf[:]), "read sector")
+			testing.expect(t, fs.sector_read(&vol, fs.Sector(u64(run.sector) + u64(si)), rd_buf[:]) == .None, "read sector")
 			for j in 0 ..< 4 {
 				testing.expect(t, rd_buf[j] == pattern[(sector_idx + j) % 4], "pattern byte")
 			}
@@ -360,7 +360,7 @@ test_grow_shrink_cycle :: proc(t: ^testing.T) {
 		for si in 0 ..< int(run.count) {
 			buf: [fs.SECTOR_SIZE]u8
 			for j in 0 ..< fs.SECTOR_SIZE {buf[j] = pattern + byte(se_idx)}
-			testing.expect(t, fs.sector_write(&vol, fs.Sector(u64(run.sector) + u64(si)), buf[:]), "write")
+			testing.expect(t, fs.sector_write(&vol, fs.Sector(u64(run.sector) + u64(si)), buf[:]) == .None, "write")
 			se_idx += 1
 		}
 	}
@@ -377,7 +377,7 @@ test_grow_shrink_cycle :: proc(t: ^testing.T) {
 	for run in runs2 {
 		for _ in 0 ..< int(run.count) {
 			buf: [fs.SECTOR_SIZE]u8
-			testing.expect(t, fs.sector_read(&vol, fs.Sector(u64(run.sector) + u64(si2)), buf[:]), "read")
+			testing.expect(t, fs.sector_read(&vol, fs.Sector(u64(run.sector) + u64(si2)), buf[:]) == .None, "read")
 			si2 += 1
 		}
 	}
@@ -407,7 +407,7 @@ test_multi_cluster_chain :: proc(t: ^testing.T) {
 			buf: [fs.SECTOR_SIZE]u8
 			for j in 0 ..< fs.SECTOR_SIZE {buf[j] = byte(se_idx)}
 
-			testing.expect(t, fs.sector_write(&vol, fs.Sector(u64(run.sector) + u64(si)), buf[:]), "write")
+			testing.expect(t, fs.sector_write(&vol, fs.Sector(u64(run.sector) + u64(si)), buf[:]) == .None, "write")
 			se_idx += 1
 		}
 	}
@@ -417,7 +417,7 @@ test_multi_cluster_chain :: proc(t: ^testing.T) {
 	for run in runs {
 		for si in 0 ..< int(run.count) {
 			buf: [fs.SECTOR_SIZE]u8
-			testing.expect(t, fs.sector_read(&vol, fs.Sector(u64(run.sector) + u64(si)), buf[:]), "read")
+			testing.expect(t, fs.sector_read(&vol, fs.Sector(u64(run.sector) + u64(si)), buf[:]) == .None, "read")
 			for j in 0 ..< fs.SECTOR_SIZE {
 				testing.expect(t, buf[j] == byte(se_idx), "verify")
 			}
@@ -484,7 +484,7 @@ test_chain_extension_multi_cluster :: proc(t: ^testing.T) {
 		for si in 0 ..< int(run.count) {
 			buf: [fs.SECTOR_SIZE]u8
 			for j in 0 ..< fs.SECTOR_SIZE {buf[j] = byte(se_idx)}
-			testing.expect(t, fs.sector_write(&vol, fs.Sector(u64(run.sector) + u64(si)), buf[:]), "write")
+			testing.expect(t, fs.sector_write(&vol, fs.Sector(u64(run.sector) + u64(si)), buf[:]) == .None, "write")
 			se_idx += 1
 		}
 	}
@@ -494,7 +494,7 @@ test_chain_extension_multi_cluster :: proc(t: ^testing.T) {
 	for run in runs {
 		for si in 0 ..< int(run.count) {
 			buf: [fs.SECTOR_SIZE]u8
-			testing.expect(t, fs.sector_read(&vol, fs.Sector(u64(run.sector) + u64(si)), buf[:]), "read")
+			testing.expect(t, fs.sector_read(&vol, fs.Sector(u64(run.sector) + u64(si)), buf[:]) == .None, "read")
 			for j in 0 ..< fs.SECTOR_SIZE {testing.expect(t, buf[j] == byte(se_idx), "verify")}
 			se_idx += 1
 		}
@@ -518,16 +518,16 @@ test_write_read_persistence :: proc(t: ^testing.T) {
 
 	hbuf: [fs.SECTOR_SIZE]u8
 	copy(hbuf[:], "HELLO")
-	testing.expect(t, fs.sector_write(&vol, s0, hbuf[:]), "write HELLO")
+	testing.expect(t, fs.sector_write(&vol, s0, hbuf[:]) == .None, "write HELLO")
 
 	wbuf: [fs.SECTOR_SIZE]u8
 	copy(wbuf[:], "WORLD")
-	testing.expect(t, fs.sector_write(&vol, s1, wbuf[:]), "write WORLD")
+	testing.expect(t, fs.sector_write(&vol, s1, wbuf[:]) == .None, "write WORLD")
 
 	rbuf: [fs.SECTOR_SIZE]u8
-	testing.expect(t, fs.sector_read(&vol, s0, rbuf[:]), "read 0")
+	testing.expect(t, fs.sector_read(&vol, s0, rbuf[:]) == .None, "read 0")
 	testing.expect(t, string(rbuf[:5]) == "HELLO", "verify HELLO")
-	testing.expect(t, fs.sector_read(&vol, s1, rbuf[:]), "read 1")
+	testing.expect(t, fs.sector_read(&vol, s1, rbuf[:]) == .None, "read 1")
 	testing.expect(t, string(rbuf[:5]) == "WORLD", "verify WORLD")
 	fs.deallocate_sectors(&vol, fc, fo)
 }
@@ -544,7 +544,7 @@ test_truncate_to_zero :: proc(t: ^testing.T) {
 	buf: [fs.SECTOR_SIZE]u8
 	for j in 0 ..< fs.SECTOR_SIZE {buf[j] = 0xAB}
 	for si in 0 ..< 5 {
-		testing.expect(t, fs.sector_write(&vol, fs.Sector(u64(fc) * vol.master.cluster_size + u64(fo) + u64(si)), buf[:]), "write")
+		testing.expect(t, fs.sector_write(&vol, fs.Sector(u64(fc) * vol.master.cluster_size + u64(fo) + u64(si)), buf[:]) == .None, "write")
 	}
 
 	derr := fs.deallocate_sectors(&vol, fc, fo)
@@ -570,7 +570,7 @@ test_truncate_partial :: proc(t: ^testing.T) {
 	for si in 0 ..< 10 {
 		buf: [fs.SECTOR_SIZE]u8
 		for j in 0 ..< fs.SECTOR_SIZE {buf[j] = byte(si)}
-		testing.expect(t, fs.sector_write(&vol, fs.Sector(u64(fc) * vol.master.cluster_size + u64(fo) + u64(si)), buf[:]), "write")
+		testing.expect(t, fs.sector_write(&vol, fs.Sector(u64(fc) * vol.master.cluster_size + u64(fo) + u64(si)), buf[:]) == .None, "write")
 	}
 
 	ce, ce_err := fs.find_cluster_entry(&vol, fc, fo)
@@ -623,10 +623,10 @@ test_fallocate_extend :: proc(t: ^testing.T) {
 	// Write to sector 0 and verify it persists
 	buf0: [fs.SECTOR_SIZE]u8
 	buf0[0] = 0xAB
-	testing.expect(t, fs.sector_write(&vol, runs2[0].sector, buf0[:]), "write sector 0")
+	testing.expect(t, fs.sector_write(&vol, runs2[0].sector, buf0[:]) == .None, "write sector 0")
 
 	read_buf: [fs.SECTOR_SIZE]u8
-	testing.expect(t, fs.sector_read(&vol, runs2[0].sector, read_buf[:]), "read sector 0")
+	testing.expect(t, fs.sector_read(&vol, runs2[0].sector, read_buf[:]) == .None, "read sector 0")
 	testing.expect_value(t, read_buf[0], u8(0xAB))
 }
 
@@ -643,7 +643,7 @@ test_copy_file_range_simple :: proc(t: ^testing.T) {
 	src_buf: [fs.SECTOR_SIZE]u8
 	copy(src_buf[:], "HELLO")
 	src_runs, _ := fs.resolve_extents(&vol, src_c, src_o)
-	testing.expect(t, fs.sector_write(&vol, src_runs[0].sector, src_buf[:]), "write src")
+	testing.expect(t, fs.sector_write(&vol, src_runs[0].sector, src_buf[:]) == .None, "write src")
 
 	// Create dest: allocate 1 sector
 	dst_c, dst_o, aerr2 := fs.allocate_sectors(&vol, 0, 0, 1, .File_Content)
@@ -652,11 +652,11 @@ test_copy_file_range_simple :: proc(t: ^testing.T) {
 	// Manual copy: read from src, write to dst
 	dst_runs, _ := fs.resolve_extents(&vol, dst_c, dst_o)
 	copy_buf: [fs.SECTOR_SIZE]u8
-	testing.expect(t, fs.sector_read(&vol, src_runs[0].sector, copy_buf[:]), "read src for copy")
-	testing.expect(t, fs.sector_write(&vol, dst_runs[0].sector, copy_buf[:]), "write dst")
+	testing.expect(t, fs.sector_read(&vol, src_runs[0].sector, copy_buf[:]) == .None, "read src for copy")
+	testing.expect(t, fs.sector_write(&vol, dst_runs[0].sector, copy_buf[:]) == .None, "write dst")
 
 	// Verify
 	verify_buf: [fs.SECTOR_SIZE]u8
-	testing.expect(t, fs.sector_read(&vol, dst_runs[0].sector, verify_buf[:]), "read dst")
+	testing.expect(t, fs.sector_read(&vol, dst_runs[0].sector, verify_buf[:]) == .None, "read dst")
 	testing.expect(t, string(verify_buf[:5]) == "HELLO", "content matches")
 }

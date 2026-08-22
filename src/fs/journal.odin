@@ -36,10 +36,10 @@ journal_seq_next :: proc(master: ^Master_Record) -> Journal_Seq {
 	return seq
 }
 
-@private
+@(private="file")
 _intent_log_read :: proc(vol: ^Volume) -> (intent_log: Intent_Log, ok: bool) {
 	raw: [SECTOR_SIZE]u8
-	if !sector_read(vol, intent_log_sector(&vol.master), raw[:]) {
+	if sector_read(vol, intent_log_sector(&vol.master), raw[:]) != .None {
 		return {}, false
 	}
 
@@ -57,20 +57,20 @@ _intent_log_read :: proc(vol: ^Volume) -> (intent_log: Intent_Log, ok: bool) {
 	return intent_log, true
 }
 
-@private
-_intent_log_write :: proc(vol: ^Volume, log: ^Intent_Log) -> bool {
+@(private="file")
+_intent_log_write :: proc(vol: ^Volume, log: ^Intent_Log) -> FS_Error {
 	raw: [SECTOR_SIZE]u8
 	dst := (^Intent_Log)(&raw[0])
 	dst^ = log^
 	dst.crc = hash.crc32(raw[:SECTOR_SIZE - 4])
-	if !sector_write(vol, intent_log_sector(&vol.master), raw[:]) {
-		return false
+	if err := sector_write(vol, intent_log_sector(&vol.master), raw[:]); err != .None {
+		return err
 	}
 	os.sync(vol.disk)
-	return true
+	return .None
 }
 
-intent_log_begin :: proc(vol: ^Volume) -> bool {
+intent_log_begin :: proc(vol: ^Volume) -> FS_Error {
 	seq := journal_seq_next(&vol.master)
 	log := Intent_Log{
 		magic = JOURNAL_MAGIC,
@@ -80,7 +80,7 @@ intent_log_begin :: proc(vol: ^Volume) -> bool {
 	return _intent_log_write(vol, &log)
 }
 
-intent_log_commit :: proc(vol: ^Volume, entries: []Intent_Log_Entry) -> bool {
+intent_log_commit :: proc(vol: ^Volume, entries: []Intent_Log_Entry) -> FS_Error {
 	if entries != nil && len(entries) > 0 {
 		seq := journal_seq_get(&vol.master)
 		log := Intent_Log{
@@ -92,29 +92,30 @@ intent_log_commit :: proc(vol: ^Volume, entries: []Intent_Log_Entry) -> bool {
 		for i in 0 ..< min(len(entries), MAX_JOURNAL_ENTRIES_v6) {
 			log.entries[i] = entries[i]
 		}
-		if !_intent_log_write(vol, &log) {
-			return false
+		if err := _intent_log_write(vol, &log); err != .None {
+			return err
 		}
 	}
 
 	zero: [SECTOR_SIZE]u8
-	if !sector_write(vol, intent_log_sector(&vol.master), zero[:]) {
-		return false
+	if err := sector_write(vol, intent_log_sector(&vol.master), zero[:]); err != .None {
+		return err
 	}
 
 	journal_seq_set(&vol.master, journal_seq_get(&vol.master) + 1)
-	if !write_master_record(vol) {
-		return false
+	if err := write_master_record(vol); err != .None {
+		return err
 	}
-	return true
+	return .None
 }
 
-write_master_record :: proc(vol: ^Volume) -> bool {
+write_master_record :: proc(vol: ^Volume) -> FS_Error {
 	buf: [SECTOR_SIZE]u8
 	(^Master_Record)(&buf[0])^ = vol.master
 	return sector_write(vol, Sector(0), buf[:])
 }
 
+@(cold, optimization_mode="favor_size")
 intent_log_recover :: proc(vol: ^Volume) {
 	intent_log, ok := _intent_log_read(vol)
 	if !ok || intent_log.magic != JOURNAL_MAGIC {
@@ -139,7 +140,7 @@ intent_log_recover :: proc(vol: ^Volume) {
 	}
 
 	log.warnf("clearing intent log — run fsck --fix for full consistency check")
-	if !intent_log_commit(vol, nil) {
+	if intent_log_commit(vol, nil) != .None {
 		log.errorf("failed to clear intent log — mount may be unstable")
 	}
 }
@@ -219,7 +220,7 @@ journal_v2_commit :: proc(vol: ^Volume, txn: ^Journal_Txn) -> bool {
 			if idx >= txn.count { break }
 			rec.entries[ei] = txn.entries[idx]
 		}
-		if !sector_write(vol, pos + Sector(ri) + 1, rec_buf[:]) {
+		if sector_write(vol, pos + Sector(ri) + 1, rec_buf[:]) != .None {
 			return false
 		}
 	}
@@ -237,8 +238,9 @@ journal_v2_commit :: proc(vol: ^Volume, txn: ^Journal_Txn) -> bool {
 	hdr_buf: [SECTOR_SIZE]u8
 	(^Jv2_Header)(&hdr_buf[0])^ = hdr
 	hdr.header_crc = hash.crc32(hdr_buf[:24])
+
 	(^Jv2_Header)(&hdr_buf[0])^ = hdr
-	if !sector_write(vol, pos, hdr_buf[:]) {
+	if sector_write(vol, pos, hdr_buf[:]) != .None {
 		return false
 	}
 	os.sync(vol.disk)
@@ -251,6 +253,7 @@ journal_v2_finish :: proc(vol: ^Volume, seq: Journal_Seq) {
 	write_master_record(vol)
 }
 
+@(cold, optimization_mode="favor_size")
 journal_v2_recover :: proc(vol: ^Volume) {
 	if .Journal_V2 not_in vol.master.features { return }
 
@@ -262,7 +265,7 @@ journal_v2_recover :: proc(vol: ^Volume) {
 	for i: u64; i < M; i += 1 {
 		pos := J + Sector(i)
 		hdr_buf: [SECTOR_SIZE]u8
-		if !sector_read(vol, pos, hdr_buf[:]) { continue }
+		if sector_read(vol, pos, hdr_buf[:]) != .None { continue }
 
 		hdr := (^Jv2_Header)(&hdr_buf[0])^
 		if hdr.magic != Jv2_MAGIC { continue }
@@ -282,7 +285,7 @@ journal_v2_recover :: proc(vol: ^Volume) {
 		replay_ok := true
 		for ri: u16; ri < hdr.rec_sectors; ri += 1 {
 			rec_buf: [SECTOR_SIZE]u8
-			if !sector_read(vol, pos + Sector(ri) + 1, rec_buf[:]) {
+			if sector_read(vol, pos + Sector(ri) + 1, rec_buf[:]) != .None {
 				log.warnf("journal: can't read record sector %d — aborting replay", ri)
 				replay_ok = false
 				break
@@ -376,33 +379,40 @@ Journal_Backend :: struct {
 // v6 backend — intent log (rev 6). The add adapter packs the subset of
 // Journal_Entry fields the intent log tracks; recovery only warns, so the
 // dropped redo fields are irrelevant to replay.
+@(private="file")
 _j_v6_begin :: proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool {
 	h.v6 = {}
-	return intent_log_begin(vol)
+	return intent_log_begin(vol) == .None
 }
 
+@(private="file")
 _j_v6_add :: proc(vol: ^Volume, h: ^Journal_Txn_Handle, e: Journal_Entry) -> bool {
 	return intent_txn_add(&h.v6, e.cluster, int(e.ce_index), e.alloc_size, e.state)
 }
 
+@(private="file")
 _j_v6_commit :: proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool {
-	return intent_log_commit(vol, h.v6.entries[:h.v6.count])
+	return intent_log_commit(vol, h.v6.entries[:h.v6.count]) == .None
 }
 
+@(private="file")
 _j_v6_abort :: proc(vol: ^Volume, h: ^Journal_Txn_Handle) {
-	intent_log_commit(vol, nil)
+	_ = intent_log_commit(vol, nil)
 }
 
 // v2 backend — physical redo-log WAL (rev 7+).
+@(private="file")
 _j_v2_begin :: proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool {
 	journal_v2_begin(&vol.master, &h.v2)
 	return true
 }
 
+@(private="file")
 _j_v2_add :: proc(vol: ^Volume, h: ^Journal_Txn_Handle, e: Journal_Entry) -> bool {
 	return journal_v2_add_entry(&h.v2, e)
 }
 
+@(private="file")
 _j_v2_commit :: proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool {
 	if !journal_v2_commit(vol, &h.v2) {
 		return false
@@ -411,6 +421,7 @@ _j_v2_commit :: proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool {
 	return true
 }
 
+@(private="file")
 _j_v2_abort :: proc(vol: ^Volume, h: ^Journal_Txn_Handle) {
 	// Nothing was persisted before commit; discarding is a no-op.
 }

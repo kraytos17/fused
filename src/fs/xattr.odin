@@ -17,7 +17,7 @@ XAttr :: struct {
 
 // _xattr_chain_locate finds the xattr data chain for an entry. Returns the
 // cluster and the sector offset (from the CE table's sector_start).
-@private
+@(private="file")
 _xattr_chain_locate :: proc(vol: ^Volume, entry: ^Directory_Entry) -> (cluster: Cluster, offset: Sector_Offset, ok: bool) {
 	if entry.xattr_cluster == 0 {
 		return {}, 0, false
@@ -34,7 +34,7 @@ _xattr_chain_locate :: proc(vol: ^Volume, entry: ^Directory_Entry) -> (cluster: 
 }
 
 // _xattr_chain_free deallocates the xattr chain rooted at the given cluster.
-@private
+@(private="file")
 _xattr_chain_free :: proc(vol: ^Volume, cluster: u64) -> FS_Error {
 	if cluster == 0 {
 		return .None
@@ -188,7 +188,7 @@ xattr_clear :: proc(vol: ^Volume, entry: ^Directory_Entry) -> FS_Error {
 }
 
 // _xattr_serialize packs attributes into a blob buffer.
-@private
+@(private="file")
 _xattr_serialize :: proc(attrs: []XAttr) -> (data: []u8) {
 	total := 0
 	for a in attrs {
@@ -220,7 +220,7 @@ _xattr_serialize :: proc(attrs: []XAttr) -> (data: []u8) {
 
 // _xattr_deserialize_into parses a blob buffer into an existing dynamic
 // array of cloned attributes.
-@private
+@(private="file")
 _xattr_deserialize_into :: proc(attrs: ^[dynamic]XAttr, data: []u8, allocator := context.allocator) {
 	if len(data) < size_of(XAttr_Blob_Header) {
 		return

@@ -108,7 +108,7 @@ test_dir_many_entries_across_extents :: proc(t: ^testing.T) {
 		n := int(run.count)
 		for si in 0 ..< n {
 			s := fs.Sector(u64(run.sector) + u64(si))
-			if !fs.sector_read(&vol, s, scan_buf[:]) {break}
+			if fs.sector_read(&vol, s, scan_buf[:]) != .None {break}
 			scan_raw := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(scan_buf[:]))
 			for j in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
 				if .Exists in scan_raw[j].flags {
@@ -186,7 +186,7 @@ test_dir_reuse_slot_in_extended_sector :: proc(t: ^testing.T) {
 		n := int(run.count)
 		for si in 0 ..< n {
 			s := fs.Sector(u64(run.sector) + u64(si))
-			if !fs.sector_read(&vol, s, scan_buf[:]) {break}
+			if fs.sector_read(&vol, s, scan_buf[:]) != .None {break}
 			raw := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(scan_buf[:]))
 			for j in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
 				zf: fs.Dir_Flags
@@ -271,7 +271,7 @@ test_dir_rename_to_extended_target :: proc(t: ^testing.T) {
 		n := int(run.count)
 		for si in 0 ..< n {
 			s := fs.Sector(u64(run.sector) + u64(si))
-			if !fs.sector_read(&vol, s, scan_buf[:]) {break}
+			if fs.sector_read(&vol, s, scan_buf[:]) != .None {break}
 			raw := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(scan_buf[:]))
 			for j in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
 				if raw[j].flags == zf {

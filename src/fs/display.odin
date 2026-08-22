@@ -4,6 +4,7 @@ package fs
 
 import "core:strings"
 
+@(private="file")
 write_flag :: proc(sb: ^strings.Builder, n: ^int, name: string) {
 	if n^ > 0 { strings.write_byte(sb, '|') }
 	strings.write_string(sb, name)

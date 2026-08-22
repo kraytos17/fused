@@ -22,7 +22,7 @@ resolve_extents :: proc(vol: ^Volume, start_cluster: Cluster, start_offset: Sect
 		}
 
 		er := Extent_Run{
-			Sector(u64(ec) * cluster_size + u64(entry.sector_start)),
+			sector_for(ec, Sector_Offset(entry.sector_start), cluster_size),
 			entry.allocation_size,
 		}
 
@@ -73,7 +73,7 @@ read_chain :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset, alloca
 	pos := 0
 	for r in runs {
 		for si in 0 ..< int(r.count) {
-			if !sector_read(vol, Sector(u64(r.sector) + u64(si)), data[pos:pos + SECTOR_SIZE]) {
+			if sector_read(vol, Sector(u64(r.sector) + u64(si)), data[pos:pos + SECTOR_SIZE]) != .None {
 				delete(data, allocator)
 				return {}, .Sector_Read_Error
 			}
@@ -102,13 +102,13 @@ write_chain :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset, data:
 
 			sec := Sector(u64(r.sector) + u64(si))
 			if pos + SECTOR_SIZE <= len(data) {
-				if !sector_write(vol, sec, data[pos:pos + SECTOR_SIZE]) {
+				if sector_write(vol, sec, data[pos:pos + SECTOR_SIZE]) != .None {
 					return .Sector_Write_Error
 				}
 			} else {
 				buf: [SECTOR_SIZE]u8
 				copy(buf[:], data[pos:])
-				if !sector_write(vol, sec, buf[:]) {
+				if sector_write(vol, sec, buf[:]) != .None {
 					return .Sector_Write_Error
 				}
 			}

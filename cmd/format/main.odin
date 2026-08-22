@@ -36,29 +36,6 @@ Flags :: struct {
 	overflow: [dynamic]string `args:"hidden"`,
 }
 
-// Writer is a sequential sector writer that tracks the current position.
-Writer :: struct {
-	fd:  ^os.File,
-	pos: i64,
-}
-
-// writer_init initializes the writer with the given file descriptor.
-writer_init :: proc(w: ^Writer, fd: ^os.File) {
-	w.fd = fd
-	w.pos = 0
-}
-
-// writer_write writes a byte buffer at the current position and advances.
-writer_write :: proc(w: ^Writer, data: []u8) -> bool {
-	_, err := os.write_at(w.fd, data, w.pos)
-	if err != nil {
-		log.errorf("write at %d failed: %v", w.pos, err)
-		return false
-	}
-	w.pos += i64(len(data))
-	return true
-}
-
 main :: proc() {
 	context = runtime.default_context()
 
@@ -68,6 +45,11 @@ main :: proc() {
 	f.output = "fused.img"
 
 	flags.parse_or_exit(&f, os.args, flags.Parsing_Style.Unix)
+	if len(f.overflow) > 0 {
+		log.errorf("unknown args: %v", f.overflow)
+		os.exit(1)
+	}
+
 	log_level := log.Level.Debug
 	switch f.log_level {
 	case "debug": log_level = log.Level.Debug
@@ -148,14 +130,9 @@ main :: proc() {
 
 	if f.verbose {
 		image_mb := f64(size) / (1024.0 * 1024.0)
-		total_clusters := (size / fs.SECTOR_SIZE) / cluster_size
-		cme_per_sector := u64(fs.CLUSTER_MAP_ENTRIES_PER_SECTOR)
-		cm_sectors := (total_clusters + cme_per_sector - 1) / cme_per_sector
-		journal_sectors := max(64, total_clusters / 10)
-		metadata_sectors := 1 + cm_sectors + journal_sectors
-		reserved_clusters := (metadata_sectors + cluster_size - 1) / cluster_size
+		g := fs.format_geometry(size, cluster_size)
 		log.infof("done: %s  (%.1f MB, %d clusters  %d/sector CME  %d CME sectors  %d reserved)",
-			f.output, image_mb, total_clusters, fs.CLUSTER_MAP_ENTRIES_PER_SECTOR, cm_sectors, reserved_clusters)
+			f.output, image_mb, g.total_clusters, fs.CLUSTER_MAP_ENTRIES_PER_SECTOR, g.cm_sectors, g.reserved_clusters)
 	}
 }
 

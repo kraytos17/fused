@@ -51,3 +51,9 @@ def mounted_fs(fused_bin: str, fused_image: str, mount_dir: str, logs_dir: str):
     os.makedirs(mount_dir, exist_ok=True)
     with mount_fuse(fused_bin, fused_image, mount_dir, logs_dir) as mp:
         yield mp
+
+
+@pytest.fixture
+def path_for(mounted_fs: str):
+    """Return a helper that joins names onto the mount point."""
+    return lambda name: os.path.join(mounted_fs, name)

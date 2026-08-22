@@ -169,6 +169,32 @@ fh_parts :: proc "contextless" (fh: u64) -> (dir_cluster: fs.Cluster, dir_offset
 	return fs.Cluster(f.dir_cluster), fs.Sector_Offset(f.dir_offset), int(f.entry_index)
 }
 
+// mutate_entry_at is the shared read-modify-write wrapper for metadata-only
+// FUSE callbacks that update a single directory entry (chmod, chown,
+// utimens, and xattr entry writes). It resolves the entry, calls mutate
+// with the caller-provided user context, writes it back, and invalidates
+// caches. mutate returning false skips the write without error. When
+// invalidate_all is false only the single path is removed (used by utimens,
+// where the directory structure hasn't changed).
+mutate_entry_at :: proc(fsys: ^FS, path: cstring, fi: ^fuse3.File_Info, mutate: proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool, user: rawptr = nil, invalidate_all := true) -> c.int {
+	entry, entry_cluster, entry_offset, entry_idx, _, _, resolved := resolve_entry(fsys, path, fi)
+	if !resolved {
+		return fuse3.nix(.ENOENT)
+	}
+	if !mutate(&entry, user) {
+		return 0
+	}
+	if !write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx) {
+		return fuse3.nix(.EIO)
+	}
+	if invalidate_all {
+		path_cache_invalidate_all(fsys)
+	} else {
+		lru.remove(&fsys.path_cache, string(path))
+	}
+	return 0
+}
+
 // read_entry_from_fh reads a Directory_Entry from a packed File_Handle,
 // returning the entry, its data cluster, data offset, and whether it succeeded.
 read_entry_from_fh :: proc(fsys: ^FS, fh: u64) -> (fs.Directory_Entry, fs.Cluster, fs.Sector_Offset, bool) {

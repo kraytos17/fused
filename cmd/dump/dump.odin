@@ -47,7 +47,7 @@ print_cluster_map :: proc(vol: ^fs.Volume, _: bool, _: ^bool, show_all: bool) {
 	allocated: u64
 	for sec_idx: u64; sec_idx < cm_sectors; sec_idx += 1 {
 		buf: [fs.SECTOR_SIZE]u8
-		if !fs.sector_read(vol, fs.Sector(m.cluster_map_offset + sec_idx), buf[:]) {
+		if fs.sector_read(vol, fs.Sector(m.cluster_map_offset + sec_idx), buf[:]) != .None {
 			break
 		}
 
@@ -118,7 +118,7 @@ print_directory :: proc(vol: ^fs.Volume, cluster: fs.Cluster, offset: fs.Sector_
 		for si in 0 ..< n {
 			sec := fs.Sector(u64(run.sector) + u64(si))
 			buf: [fs.SECTOR_SIZE]u8
-			if !fs.sector_read(vol, sec, buf[:]) { break }
+			if fs.sector_read(vol, sec, buf[:]) != .None { break }
 
 			features := vol.master.features
 			des := int(fs.dir_entry_size(features))
@@ -226,7 +226,7 @@ print_hex_by_path :: proc(vol: ^fs.Volume, path: string) {
 
 			sec := fs.Sector(u64(run.sector) + si)
 			sec_buf: [fs.SECTOR_SIZE]u8
-			if !fs.sector_read(vol, sec, sec_buf[:]) { return }
+			if fs.sector_read(vol, sec, sec_buf[:]) != .None { return }
 
 			n := min(remaining, fs.SECTOR_SIZE)
 			off := file_off

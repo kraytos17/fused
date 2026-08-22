@@ -9,12 +9,24 @@ import "core:path/filepath"
 import "core:strings"
 
 main :: proc() {
+	strict := false
+	for arg in os.args {
+		if arg == "--strict" {
+			strict = true
+			break
+		}
+	}
+
 	dh, err := os.open("src/mounter")
 	if err == nil {
 		defer os.close(dh)
 		run_audit(dh)
 	} else {
 		fmt.eprintf("cannot open src/mounter: %v\n", err)
+		os.exit(1)
+	}
+
+	if !audit_fs_attributes(strict) {
 		os.exit(1)
 	}
 }
@@ -147,4 +159,55 @@ is_context_reset :: proc(s: ^ast.Stmt) -> bool {
 		}
 	}
 	return false
+}
+
+audit_fs_attributes :: proc(strict: bool) -> bool {
+	ok := true
+	{
+		count := 0
+		paths := []string{"src/fs/alloc_cache.odin", "src/fs/journal.odin", "src/fs/xattr.odin", "src/fs/allocate.odin", "src/fs/display.odin"}
+		for path in paths {
+			data, err := os.read_entire_file(path, context.temp_allocator)
+			if err != nil { continue }
+			if strings.contains(string(data), "private=\"file\"") {
+				count += 1
+			}
+		}
+		if count < 3 {
+			fmt.printf("WARN   expected >=3 files with @(private=\"file\"), found %d\n", count)
+			if strict { ok = false }
+		}
+	}
+	{
+		checks_data := []struct{path: string, sym: string, attr: string}{
+			{"src/fs/journal.odin", "intent_log_recover", "cold"},
+			{"src/fs/journal.odin", "journal_v2_recover", "cold"},
+			{"src/fs/format.odin", "format_image", "favor_size"},
+		}
+
+		checks := checks_data[:]
+		for c in checks {
+			data, err := os.read_entire_file(c.path, context.temp_allocator)
+			if err != nil { continue }
+
+			lines := strings.split(string(data), "\n", context.temp_allocator)
+			for i in 0..<len(lines) {
+				if strings.contains(lines[i], c.sym) && strings.contains(lines[i], ":: proc") {
+					has := false
+					for k in max(0, i-2)..<i+1 {
+						if strings.contains(lines[k], c.attr) {
+							has = true
+							break
+						}
+					}
+					if !has {
+						fmt.printf("WARN   %s:%d %s missing @(%s)\n", c.path, i+1, c.sym, c.attr)
+						if strict { ok = false }
+					}
+				}
+			}
+		}
+	}
+	fmt.printf("=== Attribute audit: done ===\n")
+	return ok
 }

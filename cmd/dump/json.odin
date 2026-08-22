@@ -67,7 +67,7 @@ build_clusters :: proc(vol: ^fs.Volume) -> (clusters: [dynamic]ClusterJSON, allo
 	cm_sectors := (m.cluster_map_size + entries_per_sector - 1) / entries_per_sector
 	for sec_idx: u64; sec_idx < cm_sectors; sec_idx += 1 {
 		buf: [fs.SECTOR_SIZE]u8
-		if !fs.sector_read(vol, fs.Sector(m.cluster_map_offset + sec_idx), buf[:]) {
+		if fs.sector_read(vol, fs.Sector(m.cluster_map_offset + sec_idx), buf[:]) != .None {
 			break
 		}
 
@@ -102,7 +102,7 @@ build_directory :: proc(vol: ^fs.Volume, cluster: fs.Cluster, offset: fs.Sector_
 		for si in 0 ..< n {
 			sec := fs.Sector(u64(run.sector) + u64(si))
 			buf: [fs.SECTOR_SIZE]u8
-			if !fs.sector_read(vol, sec, buf[:]) { break }
+			if fs.sector_read(vol, sec, buf[:]) != .None { break }
 
 			features := vol.master.features
 			des := int(fs.dir_entry_size(features))

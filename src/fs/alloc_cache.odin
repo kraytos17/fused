@@ -5,7 +5,7 @@ package fs
 import "core:container/bit_array"
 import "core:container/lru"
 
-@private
+@(private="file")
 // Alloc_Cache_Entry struct holding a cached bitmap and its used count
 Alloc_Cache_Entry :: struct {
 	bitmap: bit_array.Bit_Array,
@@ -19,7 +19,7 @@ Cluster_Bitmap_Cache :: struct {
 	cache_size: int,
 }
 
-@private
+@(private="file")
 _alloc_cache_on_remove :: proc(key: u64, val: Alloc_Cache_Entry, user_data: rawptr) {
 	b := val.bitmap
 	bit_array.destroy(&b)
@@ -46,7 +46,7 @@ alloc_cache_invalidate :: proc(cache: ^Cluster_Bitmap_Cache, cluster: u64) {
 	lru.remove(&cache.lru, cluster)
 }
 
-@private
+@(private="file")
 _cache_bitmap :: #force_inline proc(cache: ^Cluster_Bitmap_Cache) -> bit_array.Bit_Array {
 	ba: bit_array.Bit_Array
 	bit_array.init(&ba, cache.cache_size, 0)
@@ -70,7 +70,7 @@ alloc_cache_ensure :: proc(cache: ^Cluster_Bitmap_Cache, vol: ^Volume, cluster: 
 	return entry.bitmap, entry.used, true
 }
 
-@private
+@(private="file")
 // _alloc_cache_build builds a bitmap by scanning the CE table on disk
 _alloc_cache_build :: proc(cache: ^Cluster_Bitmap_Cache, vol: ^Volume, cluster: Cluster) {
 	bitmap := _cache_bitmap(cache)

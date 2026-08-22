@@ -4,7 +4,6 @@ package mounter
 
 import "base:runtime"
 import "core:c"
-import "core:container/lru"
 import "core:log"
 import "core:os"
 import "core:sys/posix"
@@ -16,33 +15,29 @@ fused_utimens :: proc "c" (path: cstring, tv: [^]posix.timespec, fi: ^fuse3.File
 	context = runtime.default_context()
 	fsys := begin_op()
 	defer end_op(fsys)
-
-	entry, entry_cluster, entry_offset, entry_idx, _, _, resolved := resolve_entry(fsys, path, fi)
-	if !resolved {return fuse3.nix(.ENOENT)}
-	if tv == nil {
-		set_entry_time_to_now(&entry)
-	} else {
-		nsec1 := int(tv[1].tv_nsec)
-		if nsec1 == UTIME_OMIT {
-		} else if nsec1 == UTIME_NOW {
-			set_entry_mtime_to_now(&entry)
+	return mutate_entry_at(fsys, path, fi, proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool {
+		tv := ([^]posix.timespec)(user)
+		if tv == nil {
+			set_entry_time_to_now(entry)
 		} else {
-			set_entry_mtime_from_unix(&entry, i64(tv[1].tv_sec))
-		}
+			nsec1 := int(tv[1].tv_nsec)
+			if nsec1 == UTIME_OMIT {
+			} else if nsec1 == UTIME_NOW {
+				set_entry_mtime_to_now(entry)
+			} else {
+				set_entry_mtime_from_unix(entry, i64(tv[1].tv_sec))
+			}
 
-		nsec0 := int(tv[0].tv_nsec)
-		if nsec0 == UTIME_OMIT {
-		} else if nsec0 == UTIME_NOW {
-			set_entry_atime_to_now(&entry)
-		} else {
-			set_entry_atime_from_unix(&entry, i64(tv[0].tv_sec))
+			nsec0 := int(tv[0].tv_nsec)
+			if nsec0 == UTIME_OMIT {
+			} else if nsec0 == UTIME_NOW {
+				set_entry_atime_to_now(entry)
+			} else {
+				set_entry_atime_from_unix(entry, i64(tv[0].tv_sec))
+			}
 		}
-	}
-	if !write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx) {
-		return fuse3.nix(.EIO)
-	}
-	lru.remove(&fsys.path_cache, string(path))
-	return 0
+		return true
+	}, rawptr(tv), false)
 }
 
 // fused_access checks file access permissions.
@@ -78,28 +73,27 @@ fused_chmod :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Info
 	fsys := begin_op()
 	defer end_op(fsys)
 
-	entry, entry_cluster, entry_offset, entry_idx, _, _, resolved := resolve_entry(fsys, path, fi)
-	if !resolved {
-		return fuse3.nix(.ENOENT)
+	Chmod_Ctx :: struct {mode: posix.mode_t}
+
+	ctx := Chmod_Ctx{mode = mode}
+	rc := mutate_entry_at(fsys, path, fi, proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool {
+		m := (^Chmod_Ctx)(user).mode
+		mr := posix.mode_t{.IRUSR, .IRGRP, .IROTH} & m
+		has_read := mr != {}
+		mw := posix.mode_t{.IWUSR, .IWGRP, .IWOTH} & m
+		has_write := mw != {}
+		mx := posix.mode_t{.IXUSR, .IXGRP, .IXOTH} & m
+		has_exec := mx != {}
+
+		if has_read {entry.flags -= {.No_Read}} else {entry.flags += {.No_Read}}
+		if has_write {entry.flags -= {.No_Write, .Read_Only}} else {entry.flags += {.No_Write, .Read_Only}}
+		if has_exec {entry.flags -= {.No_Execute}} else {entry.flags += {.No_Execute}}
+		return true
+	}, &ctx)
+	if rc == 0 {
+		log.debugf("chmod: %s → mode=%v", path, mode)
 	}
-
-	mr := posix.mode_t{.IRUSR, .IRGRP, .IROTH} & mode
-	has_read := mr != {}
-	mw := posix.mode_t{.IWUSR, .IWGRP, .IWOTH} & mode
-	has_write := mw != {}
-	mx := posix.mode_t{.IXUSR, .IXGRP, .IXOTH} & mode
-	has_exec := mx != {}
-
-	if has_read {entry.flags -= {.No_Read}} else {entry.flags += {.No_Read}}
-	if has_write {entry.flags -= {.No_Write, .Read_Only}} else {entry.flags += {.No_Write, .Read_Only}}
-	if has_exec {entry.flags -= {.No_Execute}} else {entry.flags += {.No_Execute}}
-	if !write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx) {
-		return fuse3.nix(.EIO)
-	}
-
-	path_cache_invalidate_all(fsys)
-	log.debugf("chmod: %s → mode=%v", path, mode)
-	return 0
+	return rc
 }
 
 // fused_chown changes file ownership. No-op aside from storing uid/gid.
@@ -108,24 +102,21 @@ fused_chown :: proc "c" (path: cstring, uid: posix.uid_t, gid: posix.gid_t, fi: 
 	fsys := begin_op()
 	defer end_op(fsys)
 
-	entry, entry_cluster, entry_offset, entry_idx, _, _, resolved := resolve_entry(fsys, path, fi)
-	if !resolved {return fuse3.nix(.ENOENT)}
+	Chown_Ctx :: struct {uid: posix.uid_t, gid: posix.gid_t}
 
-	uid_t_max :: posix.uid_t(0xFFFFFFFF)
-	gid_t_max :: posix.gid_t(0xFFFFFFFF)
-	if uid != uid_t_max {
-		entry.uid = u32(uid)
+	ctx := Chown_Ctx{uid = uid, gid = gid}
+	rc := mutate_entry_at(fsys, path, fi, proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool {
+		c := (^Chown_Ctx)(user)
+		uid_t_max :: posix.uid_t(0xFFFFFFFF)
+		gid_t_max :: posix.gid_t(0xFFFFFFFF)
+		if c.uid != uid_t_max {entry.uid = u32(c.uid)}
+		if c.gid != gid_t_max {entry.gid = u32(c.gid)}
+		return true
+	}, &ctx)
+	if rc == 0 {
+		log.debugf("chown: %s → uid=%d gid=%d", path, uid, gid)
 	}
-	if gid != gid_t_max {
-		entry.gid = u32(gid)
-	}
-	if !write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx) {
-		return fuse3.nix(.EIO)
-	}
-
-	path_cache_invalidate_all(fsys)
-	log.debugf("chown: %s → uid=%d gid=%d", path, entry.uid, entry.gid)
-	return 0
+	return rc
 }
 
 // fused_flush flushes a file by syncing the underlying disk.
@@ -204,30 +195,27 @@ fused_lseek :: proc "c" (path: cstring, off: posix.off_t, whence: c.int, fi: ^fu
 		return posix.off_t(pos)
 	}
 
-	// Walk extent runs in file-offset space
+	// Walk extent runs in file-offset space; the two whence values
+	// share the run walk, differing only in the hole/data predicate.
+	is_data := whence == fuse3.SEEK_DATA
 	offset: u64 = 0
-	if whence == fuse3.SEEK_DATA {
-		for run in runs {
-			run_end := offset + u64(run.count) * fs.SECTOR_SIZE
+	for run in runs {
+		run_end := offset + u64(run.count) * fs.SECTOR_SIZE
+		if is_data {
 			if pos < run_end {
 				return posix.off_t(max(pos, offset))
 			}
-			offset = run_end
-		}
-		return posix.off_t(file_size)
-	}
-	// SEEK_HOLE
-	for run in runs {
-		run_end := offset + u64(run.count) * fs.SECTOR_SIZE
-		if pos < offset {
-			return posix.off_t(pos)
-		}
-		if pos >= offset && pos < run_end {
-			pos = run_end
+		} else {
+			if pos < offset {
+				return posix.off_t(pos)
+			}
+			if pos >= offset && pos < run_end {
+				pos = run_end
+			}
 		}
 		offset = run_end
 	}
-	if pos < file_size {
+	if !is_data && pos < file_size {
 		return posix.off_t(pos)
 	}
 	return posix.off_t(file_size)
