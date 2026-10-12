@@ -2,7 +2,7 @@
 
 A FUSE filesystem daemon written in Odin, backed by a cluster-based on-disk
 format (rev 8, feature flags, uid/gid support, journaling, extended
-attributes). 41 of 43 `fuse_operations` callbacks are implemented.
+attributes). All 43 `fuse_operations` callbacks are implemented.
 Multi-threaded by default, with a `sync.Mutex` guarding cache mutation.
 Zero-copy I/O via `splice(2)`.
 Long filenames (up to 255 characters) are supported through bump-allocated
@@ -37,7 +37,7 @@ src/
     allocate.odin          Sector allocator/deallocator
     alloc_cache.odin        LRU bitmap cache
     path.odin                 Unified path resolution
-    journal.odin                Intent log + journal v2 WAL
+    journal.odin                Journal WAL (crash consistency)
     xattr.odin                  Extended-attribute blob read/write
     format.odin                 Image construction (format_image, shared with tests)
     validate.odin                 MasterRecord validation
@@ -224,9 +224,9 @@ in `src/fs/structure.odin` carries a compile-time
   kernel splices directly from disk to the FUSE pipe. `fused_write_buf`
   uses `linux.splice()` for the write side.
 
-- **Format versioning.** Rev 6–8, with `rev_min`/`rev_max` range checking
-  and a `features` bitmask for runtime dispatch. Intent log (rev 6) and
-  journal v2 WAL (rev 7) provide crash consistency; rev 8 adds extended
+- **Format versioning.** Rev 7–8, with `rev_min`/`rev_max` range checking
+  and a `features` bitmask for runtime dispatch. The journal WAL (rev 7)
+  provides crash consistency; rev 8 adds extended
   attributes. See [`docs/REV.md`](docs/REV.md) for the full revision history.
 
 - **Extended attributes.** `setxattr`/`getxattr`/`listxattr`/`removexattr`

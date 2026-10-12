@@ -19,8 +19,16 @@ _allocate_io_err :: proc() -> (Cluster, Sector_Offset, FS_Error) {
 	return 0, 0, .Sector_Write_Error
 }
 
-@(private="file")
-_find_contiguous_free :: proc(bitmap: ^bit_array.Bit_Array, total_sectors: u64, needed: u16) -> (start: u16, available: u16, ok: bool) {
+@(private = "file")
+_find_contiguous_free :: proc(
+	bitmap: ^bit_array.Bit_Array,
+	total_sectors: u64,
+	needed: u16,
+) -> (
+	start: u16,
+	available: u16,
+	ok: bool,
+) {
 	run_start: u16 = 0xFFFF
 	run_len: u16 = 0
 	max_s := int(min(total_sectors, 65535))
@@ -53,7 +61,7 @@ _find_contiguous_free :: proc(bitmap: ^bit_array.Bit_Array, total_sectors: u64, 
 }
 
 // _is_cluster_full checks whether every sector in the cluster bitmap is allocated.
-@(private="file")
+@(private = "file")
 _is_cluster_full :: proc(bitmap: ^bit_array.Bit_Array, total_sectors: u64) -> bool {
 	max_s := int(min(total_sectors, 65535))
 	it := bit_array.make_iterator(bitmap)
@@ -70,14 +78,19 @@ _is_cluster_full :: proc(bitmap: ^bit_array.Bit_Array, total_sectors: u64) -> bo
 
 // _cluster_entry_state_for returns the Cluster_Entry_State corresponding to the
 // given Allocation_Kind (e.g. Directory, File_Content, Cluster_Map, LFN).
-@(private="file")
+@(private = "file")
 _cluster_entry_state_for :: proc(kind: Allocation_Kind) -> Cluster_Entry_State {
 	switch kind {
-	case .Directory:    return {.Directory}
-	case .File_Content: return {.File_Content}
-	case .Cluster_Map:  return {.Cluster_Map}
-	case .LFN:          return {.LFN}
-	case .XAttr:        return {.XAttr}
+	case .Directory:
+		return {.Directory}
+	case .File_Content:
+		return {.File_Content}
+	case .Cluster_Map:
+		return {.Cluster_Map}
+	case .LFN:
+		return {.LFN}
+	case .XAttr:
+		return {.XAttr}
 	}
 	return {}
 }
@@ -95,9 +108,9 @@ _cluster_entry_state_for :: proc(kind: Allocation_Kind) -> Cluster_Entry_State {
 // skipped. An unused slot in the cluster-entry table is located and filled with a new
 // Cluster_Entry carrying the allocation size, sector start, and state derived from kind.
 //
-// Journal branching: v2 journals batch entries via journal_v2_add_entry; v6/v7 uses
-// intent_txn_add. Both paths are finalised with a commit/finish once allocation succeeds
-// (or rolled back via the deferred cleanup on error).
+// Journaling: entries are batched via the v2 WAL backend and finalised
+// with a commit once allocation succeeds (or rolled back via the deferred
+// cleanup on error).
 //
 // Tail-chain linking: when extending an existing chain (start_cluster != 0),
 // link_tail_to_new walks the old chain and appends the first newly allocated cluster,
@@ -106,12 +119,16 @@ _cluster_entry_state_for :: proc(kind: Allocation_Kind) -> Cluster_Entry_State {
 // Error returns: .Sector_Write_Error on I/O failure, .Entry_Not_Found if the tail
 // cannot be located, or .No_Space when the cluster map is exhausted.
 allocate_sectors :: proc(
-	vol:            ^Volume,
-	start_cluster:  Cluster,
-	start_offset:   Sector_Offset,
+	vol: ^Volume,
+	start_cluster: Cluster,
+	start_offset: Sector_Offset,
 	sectors_needed: u64,
-	kind:           Allocation_Kind,
-) -> (first_cluster: Cluster, first_offset: Sector_Offset, err: FS_Error) {
+	kind: Allocation_Kind,
+) -> (
+	first_cluster: Cluster,
+	first_offset: Sector_Offset,
+	err: FS_Error,
+) {
 	if sectors_needed == 0 {
 		return start_cluster, start_offset, .None
 	}
@@ -134,11 +151,11 @@ allocate_sectors :: proc(
 	remaining: u64 = additional_needed
 	is_first := true
 	prev_cluster: Cluster
-	prev_offset:  Sector_Offset
-	prev_entry:   Cluster_Entry
+	prev_offset: Sector_Offset
+	prev_entry: Cluster_Entry
 	prev_has_prev := false
 
-	backend := journal_backend_for(&vol.master)
+	backend := JOURNAL_BACKEND
 	jrnl: Journal_Txn_Handle
 	committed := false
 	if !backend.begin(vol, &jrnl) { return _allocate_io_err() }
@@ -157,7 +174,7 @@ allocate_sectors :: proc(
 		is_fresh := .Allocated not_in cme.flags
 		if is_fresh {
 			cme.flags += {.Allocated}
-			cme.sector_index   = 0
+			cme.sector_index = 0
 			write_cluster_map_entry(vol, Cluster(cluster_idx), &cme) or_return
 
 			zero_buf: [SECTOR_SIZE]u8
@@ -172,7 +189,11 @@ allocate_sectors :: proc(
 			continue
 		}
 
-		free_start, free_avail, free_ok := _find_contiguous_free(&bitmap, vol.master.cluster_size, u16(min(remaining, 65535)))
+		free_start, free_avail, free_ok := _find_contiguous_free(
+			&bitmap,
+			vol.master.cluster_size,
+			u16(min(remaining, 65535)),
+		)
 		if !free_ok {
 			if .Full not_in cme.flags {
 				cme.flags += {.Full}
@@ -198,7 +219,7 @@ allocate_sectors :: proc(
 			continue
 		}
 
-		new_entry := Cluster_Entry{
+		new_entry := Cluster_Entry {
 			state             = _cluster_entry_state_for(kind) | {.Allocated},
 			allocation_size   = take,
 			sector_start      = free_start,
@@ -208,22 +229,35 @@ allocate_sectors :: proc(
 
 		table[free_idx] = new_entry
 		write_cluster_entry_table(vol, Cluster(cluster_idx), &table) or_return
-		backend.add(vol, &jrnl, journal_entry_from_cluster_entry(new_entry, cluster_idx, u8(free_idx)))
+		backend.add(
+			vol,
+			&jrnl,
+			journal_entry_from_cluster_entry(new_entry, cluster_idx, u8(free_idx)),
+		)
 		if is_first {
 			first_cluster = Cluster(cluster_idx)
-			first_offset  = Sector_Offset(free_start)
+			first_offset = Sector_Offset(free_start)
 			is_first = false
 		} else if prev_has_prev {
-			prev_entry.next_cluster       = u64(cluster_idx)
-			prev_entry.next_sector_index  = u16(free_start)
+			prev_entry.next_cluster = u64(cluster_idx)
+			prev_entry.next_sector_index = u16(free_start)
 			prev_table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 			if read_cluster_entry_table(vol, prev_cluster, &prev_table) == .None {
-				if pidx, pok := ce_find_by_offset(prev_table, prev_offset); pok && .Allocated in prev_table[pidx].state {
+				if pidx, pok := ce_find_by_offset(prev_table, prev_offset);
+				   pok && .Allocated in prev_table[pidx].state {
 					prev_table[pidx] = prev_entry
 				}
 
 				write_cluster_entry_table(vol, prev_cluster, &prev_table) or_return
-				backend.add(vol, &jrnl, journal_entry_from_cluster_entry(prev_entry, u64(prev_cluster), u8(prev_offset)))
+				backend.add(
+					vol,
+					&jrnl,
+					journal_entry_from_cluster_entry(
+						prev_entry,
+						u64(prev_cluster),
+						u8(prev_offset),
+					),
+				)
 			}
 		}
 
@@ -253,6 +287,7 @@ allocate_sectors :: proc(
 
 		vol.cache.hint = (u64(first_cluster) + 1) % vol.master.cluster_map_size
 		if !backend.commit(vol, &jrnl) { return _allocate_io_err() }
+
 		committed = true
 		return start_cluster, start_offset, .None
 	}
@@ -260,6 +295,7 @@ allocate_sectors :: proc(
 	log.debugf("allocate: ok — %d sectors across %d clusters", sectors_needed, first_cluster)
 	vol.cache.hint = (u64(first_cluster) + 1) % vol.master.cluster_map_size
 	if !backend.commit(vol, &jrnl) { return _allocate_io_err() }
+
 	committed = true
 	return first_cluster, first_offset, .None
 }
@@ -270,15 +306,15 @@ allocate_sectors :: proc(
 // are journaled (v2 WAL or v6 intent log) so a crash cannot resurrect the
 // freed chain on the next mount.
 deallocate_sectors :: proc(
-	vol:           ^Volume,
+	vol: ^Volume,
 	start_cluster: Cluster,
-	start_offset:  Sector_Offset,
+	start_offset: Sector_Offset,
 ) -> FS_Error {
 	if start_cluster == 0 {
 		return .None
 	}
 
-	backend := journal_backend_for(&vol.master)
+	backend := JOURNAL_BACKEND
 	jrnl: Journal_Txn_Handle
 	committed := false
 	if !backend.begin(vol, &jrnl) { return _allocate_io_err_single() }
@@ -287,7 +323,7 @@ deallocate_sectors :: proc(
 	}
 
 	current_cluster := start_cluster
-	current_offset  := start_offset
+	current_offset := start_offset
 	for guard in 0 ..< int(vol.master.cluster_map_size) + 1 {
 		if guard == int(vol.master.cluster_map_size) {
 			log.errorf("deallocate: chain too long (corrupted)")
@@ -311,12 +347,17 @@ deallocate_sectors :: proc(
 
 		table[freed_idx] = entry
 		write_cluster_entry_table(vol, current_cluster, &table) or_return
-		backend.add(vol, &jrnl, journal_entry_from_cluster_entry(entry, u64(current_cluster), u8(freed_idx)))
+		backend.add(
+			vol,
+			&jrnl,
+			journal_entry_from_cluster_entry(entry, u64(current_cluster), u8(freed_idx)),
+		)
 		if entry.next_cluster == 0 {
 			break
 		}
+
 		current_cluster = Cluster(entry.next_cluster)
-		current_offset  = Sector_Offset(entry.next_sector_index)
+		current_offset = Sector_Offset(entry.next_sector_index)
 	}
 	if !backend.commit(vol, &jrnl) {
 		return .Sector_Write_Error
@@ -330,8 +371,14 @@ deallocate_sectors :: proc(
 // link_tail_to_new walks the existing chain from (start_cluster, start_offset) to
 // its final entry and sets its next_cluster / next_sector_index to point at
 // (first_cluster, first_offset), effectively appending the newly allocated cluster(s).
-@(private="file")
-link_tail_to_new :: proc(vol: ^Volume, start_cluster: Cluster, start_offset: Sector_Offset, first_cluster: Cluster, first_offset: Sector_Offset) -> bool {
+@(private = "file")
+link_tail_to_new :: proc(
+	vol: ^Volume,
+	start_cluster: Cluster,
+	start_offset: Sector_Offset,
+	first_cluster: Cluster,
+	first_offset: Sector_Offset,
+) -> bool {
 	cursor := Chain_Cursor{start_cluster, start_offset}
 	max_steps := int(vol.master.cluster_map_size) + 1
 	for guard in 0 ..< max_steps {
@@ -345,7 +392,8 @@ link_tail_to_new :: proc(vol: ^Volume, start_cluster: Cluster, start_offset: Sec
 			tail.next_sector_index = u16(first_offset)
 			tail_table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 			if read_cluster_entry_table(vol, tc, &tail_table) == .None {
-				if tidx, tok := ce_find_by_offset(tail_table, cursor.offset); tok && .Allocated in tail_table[tidx].state {
+				if tidx, tok := ce_find_by_offset(tail_table, cursor.offset);
+				   tok && .Allocated in tail_table[tidx].state {
 					tail_table[tidx] = tail
 				}
 				if write_cluster_entry_table(vol, tc, &tail_table) != .None {

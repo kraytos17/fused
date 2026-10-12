@@ -11,8 +11,8 @@ import "base:runtime"
 import "core:c"
 import "core:log"
 import "core:sys/posix"
-import "src:fuse3"
 import "src:fs"
+import "src:fuse3"
 
 // LOCK_* constants for the BSD flock() op (sys/file.h).
 LOCK_SH :: c.int(1) // shared lock
@@ -22,7 +22,7 @@ LOCK_UN :: c.int(8) // unlock
 
 // FUSE_CAP_* capability flags (linux/fuse.h) advertised in the INIT handshake
 // so the kernel forwards lock requests to userspace.
-FUSE_POSIX_LOCKS :: c.uint32_t(1 << 1)  // remote POSIX fcntl locks
+FUSE_POSIX_LOCKS :: c.uint32_t(1 << 1) // remote POSIX fcntl locks
 FUSE_FLOCK_LOCKS :: c.uint32_t(1 << 10) // remote BSD flock
 
 // File_Identity is a stable per-file key derived from the packed File_Handle.
@@ -35,17 +35,17 @@ File_Identity :: struct {
 
 // Region_Lock is one POSIX (fcntl) lock record.
 Region_Lock :: struct {
-	owner:     u64,         // fi.lock_owner
+	owner:     u64, // fi.lock_owner
 	pid:       posix.pid_t, // flock.l_pid (for F_GETLK reporting)
-	start:     i64,         // byte offset
-	len:       i64,         // length in bytes (0 = to EOF)
-	exclusive: bool,        // F_WRLCK vs F_RDLCK
+	start:     i64, // byte offset
+	len:       i64, // length in bytes (0 = to EOF)
+	exclusive: bool, // F_WRLCK vs F_RDLCK
 }
 
 // Flock_State is one BSD flock holder on a file (whole-file).  A file may
 // have many shared holders or a single exclusive holder.
 Flock_State :: struct {
-	owner:     u64,  // fi.lock_owner
+	owner:     u64, // fi.lock_owner
 	exclusive: bool, // LOCK_EX vs LOCK_SH
 }
 
@@ -57,7 +57,11 @@ file_identity_from_fh :: proc(fh: u64) -> File_Identity {
 
 // file_identity_from_entry derives a File_Identity from a resolved directory
 // entry location (parent dir cluster/offset + entry index).
-file_identity_from_entry :: proc(dir_cluster: fs.Cluster, dir_offset: fs.Sector_Offset, entry_index: int) -> File_Identity {
+file_identity_from_entry :: proc(
+	dir_cluster: fs.Cluster,
+	dir_offset: fs.Sector_Offset,
+	entry_index: int,
+) -> File_Identity {
 	return File_Identity{u64(dir_cluster), u16(dir_offset), u16(entry_index)}
 }
 
@@ -131,7 +135,6 @@ lock_mutate :: proc(fsys: ^FS, id: File_Identity, owner: u64, fl: ^posix.flock) 
 	if has_old {
 		append(&recs, ..old[:])
 	}
-
 	// F_UNLCK: remove matching records for this owner.
 	if fl.l_type == posix.Lock_Type.UNLCK {
 		kept := 0
@@ -150,6 +153,7 @@ lock_mutate :: proc(fsys: ^FS, id: File_Identity, owner: u64, fl: ^posix.flock) 
 			resize(&recs, kept)
 			fsys.locks[id] = recs
 		}
+
 		if has_old {
 			delete(old)
 		}
@@ -182,11 +186,16 @@ lock_mutate :: proc(fsys: ^FS, id: File_Identity, owner: u64, fl: ^posix.flock) 
 		}
 	}
 	if !replaced {
-		append(&recs, Region_Lock{
-			owner = owner, pid = fl.l_pid,
-			start = start, len = length,
-			exclusive = fl.l_type == posix.Lock_Type.WRLCK,
-		})
+		append(
+			&recs,
+			Region_Lock {
+				owner = owner,
+				pid = fl.l_pid,
+				start = start,
+				len = length,
+				exclusive = fl.l_type == posix.Lock_Type.WRLCK,
+			},
+		)
 	}
 
 	fsys.locks[id] = recs
@@ -205,7 +214,6 @@ fused_lock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, cmd: c.int, lock: r
 	context = runtime.default_context()
 	fsys := begin_op()
 	defer end_op(fsys)
-
 	if lock == nil {
 		return fuse3.nix(.EINVAL)
 	}
@@ -213,14 +221,14 @@ fused_lock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, cmd: c.int, lock: r
 	fl := (^posix.flock)(lock)
 	id := file_identity_from_fh(fi.fh)
 	owner := fi.lock_owner
-
 	#partial switch posix.FCNTL_Cmd(cmd) {
 	case posix.FCNTL_Cmd.GETLK:
 		// Report the first conflicting exclusive lock from another owner.
 		if recs, ok := fsys.locks[id]; ok {
 			for &r in recs {
 				if r.owner == owner { continue }
-				if r.exclusive && lock_range_overlaps(r.start, r.len, i64(fl.l_start), i64(fl.l_len)) {
+				if r.exclusive &&
+				   lock_range_overlaps(r.start, r.len, i64(fl.l_start), i64(fl.l_len)) {
 					fl.l_type = posix.Lock_Type.WRLCK
 					fl.l_pid = r.pid
 					fl.l_start = posix.off_t(r.start)
@@ -311,6 +319,7 @@ fused_flock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, op: c.int) -> c.in
 	if has_old {
 		delete(old)
 	}
+
 	log.debugf("flock: %s owner=%d %s", path, owner, "EX" if exclusive else "SH")
 	return 0
 }

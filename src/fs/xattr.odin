@@ -17,8 +17,15 @@ XAttr :: struct {
 
 // _xattr_chain_locate finds the xattr data chain for an entry. Returns the
 // cluster and the sector offset (from the CE table's sector_start).
-@(private="file")
-_xattr_chain_locate :: proc(vol: ^Volume, entry: ^Directory_Entry) -> (cluster: Cluster, offset: Sector_Offset, ok: bool) {
+@(private = "file")
+_xattr_chain_locate :: proc(
+	vol: ^Volume,
+	entry: ^Directory_Entry,
+) -> (
+	cluster: Cluster,
+	offset: Sector_Offset,
+	ok: bool,
+) {
 	if entry.xattr_cluster == 0 {
 		return {}, 0, false
 	}
@@ -34,7 +41,7 @@ _xattr_chain_locate :: proc(vol: ^Volume, entry: ^Directory_Entry) -> (cluster: 
 }
 
 // _xattr_chain_free deallocates the xattr chain rooted at the given cluster.
-@(private="file")
+@(private = "file")
 _xattr_chain_free :: proc(vol: ^Volume, cluster: u64) -> FS_Error {
 	if cluster == 0 {
 		return .None
@@ -54,7 +61,14 @@ _xattr_chain_free :: proc(vol: ^Volume, cluster: u64) -> FS_Error {
 // array of cloned name/value pairs. The caller is responsible for deleting
 // each element's name/value and the array itself. Returns an empty list
 // when the entry has no xattrs.
-xattr_load :: proc(vol: ^Volume, entry: ^Directory_Entry, allocator := context.allocator) -> (attrs: [dynamic]XAttr, err: FS_Error) {
+xattr_load :: proc(
+	vol: ^Volume,
+	entry: ^Directory_Entry,
+	allocator := context.allocator,
+) -> (
+	attrs: [dynamic]XAttr,
+	err: FS_Error,
+) {
 	attrs = make([dynamic]XAttr, 0, 4, allocator)
 	if entry.xattr_cluster == 0 {
 		return attrs, .None
@@ -78,7 +92,15 @@ xattr_load :: proc(vol: ^Volume, entry: ^Directory_Entry, allocator := context.a
 // xattr_get returns a heap-allocated copy of the value for a named
 // attribute. The caller deletes the returned slice. found=false when the
 // attribute does not exist.
-xattr_get :: proc(vol: ^Volume, entry: ^Directory_Entry, name: string, allocator := context.allocator) -> (value: []u8, found: bool) {
+xattr_get :: proc(
+	vol: ^Volume,
+	entry: ^Directory_Entry,
+	name: string,
+	allocator := context.allocator,
+) -> (
+	value: []u8,
+	found: bool,
+) {
 	attrs, err := xattr_load(vol, entry, allocator)
 	defer {
 		for &a in attrs {
@@ -132,19 +154,28 @@ xattr_store :: proc(vol: ^Volume, entry: ^Directory_Entry, attrs: []XAttr) -> FS
 			return cerr
 		}
 	}
+
 	entry.xattr_cluster = u64(new_c)
 	return .None
 }
 
 // xattr_remove deletes a single named attribute. Returns removed=true when
 // the attribute existed. The caller persists the updated entry to disk.
-xattr_remove :: proc(vol: ^Volume, entry: ^Directory_Entry, name: string, allocator := context.allocator) -> (removed: bool, err: FS_Error) {
+xattr_remove :: proc(
+	vol: ^Volume,
+	entry: ^Directory_Entry,
+	name: string,
+	allocator := context.allocator,
+) -> (
+	removed: bool,
+	err: FS_Error,
+) {
 	attrs, lerr := xattr_load(vol, entry, allocator)
 	if lerr != .None {
 		return false, lerr
 	}
-	defer delete(attrs)
 
+	defer delete(attrs)
 	removed = false
 	for a, i in attrs {
 		if a.name == name {
@@ -182,13 +213,14 @@ xattr_clear :: proc(vol: ^Volume, entry: ^Directory_Entry) -> FS_Error {
 	if entry.xattr_cluster == 0 {
 		return .None
 	}
+
 	err := _xattr_chain_free(vol, entry.xattr_cluster)
 	entry.xattr_cluster = 0
 	return err
 }
 
 // _xattr_serialize packs attributes into a blob buffer.
-@(private="file")
+@(private = "file")
 _xattr_serialize :: proc(attrs: []XAttr) -> (data: []u8) {
 	total := 0
 	for a in attrs {
@@ -220,8 +252,12 @@ _xattr_serialize :: proc(attrs: []XAttr) -> (data: []u8) {
 
 // _xattr_deserialize_into parses a blob buffer into an existing dynamic
 // array of cloned attributes.
-@(private="file")
-_xattr_deserialize_into :: proc(attrs: ^[dynamic]XAttr, data: []u8, allocator := context.allocator) {
+@(private = "file")
+_xattr_deserialize_into :: proc(
+	attrs: ^[dynamic]XAttr,
+	data: []u8,
+	allocator := context.allocator,
+) {
 	if len(data) < size_of(XAttr_Blob_Header) {
 		return
 	}

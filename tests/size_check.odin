@@ -10,7 +10,7 @@ import "core:fmt"
 import "core:testing"
 import "src:fuse3"
 
-@test
+@(test)
 test_struct_sizes :: proc(t: ^testing.T) {
 	testing.expect_value(t, size_of(fuse3.Operations), 344)
 	testing.expect_value(t, size_of(fuse3.File_Info), 64)

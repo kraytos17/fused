@@ -29,7 +29,7 @@ setup_mounter :: proc(t: ^testing.T, fsys: ^mounter.FS) -> (ok: bool) {
 	}
 
 	fsys^ = mounter.init_fs_for_test(vol)
-	ctx := fuse3.Context{
+	ctx := fuse3.Context {
 		uid          = 1000,
 		gid          = 1000,
 		private_data = fsys,
@@ -72,7 +72,13 @@ Dir_Collector :: struct {
 	len: int,
 }
 
-collect_filler :: proc "c" (buf: rawptr, name: cstring, stbuf: ^fuse3.Stat, off: posix.off_t, flags: c.int) -> c.int {
+collect_filler :: proc "c" (
+	buf: rawptr,
+	name: cstring,
+	stbuf: ^fuse3.Stat,
+	off: posix.off_t,
+	flags: c.int,
+) -> c.int {
 	c := (^Dir_Collector)(buf)
 	n := len(name)
 	if c.len + n + 1 <= len(c.buf) {
@@ -85,7 +91,7 @@ collect_filler :: proc "c" (buf: rawptr, name: cstring, stbuf: ^fuse3.Stat, off:
 }
 
 // test_mount_getattr — getattr on root, demo file, and a missing path.
-@test
+@(test)
 test_mount_getattr :: proc(t: ^testing.T) {
 	fsys: mounter.FS
 	ok := setup_mounter(t, &fsys)
@@ -110,7 +116,7 @@ test_mount_getattr :: proc(t: ^testing.T) {
 }
 
 // test_mount_readdir — readdir on root yields ., .. and Kernel.
-@test
+@(test)
 test_mount_readdir :: proc(t: ^testing.T) {
 	fsys: mounter.FS
 	ok := setup_mounter(t, &fsys)
@@ -123,24 +129,27 @@ test_mount_readdir :: proc(t: ^testing.T) {
 
 	list := strings.split(string(collector.buf[:collector.len]), "\x00")
 	defer delete(list)
-	found_dot   := false
+	found_dot := false
 	found_dotdot := false
 	found_kernel := false
 	for e in list {
 		switch e {
-		case ".":  found_dot = true
-		case "..": found_dotdot = true
-		case "Kernel": found_kernel = true
+		case ".":
+			found_dot = true
+		case "..":
+			found_dotdot = true
+		case "Kernel":
+			found_kernel = true
 		}
 	}
-	
+
 	testing.expect(t, found_dot, "has .")
 	testing.expect(t, found_dotdot, "has ..")
 	testing.expect(t, found_kernel, "has Kernel")
 }
 
 // test_mount_create_write_read_unlink — full file lifecycle.
-@test
+@(test)
 test_mount_create_write_read_unlink :: proc(t: ^testing.T) {
 	fsys: mounter.FS
 	ok := setup_mounter(t, &fsys)
@@ -172,7 +181,7 @@ test_mount_create_write_read_unlink :: proc(t: ^testing.T) {
 }
 
 // test_mount_mkdir_rmdir — directory lifecycle + ENOTEMPTY.
-@test
+@(test)
 test_mount_mkdir_rmdir :: proc(t: ^testing.T) {
 	fsys: mounter.FS
 	ok := setup_mounter(t, &fsys)
@@ -203,7 +212,7 @@ test_mount_mkdir_rmdir :: proc(t: ^testing.T) {
 }
 
 // test_mount_rename — same-directory and cross-directory rename.
-@test
+@(test)
 test_mount_rename :: proc(t: ^testing.T) {
 	fsys: mounter.FS
 	ok := setup_mounter(t, &fsys)
@@ -242,7 +251,7 @@ test_mount_rename :: proc(t: ^testing.T) {
 }
 
 // test_mount_symlink_readlink — symlink creation and target readback.
-@test
+@(test)
 test_mount_symlink_readlink :: proc(t: ^testing.T) {
 	fsys: mounter.FS
 	ok := setup_mounter(t, &fsys)
@@ -263,7 +272,7 @@ test_mount_symlink_readlink :: proc(t: ^testing.T) {
 }
 
 // test_mount_truncate — extend and shrink via truncate.
-@test
+@(test)
 test_mount_truncate :: proc(t: ^testing.T) {
 	fsys: mounter.FS
 	ok := setup_mounter(t, &fsys)
@@ -298,7 +307,7 @@ test_mount_truncate :: proc(t: ^testing.T) {
 }
 
 // test_mount_chmod_access — permission flags and access checks.
-@test
+@(test)
 test_mount_chmod_access :: proc(t: ^testing.T) {
 	fsys: mounter.FS
 	ok := setup_mounter(t, &fsys)
@@ -326,7 +335,7 @@ test_mount_chmod_access :: proc(t: ^testing.T) {
 }
 
 // test_mount_statfs — statfs geometry.
-@test
+@(test)
 test_mount_statfs :: proc(t: ^testing.T) {
 	fsys: mounter.FS
 	ok := setup_mounter(t, &fsys)
@@ -342,7 +351,7 @@ test_mount_statfs :: proc(t: ^testing.T) {
 }
 
 // test_mount_xattr — set/get/list/remove + errno semantics.
-@test
+@(test)
 test_mount_xattr :: proc(t: ^testing.T) {
 	fsys: mounter.FS
 	ok := setup_mounter(t, &fsys)
@@ -393,7 +402,7 @@ test_mount_xattr :: proc(t: ^testing.T) {
 }
 
 // test_mount_stub_callbacks — unimplemented callbacks return -ENOSYS.
-@test
+@(test)
 test_mount_stub_callbacks :: proc(t: ^testing.T) {
 	fsys: mounter.FS
 	ok := setup_mounter(t, &fsys)
@@ -411,11 +420,14 @@ test_mount_stub_callbacks :: proc(t: ^testing.T) {
 }
 
 // test_mount_fs_error_to_errno — full FS_Error → errno mapping.
-@test
+@(test)
 test_mount_fs_error_to_errno :: proc(t: ^testing.T) {
 	// (FS_Error, expected c.int) pairs.
-	Cases :: struct { err: fs.FS_Error, want: c.int }
-	cases := []Cases{
+	Cases :: struct {
+		err:  fs.FS_Error,
+		want: c.int,
+	}
+	cases := []Cases {
 		{fs.FS_Error.None, c.int(0)},
 		{fs.FS_Error.Entry_Not_Found, c.int(-int(posix.ENOENT))},
 		{fs.FS_Error.Not_A_Directory, c.int(-int(posix.ENOTDIR))},

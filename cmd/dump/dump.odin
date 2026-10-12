@@ -31,11 +31,22 @@ print_master :: proc(vol: ^fs.Volume, _: bool, _: ^bool) {
 		sig_len += 1
 	}
 
-	image_mb := f64(u64(m.cluster_map_size) * u64(m.cluster_size) * fs.SECTOR_SIZE) / (1024.0 * 1024.0)
+	image_mb :=
+		f64(u64(m.cluster_map_size) * u64(m.cluster_size) * fs.SECTOR_SIZE) / (1024.0 * 1024.0)
 	fmt.println("=== MasterRecord (sector 0) ===")
-	fmt.printf("  sig       = \"%s\"  (rev %d..%d)\n", string(m.sig[:sig_len]), m.rev_min, m.rev_max)
-	fmt.printf("  image     = %d clusters  (%d sectors/cluster = %.1f MB)\n",
-		m.cluster_map_size, m.cluster_size, image_mb)
+	fmt.printf(
+		"  sig       = \"%s\"  (rev %d..%d)\n",
+		string(m.sig[:sig_len]),
+		m.rev_min,
+		m.rev_max,
+	)
+	fmt.printf(
+		"  image     = %d clusters  (%d sectors/cluster = %.1f MB)\n",
+		m.cluster_map_size,
+		m.cluster_size,
+		image_mb,
+	)
+
 	fmt.printf("  root dir  = cluster %d, sector %d\n", m.root_cluster, m.root_sector_index)
 	fmt.println()
 }
@@ -43,7 +54,10 @@ print_master :: proc(vol: ^fs.Volume, _: bool, _: ^bool) {
 // print_cluster_map prints the cluster map in text format.
 print_cluster_map :: proc(vol: ^fs.Volume, _: bool, _: ^bool, show_all: bool) {
 	m := &vol.master
-	cm_sectors := (m.cluster_map_size + fs.CLUSTER_MAP_ENTRIES_PER_SECTOR - 1) / fs.CLUSTER_MAP_ENTRIES_PER_SECTOR
+	cm_sectors :=
+		(m.cluster_map_size + fs.CLUSTER_MAP_ENTRIES_PER_SECTOR - 1) /
+		fs.CLUSTER_MAP_ENTRIES_PER_SECTOR
+
 	allocated: u64
 	for sec_idx: u64; sec_idx < cm_sectors; sec_idx += 1 {
 		buf: [fs.SECTOR_SIZE]u8
@@ -73,6 +87,7 @@ print_cluster_map :: proc(vol: ^fs.Volume, _: bool, _: ^bool, show_all: bool) {
 				}
 				fmt.println()
 			}
+
 			if .Allocated in cme.flags {
 				table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
 				if fs.read_cluster_entry_table(vol, fs.Cluster(ci), &table) == .None {
@@ -85,20 +100,33 @@ print_cluster_map :: proc(vol: ^fs.Volume, _: bool, _: ^bool, show_all: bool) {
 							if e.next_cluster != 0 {
 								sb: strings.Builder
 								strings.builder_init(&sb, context.temp_allocator)
-								fmt.sbprintf(&sb, "  next=(%d,%d)", e.next_cluster, e.next_sector_index)
+								fmt.sbprintf(
+									&sb,
+									"  next=(%d,%d)",
+									e.next_cluster,
+									e.next_sector_index,
+								)
 								next_str = strings.to_string(sb)
 							}
 
 							sectors := "sector"
 							if e.allocation_size != 1 { sectors = "sectors" }
-							fmt.printf("    CE[%2d] %-22s  %d %s  @%d%s\n",
-								i, state_str, e.allocation_size, sectors, e.sector_start, next_str)
+							fmt.printf(
+								"    CE[%2d] %-22s  %d %s  @%d%s\n",
+								i,
+								state_str,
+								e.allocation_size,
+								sectors,
+								e.sector_start,
+								next_str,
+							)
 						}
 					}
 				}
 			}
 		}
 	}
+
 	fmt.printf("  (%d allocated, %d free)\n", allocated, m.cluster_map_size - allocated)
 	fmt.println()
 }
@@ -106,11 +134,23 @@ print_cluster_map :: proc(vol: ^fs.Volume, _: bool, _: ^bool, show_all: bool) {
 // print_directory_tree prints the directory tree starting from root.
 print_directory_tree :: proc(vol: ^fs.Volume, _: bool, _: ^bool) {
 	fmt.println("=== Directory Tree ===")
-	print_directory(vol, fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(vol.master.root_sector_index), "", true)
+	print_directory(
+		vol,
+		fs.Cluster(vol.master.root_cluster),
+		fs.Sector_Offset(vol.master.root_sector_index),
+		"",
+		true,
+	)
 }
 
 // print_directory recursively prints a directory and its children.
-print_directory :: proc(vol: ^fs.Volume, cluster: fs.Cluster, offset: fs.Sector_Offset, prefix: string, is_root: bool) {
+print_directory :: proc(
+	vol: ^fs.Volume,
+	cluster: fs.Cluster,
+	offset: fs.Sector_Offset,
+	prefix: string,
+	is_root: bool,
+) {
 	runs, ext_err := fs.resolve_extents(vol, cluster, offset)
 	if ext_err != .None { return }
 	for run in runs {
@@ -144,9 +184,8 @@ print_directory :: proc(vol: ^fs.Volume, cluster: fs.Cluster, offset: fs.Sector_
 				}
 
 				kind: string
-				if .Directory in e.flags { kind = "DIR" }
-				else if .Link in e.flags { kind = "LINK" }
-				else { kind = "FILE" }
+				if .Directory in
+				   e.flags { kind = "DIR" } else if .Link in e.flags { kind = "LINK" } else { kind = "FILE" }
 
 				target: string
 				if .Link in e.flags {
@@ -154,14 +193,18 @@ print_directory :: proc(vol: ^fs.Volume, cluster: fs.Cluster, offset: fs.Sector_
 				}
 
 				connector := "├── "
-				if is_root { connector = "  └── " }
-				else if i == last_in_sector { connector = "  └── " }
-				else { connector = "  ├── " }
+				if is_root { connector = "  └── " } else if i == last_in_sector { connector = "  └── " } else { connector = "  ├── " }
 
 				dt_buf: [32]u8
-				dt_str := fmt.bprintf(dt_buf[:], "%04d-%02d-%02d %02d:%02d",
-					e.year, e.date_time.month, e.date_time.date,
-					e.date_time.hour, e.date_time.minute)
+				dt_str := fmt.bprintf(
+					dt_buf[:],
+					"%04d-%02d-%02d %02d:%02d",
+					e.year,
+					e.date_time.month,
+					e.date_time.date,
+					e.date_time.hour,
+					e.date_time.minute,
+				)
 
 				size_str := fmt_size(e.file_size)
 				sb2: strings.Builder
@@ -173,25 +216,52 @@ print_directory :: proc(vol: ^fs.Volume, cluster: fs.Cluster, offset: fs.Sector_
 
 				if .Read_Only in e.flags { fb[fi] = 'R'; fi += 1 }
 				if .No_Write in e.flags { fb[fi] = 'W'; fi += 1 }
-				if .No_Read in e.flags { fb[fi+0] = 'R'; fb[fi+1] = '!'; fi += 2 }
-				if .No_Execute in e.flags { fb[fi+0] = 'X'; fb[fi+1] = '!'; fi += 2 }
+				if .No_Read in e.flags { fb[fi + 0] = 'R'; fb[fi + 1] = '!'; fi += 2 }
+				if .No_Execute in e.flags { fb[fi + 0] = 'X'; fb[fi + 1] = '!'; fi += 2 }
 
 				flags_suffix := string(fb[:fi])
 				if .Link in e.flags && target != "" {
-					fmt.printf("%s%s\"%s\" → \"%s\"  %-4s  %5s  %s  %s  uid=%d gid=%d%s\n",
-						prefix, connector, name, target, kind, size_str, loc_str, dt_str,
-						e.uid, e.gid, flags_suffix)
+					fmt.printf(
+						"%s%s\"%s\" → \"%s\"  %-4s  %5s  %s  %s  uid=%d gid=%d%s\n",
+						prefix,
+						connector,
+						name,
+						target,
+						kind,
+						size_str,
+						loc_str,
+						dt_str,
+						e.uid,
+						e.gid,
+						flags_suffix,
+					)
 				} else {
-					fmt.printf("%s%s\"%s\"  %-4s  %5s  %s  %s  uid=%d gid=%d%s\n",
-						prefix, connector, name, kind, size_str, loc_str, dt_str,
-						e.uid, e.gid, flags_suffix)
+					fmt.printf(
+						"%s%s\"%s\"  %-4s  %5s  %s  %s  uid=%d gid=%d%s\n",
+						prefix,
+						connector,
+						name,
+						kind,
+						size_str,
+						loc_str,
+						dt_str,
+						e.uid,
+						e.gid,
+						flags_suffix,
+					)
 				}
 				if .Directory in e.flags {
 					sb3: strings.Builder
 					strings.builder_init(&sb3, context.temp_allocator)
 					fmt.sbprintf(&sb3, "%s  ", prefix)
 					child_prefix := strings.to_string(sb3)
-					print_directory(vol, fs.Cluster(e.stored_cluster), fs.Sector_Offset(e.sector_index), child_prefix, false)
+					print_directory(
+						vol,
+						fs.Cluster(e.stored_cluster),
+						fs.Sector_Offset(e.sector_index),
+						child_prefix,
+						false,
+					)
 				}
 			}
 		}
@@ -210,8 +280,15 @@ print_hex_by_path :: proc(vol: ^fs.Volume, path: string) {
 		os.exit(1)
 	}
 
-	runs, ext_err := fs.resolve_extents(vol, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index))
-	if ext_err != .None { log.errorf("resolve_extents failed"); os.exit(1) }
+	runs, ext_err := fs.resolve_extents(
+		vol,
+		fs.Cluster(entry.stored_cluster),
+		fs.Sector_Offset(entry.sector_index),
+	)
+	if ext_err != .None {
+		log.errorf("resolve_extents failed")
+		os.exit(1)
+	}
 
 	sb: strings.Builder
 	strings.builder_init(&sb, context.allocator)
@@ -233,8 +310,8 @@ print_hex_by_path :: proc(vol: ^fs.Volume, path: string) {
 			i: u64
 			for i < n {
 				fmt.sbprintf(&sb, "%08x  ", off)
-				for j: u64; j < 16 && i+j < n; j += 1 {
-					fmt.sbprintf(&sb, "%02x ", sec_buf[i+j])
+				for j: u64; j < 16 && i + j < n; j += 1 {
+					fmt.sbprintf(&sb, "%02x ", sec_buf[i + j])
 				}
 				if i + 16 > n {
 					rem := (i + 16) - n
@@ -242,16 +319,17 @@ print_hex_by_path :: proc(vol: ^fs.Volume, path: string) {
 				}
 
 				fmt.sbprintf(&sb, " ")
-				for j: u64; j < 16 && i+j < n; j += 1 {
-					b := sec_buf[i+j]
-					if b >= 32 && b < 127 { fmt.sbprintf(&sb, "%c", b) }
-					else { fmt.sbprintf(&sb, ".") }
+				for j: u64; j < 16 && i + j < n; j += 1 {
+					b := sec_buf[i + j]
+					if b >= 32 &&
+					   b < 127 { fmt.sbprintf(&sb, "%c", b) } else { fmt.sbprintf(&sb, ".") }
 				}
 
 				fmt.sbprintf(&sb, "\n")
 				off += 16
 				i += 16
 			}
+
 			file_off += n
 			remaining -= n
 		}

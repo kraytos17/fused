@@ -42,19 +42,19 @@ format_geometry :: proc(size, cluster_size: u64) -> Format_Geometry {
 	metadata_sectors := 1 + cm_sectors + journal_sectors
 	reserved_clusters := (metadata_sectors + cluster_size - 1) / cluster_size
 	return {
-		total_sectors     = total_sectors,
-		total_clusters    = total_clusters,
-		cm_sectors        = cm_sectors,
-		journal_sectors   = journal_sectors,
-		metadata_sectors  = metadata_sectors,
+		total_sectors = total_sectors,
+		total_clusters = total_clusters,
+		cm_sectors = cm_sectors,
+		journal_sectors = journal_sectors,
+		metadata_sectors = metadata_sectors,
 		reserved_clusters = reserved_clusters,
-		root_cluster      = reserved_clusters,
+		root_cluster = reserved_clusters,
 	}
 }
 
 // format_image formats the open (empty) file fd as a fused image. The file
 // is truncated to size and written from sector 0.
-@(optimization_mode="favor_size")
+@(optimization_mode = "favor_size")
 format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 	if terr := os.truncate(fd, i64(p.size)); terr != nil {
 		return .Sector_Write_Error
@@ -78,12 +78,14 @@ format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 	master.root_sector_index = 1
 	master.root_cluster = root_cluster
 	master.end_sig = 0x0BB0
-	// Region size / seq are written unconditionally; v6 images never read
-	// the region size, so this is harmless.
-	journal_v2_set_region_size(&master, journal_sectors)
+	// Journal region size and initial seq are part of every image; the v2
+	// WAL reads both at commit/recovery time.
+	journal_set_region_size(&master, journal_sectors)
 	journal_seq_init(&master)
 
-	vol := Volume{disk = fd}
+	vol := Volume {
+		disk = fd,
+	}
 	{
 		master_buf: [SECTOR_SIZE]u8
 		(^Master_Record)(&master_buf[0])^ = master
@@ -103,9 +105,13 @@ format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 			if u64(ci) >= total_clusters { break }
 			switch {
 			case u64(ci) < reserved_clusters:
-				entries[ei] = {flags = {.Reserved, .Full}}
+				entries[ei] = {
+					flags = {.Reserved, .Full},
+				}
 			case u64(ci) == reserved_clusters:
-				entries[ei] = {flags = {.Allocated}}
+				entries[ei] = {
+					flags = {.Allocated},
+				}
 			}
 		}
 		if sector_write(&vol, Sector(1 + sec_idx), cm_buf[:]) != .None {
@@ -152,16 +158,29 @@ format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 		now := time.now()
 		y, mo, d := time.date(now)
 		h, m, s := time.clock(now)
-		entry := Directory_Entry{
-			flags           = {.Allocated, .Exists},
-			sector_index    = 2,
-			stored_cluster  = root_cluster,
-			year            = u16(y),
-			date_time       = {month = u32(int(mo)), date = u32(d), hour = u32(h), minute = u32(m), second = u32(s)},
-			atime_year      = u16(y),
-			atime_date_time = {month = u32(int(mo)), date = u32(d), hour = u32(h), minute = u32(m), second = u32(s)},
-			file_size       = u64(len(p.demo_data)),
+		entry := Directory_Entry {
+			flags = {.Allocated, .Exists},
+			sector_index = 2,
+			stored_cluster = root_cluster,
+			year = u16(y),
+			date_time = {
+				month = u32(int(mo)),
+				date = u32(d),
+				hour = u32(h),
+				minute = u32(m),
+				second = u32(s),
+			},
+			atime_year = u16(y),
+			atime_date_time = {
+				month = u32(int(mo)),
+				date = u32(d),
+				hour = u32(h),
+				minute = u32(m),
+				second = u32(s),
+			},
+			file_size = u64(len(p.demo_data)),
 		}
+
 		copy(entry.file_name[:], "Kernel")
 		(^Directory_Entry)(&dir_buf[0])^ = entry
 	}
@@ -176,7 +195,13 @@ format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 		}
 	}
 
-	log.debugf("format: size=%d cluster_size=%d clusters=%d reserved=%d root=%d",
-		p.size, p.cluster_size, total_clusters, reserved_clusters, root_cluster)
+	log.debugf(
+		"format: size=%d cluster_size=%d clusters=%d reserved=%d root=%d",
+		p.size,
+		p.cluster_size,
+		total_clusters,
+		reserved_clusters,
+		root_cluster,
+	)
 	return .None
 }

@@ -63,7 +63,7 @@ volume_open :: proc(path: string) -> (vol: Volume, err: FS_Error) {
 
 	vol.master = master
 	alloc_cache_init(&vol.cache, &vol.master)
-	journal_backend_for(&master).recover(&vol)
+	JOURNAL_BACKEND.recover(&vol)
 	return vol, .None
 }
 
@@ -77,9 +77,9 @@ volume_close :: proc(vol: ^Volume) {
 // File_Handle packs the parent-directory location and entry index
 // into the 64-bit opaque FUSE file handle using a bit_field.
 File_Handle :: bit_field u64 {
-	dir_cluster: u64  | 32,
-	dir_offset:  u16  | 16,
-	entry_index: u16  | 16,
+	dir_cluster: u64 | 32,
+	dir_offset:  u16 | 16,
+	entry_index: u16 | 16,
 }
 
 // Convenience constructor so callers pass Cluster/Sector_Offset directly.
@@ -92,7 +92,14 @@ make_file_handle :: proc(cluster: Cluster, offset: Sector_Offset, idx: int) -> F
 // no sector has been allocated yet) a new .LFN sector is allocated and
 // the bump is reset.  Returns a packed LFN_Pointer referencing the
 // on-disk copy, or (!ok) on I/O / space failure.
-	lfn_bump_write :: proc(vol: ^Volume, bump: ^LFN_Bump, name: string) -> (ptr: LFN_Pointer, ok: bool) {
+lfn_bump_write :: proc(
+	vol: ^Volume,
+	bump: ^LFN_Bump,
+	name: string,
+) -> (
+	ptr: LFN_Pointer,
+	ok: bool,
+) {
 	needed := u16(len(name))
 	s, has_state := bump.state.?
 	if !has_state || s.next_byte + needed > SECTOR_SIZE {
@@ -103,15 +110,20 @@ make_file_handle :: proc(cluster: Cluster, offset: Sector_Offset, idx: int) -> F
 		defer delete(runs)
 		if rok != .None || len(runs) == 0 { return {}, false }
 
-		new_state := LFN_Bump_State{
-			cluster = new_c, offset = new_o, sector = runs[0].sector, next_byte = 0,
+		new_state := LFN_Bump_State {
+			cluster   = new_c,
+			offset    = new_o,
+			sector    = runs[0].sector,
+			next_byte = 0,
 		}
+
 		bump.state = new_state
 		s = new_state
 	}
 
 	buf: [SECTOR_SIZE]u8
 	if sector_read(vol, s.sector, buf[:]) != .None { return {}, false }
+
 	copy(buf[s.next_byte:], transmute([]u8)name)
 	if sector_write(vol, s.sector, buf[:]) != .None { return {}, false }
 
@@ -121,8 +133,13 @@ make_file_handle :: proc(cluster: Cluster, offset: Sector_Offset, idx: int) -> F
 		sector  = u16(s.offset),
 		_pad    = s.next_byte,
 	}
+	new_state := LFN_Bump_State {
+		cluster   = s.cluster,
+		offset    = s.offset,
+		sector    = s.sector,
+		next_byte = s.next_byte + needed,
+	}
 
-	new_state := LFN_Bump_State{cluster = s.cluster, offset = s.offset, sector = s.sector, next_byte = s.next_byte + needed}
 	bump.state = new_state
 	return ptr, true
 }

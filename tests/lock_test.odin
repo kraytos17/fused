@@ -10,7 +10,14 @@ import "src:fuse3"
 import "src:mounter"
 
 // setup_lock_file creates a test file and returns its file info (fh set).
-setup_lock_file :: proc(t: ^testing.T, fsys: ^mounter.FS, name: string) -> (fi: fuse3.File_Info, ok: bool) {
+setup_lock_file :: proc(
+	t: ^testing.T,
+	fsys: ^mounter.FS,
+	name: string,
+) -> (
+	fi: fuse3.File_Info,
+	ok: bool,
+) {
 	fi = {}
 	path := cstring(raw_data(name))
 	rc := mounter.fused_create(path, posix.mode_t{.IRUSR, .IWUSR}, &fi)
@@ -22,7 +29,7 @@ setup_lock_file :: proc(t: ^testing.T, fsys: ^mounter.FS, name: string) -> (fi: 
 }
 
 // test_lock_setlk_unlock — F_SETLK acquires, F_UNLCK releases.
-@test
+@(test)
 test_lock_setlk_unlock :: proc(t: ^testing.T) {
 	fsys: mounter.FS
 	if !setup_mounter(t, &fsys) { return }
@@ -53,7 +60,7 @@ test_lock_setlk_unlock :: proc(t: ^testing.T) {
 }
 
 // test_lock_conflict_eagain — a different owner's exclusive lock conflicts.
-@test
+@(test)
 test_lock_conflict_eagain :: proc(t: ^testing.T) {
 	fsys: mounter.FS
 	if !setup_mounter(t, &fsys) { return }
@@ -90,7 +97,7 @@ test_lock_conflict_eagain :: proc(t: ^testing.T) {
 }
 
 // test_lock_getlk — F_GETLK reports a conflicting owner's lock.
-@test
+@(test)
 test_lock_getlk :: proc(t: ^testing.T) {
 	fsys: mounter.FS
 	if !setup_mounter(t, &fsys) { return }
@@ -126,7 +133,7 @@ test_lock_getlk :: proc(t: ^testing.T) {
 }
 
 // test_flock_ex_unlock — LOCK_EX acquires, LOCK_UN releases, conflict EAGAIN.
-@test
+@(test)
 test_flock_ex_unlock :: proc(t: ^testing.T) {
 	fsys: mounter.FS
 	if !setup_mounter(t, &fsys) { return }

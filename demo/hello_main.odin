@@ -22,12 +22,29 @@ import "core:strings"
 import "core:sys/posix"
 import "src:fuse3"
 
-HELLO_CONTENT := [?]u8{
-	'H', 'e', 'l', 'l', 'o', ' ', 'f', 'r', 'o', 'm', ' ', 'f', 'u', 's', 'e', 'd', '!', '\n',
+HELLO_CONTENT := [?]u8 {
+	'H',
+	'e',
+	'l',
+	'l',
+	'o',
+	' ',
+	'f',
+	'r',
+	'o',
+	'm',
+	' ',
+	'f',
+	'u',
+	's',
+	'e',
+	'd',
+	'!',
+	'\n',
 }
 
 FILE_MODE_RO :: posix.mode_t{.IFREG, .IRUSR, .IRGRP, .IROTH}
-DIR_MODE_RO  :: posix.mode_t{.IFDIR, .IRUSR, .IRGRP, .IROTH, .IXUSR, .IXGRP, .IXOTH}
+DIR_MODE_RO :: posix.mode_t{.IFDIR, .IRUSR, .IRGRP, .IROTH, .IXUSR, .IXGRP, .IXOTH}
 
 FS :: struct {
 	counter: u64,
@@ -37,7 +54,7 @@ get_fs :: #force_inline proc "contextless" () -> ^FS {
 	return (^FS)(fuse3.fuse_get_context().private_data)
 }
 
-hello_getattr :: proc "c"(path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Info) -> c.int {
+hello_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = log.Logger{}
@@ -55,12 +72,12 @@ hello_getattr :: proc "c"(path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Info
 	return 0
 }
 
-hello_open :: proc "c"(path: cstring, fi: ^fuse3.File_Info) -> c.int {
+hello_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	return 0
 }
 
-hello_read :: proc "c"(
+hello_read :: proc "c" (
 	path: cstring,
 	buf: [^]c.char,
 	size: c.size_t,
@@ -79,7 +96,7 @@ hello_read :: proc "c"(
 	return c.int(n)
 }
 
-hello_readdir :: proc "c"(
+hello_readdir :: proc "c" (
 	path: cstring,
 	buf: rawptr,
 	filler: fuse3.Fill_Dir_Proc,
@@ -100,7 +117,7 @@ hello_readdir :: proc "c"(
 	return 0
 }
 
-hello_release :: proc "c"(path: cstring, fi: ^fuse3.File_Info) -> c.int {
+hello_release :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	return 0
 }
@@ -123,10 +140,15 @@ main :: proc() {
 	}
 
 	maj, min := fuse3.check_version()
-	fmt.printf("libfuse3 runtime version: %d.%d (built for %d.%d)\n",
-		maj, min, fuse3.FUSE_USE_VERSION_MAJOR, fuse3.FUSE_USE_VERSION_MINOR)
-	fmt.printf("libfuse3 package version: %s\n", fuse3.pkgversion())
+	fmt.printf(
+		"libfuse3 runtime version: %d.%d (built for %d.%d)\n",
+		maj,
+		min,
+		fuse3.FUSE_USE_VERSION_MAJOR,
+		fuse3.FUSE_USE_VERSION_MINOR,
+	)
 
+	fmt.printf("libfuse3 package version: %s\n", fuse3.pkgversion())
 	fsys := new(FS)
 	fsys.counter = 0
 
@@ -145,7 +167,7 @@ main :: proc() {
 		append(&dynamic_argv, "-f")
 	}
 
-	ops := fuse3.Operations{
+	ops := fuse3.Operations {
 		getattr = hello_getattr,
 		readdir = hello_readdir,
 		open    = hello_open,

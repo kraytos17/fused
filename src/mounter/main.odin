@@ -22,9 +22,13 @@ import "src:fs"
 import "src:fuse3"
 
 usage :: proc() {
-	fmt.println("Usage: fused [--log-file=<path>] [--log-level=<level>] [--log-format=<format>] <image-path> [fuse-options...] <mountpoint>")
+	fmt.println(
+		"Usage: fused [--log-file=<path>] [--log-level=<level>] [--log-format=<format>] <image-path> [fuse-options...] <mountpoint>",
+	)
 	fmt.println("Levels:  debug, info, warn, error  (default: debug)")
-	fmt.println("Formats: long (default, date/time/location), short (level only), full (level + thread id)")
+	fmt.println(
+		"Formats: long (default, date/time/location), short (level only), full (level + thread id)",
+	)
 	fmt.println("Flags:   --log-file=<path>  --log-level=<level>  --log-format=<format>")
 	fmt.println("         -f (foreground, default), -d (FUSE debug), -s (single-threaded)")
 }
@@ -63,19 +67,26 @@ run :: proc() {
 		case strings.has_prefix(arg, "--log-level="):
 			level_str := strings.trim_prefix(arg, "--log-level=")
 			switch level_str {
-			case "debug": log_level = log.Level.Debug
-			case "info":  log_level = log.Level.Info
-			case "warn":  log_level = log.Level.Warning
-			case "error": log_level = log.Level.Error
+			case "debug":
+				log_level = log.Level.Debug
+			case "info":
+				log_level = log.Level.Info
+			case "warn":
+				log_level = log.Level.Warning
+			case "error":
+				log_level = log.Level.Error
 			case:
 				log.errorf("unknown log level: %s (use debug|info|warn|error)", level_str)
 			}
 		case strings.has_prefix(arg, "--log-format="):
 			fmt_str := strings.trim_prefix(arg, "--log-format=")
 			switch fmt_str {
-			case "short": log_opts = {.Level}
-			case "long":  log_opts = log.Default_Console_Logger_Opts
-			case "full":  log_opts = log.Default_Console_Logger_Opts + {.Thread_Id}
+			case "short":
+				log_opts = {.Level}
+			case "long":
+				log_opts = log.Default_Console_Logger_Opts
+			case "full":
+				log_opts = log.Default_Console_Logger_Opts + {.Thread_Id}
 			case:
 				log.errorf("unknown log format: %s (use short|long|full)", fmt_str)
 			}
@@ -104,7 +115,9 @@ run :: proc() {
 	}
 
 	if len(fuse_args) < 1 {
-		log.errorf("usage: fused [--log-file=<path>] [--log-level=<level>] <image-path> [fuse-options...] <mountpoint>")
+		log.errorf(
+			"usage: fused [--log-file=<path>] [--log-level=<level>] <image-path> [fuse-options...] <mountpoint>",
+		)
 		os.exit(1)
 	}
 
@@ -114,57 +127,65 @@ run :: proc() {
 		log.errorf("failed to open image: %v", vol_err)
 		os.exit(1)
 	}
-	defer fs.volume_close(&vol)
 
+	defer fs.volume_close(&vol)
 	fsys.vol = vol
 	fsys.disk_raw_fd = c.int(os.fd(vol.disk))
 	init_fs_state(fsys)
-	log.debugf("opened %s → raw_fd=%d", image_path, fsys.disk_raw_fd)
-	log.infof("mounted: rev=%d cluster_size=%d clusters=%d root=%d",
-		vol.master.rev_max, vol.master.cluster_size, vol.master.cluster_map_size, vol.master.root_cluster)
 
-	ops := fuse3.Operations{
-		init       = fused_init,
-		destroy    = fused_destroy,
-		getattr    = fused_getattr,
-		readdir    = fused_readdir,
-		open       = fused_open,
-		read       = fused_read,
-		write      = fused_write,
-		create     = fused_create,
-		symlink    = fused_symlink,
-		readlink   = fused_readlink,
-		mkdir      = fused_mkdir,
-		unlink     = fused_unlink,
-		rmdir      = fused_rmdir,
-		truncate   = fused_truncate,
-		rename     = fused_rename,
-		access     = fused_access,
-		chmod      = fused_chmod,
-		chown      = fused_chown,
-		utimens    = fused_utimens,
-		fallocate  = fused_fallocate,
-		flush      = fused_flush,
-		release    = fused_release,
-		setxattr   = fused_setxattr,
-		getxattr   = fused_getxattr,
-		listxattr  = fused_listxattr,
-		removexattr = fused_removexattr,
+	log.debugf("opened %s → raw_fd=%d", image_path, fsys.disk_raw_fd)
+	log.infof(
+		"mounted: rev=%d cluster_size=%d clusters=%d root=%d",
+		vol.master.rev_max,
+		vol.master.cluster_size,
+		vol.master.cluster_map_size,
+		vol.master.root_cluster,
+	)
+
+	ops := fuse3.Operations {
+		init            = fused_init,
+		destroy         = fused_destroy,
+		getattr         = fused_getattr,
+		readdir         = fused_readdir,
+		open            = fused_open,
+		read            = fused_read,
+		write           = fused_write,
+		create          = fused_create,
+		symlink         = fused_symlink,
+		readlink        = fused_readlink,
+		mkdir           = fused_mkdir,
+		unlink          = fused_unlink,
+		rmdir           = fused_rmdir,
+		truncate        = fused_truncate,
+		rename          = fused_rename,
+		access          = fused_access,
+		chmod           = fused_chmod,
+		chown           = fused_chown,
+		utimens         = fused_utimens,
+		fallocate       = fused_fallocate,
+		flush           = fused_flush,
+		release         = fused_release,
+		setxattr        = fused_setxattr,
+		getxattr        = fused_getxattr,
+		listxattr       = fused_listxattr,
+		removexattr     = fused_removexattr,
 		copy_file_range = fused_copy_file_range,
-		read_buf   = fused_read_buf,
-		write_buf  = fused_write_buf,
-		opendir    = fused_opendir,
-		releasedir = fused_releasedir,
-		fsync      = fused_fsync,
-		lseek      = fused_lseek,
-		statfs     = fused_statfs,
-		fsyncdir   = fused_fsyncdir,
-		lock       = fused_lock,
-		flock      = fused_flock,
-		mknod      = fused_mknod,
-		ioctl      = fused_ioctl,
-		link       = fused_link,
-		statx      = fused_statx,
+		read_buf        = fused_read_buf,
+		write_buf       = fused_write_buf,
+		opendir         = fused_opendir,
+		releasedir      = fused_releasedir,
+		fsync           = fused_fsync,
+		lseek           = fused_lseek,
+		statfs          = fused_statfs,
+		fsyncdir        = fused_fsyncdir,
+		lock            = fused_lock,
+		flock           = fused_flock,
+		mknod           = fused_mknod,
+		ioctl           = fused_ioctl,
+		link            = fused_link,
+		statx           = fused_statx,
+		bmap            = fused_bmap,
+		poll            = fused_poll,
 	}
 
 	dynamic_argv: [dynamic; 16]cstring

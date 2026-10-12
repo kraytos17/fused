@@ -15,12 +15,16 @@ import "core:strings"
 import "core:sync"
 import "core:sys/posix"
 import "core:time"
-import "src:fuse3"
 import "src:fs"
+import "src:fuse3"
 
 // get_dir_entry returns a pointer to the Directory_Entry at the given index
 // within a sector-sized buffer.
-get_dir_entry :: #force_inline proc(buf: []u8, index: int, features: fs.Features) -> ^fs.Directory_Entry {
+get_dir_entry :: #force_inline proc(
+	buf: []u8,
+	index: int,
+	features: fs.Features,
+) -> ^fs.Directory_Entry {
 	des := int(fs.dir_entry_size(features))
 	return (^fs.Directory_Entry)(mem.ptr_offset(&buf[0], index * des))
 }
@@ -34,29 +38,32 @@ dir_entries_per_buf :: #force_inline proc(features: fs.Features) -> int {
 // FS is the per-mount filesystem state, passed as fuse user_data.
 FS :: struct {
 	// vol is the opened disk volume.
-	vol:         fs.Volume,
+	vol:          fs.Volume,
 	// disk_raw_fd is the raw file descriptor for the disk image, used for
 	// zero-copy splice I/O.
-	disk_raw_fd: c.int,
+	disk_raw_fd:  c.int,
 	// logger is the per-mount logger instance.
-	logger:      log.Logger,
+	logger:       log.Logger,
 	// mu serialises access to the volume and caches.
-	mu:          sync.Mutex,
+	mu:           sync.Mutex,
+	// allocator is the allocator passed to init_fs_state; used for cache
+	// reconstruction so tests with custom allocators stay consistent.
+	allocator:    mem.Allocator,
 	// path_cache is an LRU cache mapping path strings to resolved entries.
-	path_cache:  lru.Cache(string, Path_Cache_Value),
+	path_cache:   lru.Cache(string, Path_Cache_Value),
 	// lfn_cache is an LRU cache mapping (cluster,offset,index) to long
 	// file names.
-	lfn_cache:   lru.Cache(u64, string),
+	lfn_cache:    lru.Cache(u64, string),
 	// extents caches resolved extent chains keyed by (data_cluster, offset).
 	// Cached slices are owned by the cache; invalidated on any metadata
 	// mutation (write/truncate/fallocate/unlink/xattr).
-	extents:     map[Extent_Cache_Key][]fs.Extent_Run,
+	extents:      map[Extent_Cache_Key][]fs.Extent_Run,
 	// free_sectors caches the volume's free sector count so statfs is O(1).
 	free_sectors: u64,
 	// locks holds POSIX fcntl region locks per file (in-memory, advisory).
-	locks:       map[File_Identity][dynamic]Region_Lock,
+	locks:        map[File_Identity][dynamic]Region_Lock,
 	// flock_locks holds BSD flock holders per file (in-memory, advisory).
-	flock_locks: map[File_Identity][dynamic]Flock_State,
+	flock_locks:  map[File_Identity][dynamic]Flock_State,
 }
 
 // Extent_Cache_Key identifies a resolved extent chain by its start cluster and
@@ -73,7 +80,7 @@ get_fs :: #force_inline proc "contextless" () -> ^FS {
 
 // begin_op locks the mutex, resets the temp allocator, sets the logger, and
 // returns the FS pointer. Must be paired with end_op.
-begin_op :: proc () -> ^FS {
+begin_op :: proc() -> ^FS {
 	fsys := get_fs()
 	free_all(context.temp_allocator)
 	context.logger = fsys.logger
@@ -82,7 +89,7 @@ begin_op :: proc () -> ^FS {
 }
 
 // end_op unlocks the mutex.
-end_op :: proc (fsys: ^FS) {
+end_op :: proc(fsys: ^FS) {
 	sync.mutex_unlock(&fsys.mu)
 }
 
@@ -92,18 +99,24 @@ end_op :: proc (fsys: ^FS) {
 // in sync with `FS_Error` in src/fs/structure.odin).
 fs_error_to_errno :: proc(err: fs.FS_Error) -> c.int {
 	#partial switch err {
-	case .None:                return 0
-	case .Entry_Not_Found:     return -c.int(posix.ENOENT)
-	case .Not_A_Directory:     return -c.int(posix.ENOTDIR)
-	case .Name_Too_Long:       return -c.int(posix.ENAMETOOLONG)
-	case .No_Space:            return -c.int(posix.ENOSPC)
-	case .Sector_Read_Error,
-	     .Sector_Write_Error:  return -c.int(posix.EIO)
-	case:                      return -c.int(posix.EIO)
+	case .None:
+		return 0
+	case .Entry_Not_Found:
+		return -c.int(posix.ENOENT)
+	case .Not_A_Directory:
+		return -c.int(posix.ENOTDIR)
+	case .Name_Too_Long:
+		return -c.int(posix.ENAMETOOLONG)
+	case .No_Space:
+		return -c.int(posix.ENOSPC)
+	case .Sector_Read_Error, .Sector_Write_Error:
+		return -c.int(posix.EIO)
+	case:
+		return -c.int(posix.EIO)
 	}
 }
 
-UTIME_NOW  :: 1073741822
+UTIME_NOW :: 1073741822
 UTIME_OMIT :: 1073741823
 
 // set_entry_time_from_unix sets both mtime and atime on an entry from a Unix
@@ -142,29 +155,47 @@ set_entry_atime_to_now :: proc(entry: ^fs.Directory_Entry) {
 
 // _set_time_fields writes year/month/day/hour/minute/second into the given
 // fields from a Unix timestamp.
-@private
+@(private)
 _set_time_fields :: proc(year: ^u16, dt: ^fs.Packed_Date_Time, sec: i64) {
 	t := time.unix(sec, 0)
 	y, mo, d := time.date(t)
 	h, m, s := time.clock(t)
 	year^ = u16(y)
-	dt^ = fs.Packed_Date_Time{month = u32(int(mo)), date = u32(d), hour = u32(h), minute = u32(m), second = u32(s)}
+	dt^ = fs.Packed_Date_Time {
+		month  = u32(int(mo)),
+		date   = u32(d),
+		hour   = u32(h),
+		minute = u32(m),
+		second = u32(s),
+	}
 }
 
 // _set_time_fields_now writes the current wall-clock time into the given
 // date/time fields.
-@private
+@(private)
 _set_time_fields_now :: proc(year: ^u16, dt: ^fs.Packed_Date_Time) {
 	now := time.now()
 	y, mo, d := time.date(now)
 	h, m, s := time.clock(now)
 	year^ = u16(y)
-	dt^ = fs.Packed_Date_Time{month = u32(int(mo)), date = u32(d), hour = u32(h), minute = u32(m), second = u32(s)}
+	dt^ = fs.Packed_Date_Time {
+		month  = u32(int(mo)),
+		date   = u32(d),
+		hour   = u32(h),
+		minute = u32(m),
+		second = u32(s),
+	}
 }
 
 // fh_parts unpacks a packed file handle into its identity fields (the
 // directory location of the entry it refers to).
-fh_parts :: proc "contextless" (fh: u64) -> (dir_cluster: fs.Cluster, dir_offset: fs.Sector_Offset, entry_index: int) {
+fh_parts :: proc "contextless" (
+	fh: u64,
+) -> (
+	dir_cluster: fs.Cluster,
+	dir_offset: fs.Sector_Offset,
+	entry_index: int,
+) {
 	f := transmute(fs.File_Handle)(fh)
 	return fs.Cluster(f.dir_cluster), fs.Sector_Offset(f.dir_offset), int(f.entry_index)
 }
@@ -176,7 +207,14 @@ fh_parts :: proc "contextless" (fh: u64) -> (dir_cluster: fs.Cluster, dir_offset
 // caches. mutate returning false skips the write without error. When
 // invalidate_all is false only the single path is removed (used by utimens,
 // where the directory structure hasn't changed).
-mutate_entry_at :: proc(fsys: ^FS, path: cstring, fi: ^fuse3.File_Info, mutate: proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool, user: rawptr = nil, invalidate_all := true) -> c.int {
+mutate_entry_at :: proc(
+	fsys: ^FS,
+	path: cstring,
+	fi: ^fuse3.File_Info,
+	mutate: proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool,
+	user: rawptr = nil,
+	invalidate_all := true,
+) -> c.int {
 	entry, entry_cluster, entry_offset, entry_idx, _, _, resolved := resolve_entry(fsys, path, fi)
 	if !resolved {
 		return fuse3.nix(.ENOENT)
@@ -197,7 +235,15 @@ mutate_entry_at :: proc(fsys: ^FS, path: cstring, fi: ^fuse3.File_Info, mutate: 
 
 // read_entry_from_fh reads a Directory_Entry from a packed File_Handle,
 // returning the entry, its data cluster, data offset, and whether it succeeded.
-read_entry_from_fh :: proc(fsys: ^FS, fh: u64) -> (fs.Directory_Entry, fs.Cluster, fs.Sector_Offset, bool) {
+read_entry_from_fh :: proc(
+	fsys: ^FS,
+	fh: u64,
+) -> (
+	fs.Directory_Entry,
+	fs.Cluster,
+	fs.Sector_Offset,
+	bool,
+) {
 	dir_cluster, dir_offset, entry_index := fh_parts(fh)
 	e, err := fs.read_entry_at_index(&fsys.vol, dir_cluster, dir_offset, entry_index)
 	if err != .None {
@@ -226,7 +272,11 @@ lfn_cache_on_remove :: proc(key: u64, val: string, user_data: rawptr) {
 
 // lfn_cache_key builds a 64-bit key from a cluster, offset, and entry index
 // for the LFN cache.
-lfn_cache_key :: #force_inline proc(cluster: fs.Cluster, offset: fs.Sector_Offset, index: int) -> u64 {
+lfn_cache_key :: #force_inline proc(
+	cluster: fs.Cluster,
+	offset: fs.Sector_Offset,
+	index: int,
+) -> u64 {
 	return (u64(cluster) << 32) | (u64(offset) << 16) | u64(index)
 }
 
@@ -241,6 +291,7 @@ path_cache_put :: proc(fsys: ^FS, path: string, val: Path_Cache_Value) {
 	if len(path) > 256 {
 		return
 	}
+
 	key := strings.clone(path, context.allocator)
 	lru.set(&fsys.path_cache, key, val)
 }
@@ -254,12 +305,16 @@ path_cache_invalidate_all :: proc(fsys: ^FS) {
 
 // resolve_path_cached resolves a path using the LRU path cache. On a miss the
 // result is resolved and cached.
-resolve_path_cached :: proc(fsys: ^FS, path: string, allocator := context.allocator) -> (
-	entry:       fs.Directory_Entry,
-	cluster:     fs.Cluster,
-	offset:      fs.Sector_Offset,
+resolve_path_cached :: proc(
+	fsys: ^FS,
+	path: string,
+	allocator := context.allocator,
+) -> (
+	entry: fs.Directory_Entry,
+	cluster: fs.Cluster,
+	offset: fs.Sector_Offset,
 	entry_index: int,
-	ok:          bool,
+	ok: bool,
 ) {
 	if val, hit := path_cache_get(fsys, path); hit {
 		return val.entry, val.cluster, val.offset, val.entry_index, true
@@ -273,12 +328,16 @@ resolve_path_cached :: proc(fsys: ^FS, path: string, allocator := context.alloca
 }
 
 // resolve_path resolves a path without caching. Wraps fs.resolve_path.
-resolve_path :: proc(fsys: ^FS, path: string, allocator := context.allocator) -> (
-	entry:       fs.Directory_Entry,
-	cluster:     fs.Cluster,
-	offset:      fs.Sector_Offset,
+resolve_path :: proc(
+	fsys: ^FS,
+	path: string,
+	allocator := context.allocator,
+) -> (
+	entry: fs.Directory_Entry,
+	cluster: fs.Cluster,
+	offset: fs.Sector_Offset,
 	entry_index: int,
-	ok:          bool,
+	ok: bool,
 ) {
 	res, res_ok := fs.resolve_path(&fsys.vol, path, allocator)
 	return res.entry, res.cluster, res.offset, res.entry_index, res_ok
@@ -286,9 +345,18 @@ resolve_path :: proc(fsys: ^FS, path: string, allocator := context.allocator) ->
 
 // resolve_entry resolves a path or a file handle to a Directory_Entry, its
 // directory cluster/offset/index, and its data cluster/offset.
-resolve_entry :: proc(fsys: ^FS, path: cstring, fi: ^fuse3.File_Info) -> (
-	entry: fs.Directory_Entry, entry_cluster: fs.Cluster, entry_offset: fs.Sector_Offset,
-	entry_idx: int, data_cluster: fs.Cluster, data_offset: fs.Sector_Offset, ok: bool,
+resolve_entry :: proc(
+	fsys: ^FS,
+	path: cstring,
+	fi: ^fuse3.File_Info,
+) -> (
+	entry: fs.Directory_Entry,
+	entry_cluster: fs.Cluster,
+	entry_offset: fs.Sector_Offset,
+	entry_idx: int,
+	data_cluster: fs.Cluster,
+	data_offset: fs.Sector_Offset,
+	ok: bool,
 ) {
 	if fi != nil {
 		e, dc, ddo, rok := read_entry_from_fh(fsys, fi.fh)
@@ -313,6 +381,7 @@ init_fs_for_test :: proc(vol: fs.Volume, allocator := context.allocator) -> (fsy
 	if fi, err := os.fstat(vol.disk, context.temp_allocator); err == nil {
 		fsys.vol.image_size = fs.Byte_Offset(u64(fi.size))
 	}
+
 	init_fs_state(&fsys, allocator)
 	return fsys
 }
@@ -321,6 +390,7 @@ init_fs_for_test :: proc(vol: fs.Volume, allocator := context.allocator) -> (fsy
 // shared by the FUSE daemon (run) and the test harness (init_fs_for_test).
 // fsys.vol must already be set.
 init_fs_state :: proc(fsys: ^FS, allocator := context.allocator) {
+	fsys.allocator = allocator
 	lru.init(&fsys.path_cache, 128, allocator, allocator)
 	fsys.path_cache.on_remove = path_cache_on_remove
 	lru.init(&fsys.lfn_cache, 256, allocator, allocator)
@@ -353,7 +423,14 @@ destroy_fs_for_test :: proc(fsys: ^FS) {
 // resolve_extents_cached resolves an extent chain, caching the result so
 // repeated reads/writes on the same file skip the metadata walk.  The returned
 // slice is owned by the cache — callers must NOT delete it.
-resolve_extents_cached :: proc(fsys: ^FS, cluster: fs.Cluster, offset: fs.Sector_Offset) -> (runs: []fs.Extent_Run, ok: bool) {
+resolve_extents_cached :: proc(
+	fsys: ^FS,
+	cluster: fs.Cluster,
+	offset: fs.Sector_Offset,
+) -> (
+	runs: []fs.Extent_Run,
+	ok: bool,
+) {
 	key := Extent_Cache_Key{u64(cluster), u16(offset)}
 	if cached, hit := fsys.extents[key]; hit {
 		return cached, true
@@ -378,8 +455,9 @@ extent_cache_invalidate_all :: proc(fsys: ^FS) {
 	for _, runs in fsys.extents {
 		delete(runs)
 	}
+
 	delete(fsys.extents)
-	fsys.extents = make(map[Extent_Cache_Key][]fs.Extent_Run)
+	fsys.extents = make(map[Extent_Cache_Key][]fs.Extent_Run, fsys.allocator)
 }
 
 // extent_cache_invalidate drops a single cached chain.  Use when a mutation

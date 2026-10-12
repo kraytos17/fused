@@ -29,9 +29,10 @@ intent log with a physical redo-log WAL in a dedicated journal region
 (default 64 sectors, configurable at format time). Provides idempotent
 automatic replay on mount. `SUPPORTED_REV_MIN = 6`, `SUPPORTED_REV_MAX = 7`.
 
-Rev 7 images can be mounted read/write by the current codebase. Rev 6
-images are still mountable (code selects the journal path based on
-the `Journal_V2` feature flag).
+Rev 7 images can be mounted read/write by the current codebase. (Historically,
+rev 6 images were also mountable — code selected the journal path based on
+the `Journal_V2` feature flag. The intent log has since been removed; rev 6
+images are now rejected. See below.)
 
 ## Rev 8 — `XAttr` feature
 
@@ -46,6 +47,19 @@ WAL (deallocation now records a v2 journal entry on v2 images, fixing a
 latent bug where freed chains were resurrected by replay on remount).
 `SUPPORTED_REV_MIN = 6`, `SUPPORTED_REV_MAX = 8`.
 
-Rev 8 images can be mounted read/write by the current codebase. Rev 6/7
-images remain mountable (entry sizing and journal path dispatch on the
-feature flags).
+Rev 8 images can be mounted read/write by the current codebase. (Historically,
+rev 6/7 images remained mountable — entry sizing and journal path dispatched
+on the feature flags. The intent log has since been removed; rev 6 images
+are now rejected. See below.)
+
+## Post-rev-8 — intent log removed, WAL is the only journal
+
+The rev-6 single-sector intent log (`Intent_Log`, `Intent_Log_Entry`,
+`JOURNAL_MAGIC`) was deleted. `SUPPORTED_REV_MIN = 7`, so rev 6 images fail
+validation with `.Version_Too_Old`. The `.Journal_V2` feature flag (bit 1)
+was then deleted as well: images carrying it fail validation with
+`.Feature_Not_Supported` (the unknown-bit check compares the u64
+representation so retired bits stay visible). Reformat to migrate.
+`journal_backend_for` was replaced by the `JOURNAL_BACKEND` constant, and all
+`journal_v2_*`/`Jv2_*` symbols were renamed to version-neutral
+`journal_*`/`Journal_*` names.

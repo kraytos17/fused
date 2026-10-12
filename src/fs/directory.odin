@@ -14,7 +14,14 @@ entry_short_name :: proc "contextless" (entry: ^Directory_Entry) -> string {
 }
 
 // read_directory_entries reads all directory entries in a directory's extent chain.
-read_directory_entries :: proc(vol: ^Volume, cluster: Cluster, sector_offset: Sector_Offset) -> (entries: [dynamic]Directory_Entry, err: FS_Error) {
+read_directory_entries :: proc(
+	vol: ^Volume,
+	cluster: Cluster,
+	sector_offset: Sector_Offset,
+) -> (
+	entries: [dynamic]Directory_Entry,
+	err: FS_Error,
+) {
 	data, derr := read_chain(vol, cluster, sector_offset)
 	defer delete(data)
 	if derr != .None {
@@ -36,7 +43,14 @@ read_directory_entries :: proc(vol: ^Volume, cluster: Cluster, sector_offset: Se
 }
 
 // resolve_lfn reconstructs a long filename from the LFN data sector.
-resolve_lfn :: proc(vol: ^Volume, entry: ^Directory_Entry, allocator := context.allocator) -> (name: string, ok: bool) {
+resolve_lfn :: proc(
+	vol: ^Volume,
+	entry: ^Directory_Entry,
+	allocator := context.allocator,
+) -> (
+	name: string,
+	ok: bool,
+) {
 	if .LFN not_in entry.flags {
 		return entry_short_name(entry), true
 	}
@@ -52,7 +66,8 @@ resolve_lfn :: proc(vol: ^Volume, entry: ^Directory_Entry, allocator := context.
 	}
 
 	target: Cluster_Entry
-	if idx, found := ce_find_by_offset(ce_buf, Sector_Offset(ptr.sector)); found && .Allocated in ce_buf[idx].state {
+	if idx, found := ce_find_by_offset(ce_buf, Sector_Offset(ptr.sector));
+	   found && .Allocated in ce_buf[idx].state {
 		target = ce_buf[idx]
 	}
 	if target.allocation_size == 0 {
@@ -64,7 +79,7 @@ resolve_lfn :: proc(vol: ^Volume, entry: ^Directory_Entry, allocator := context.
 
 	sector_buf: [SECTOR_SIZE]u8
 	current_cluster := Cluster(ptr.cluster)
-	current_entry  := target
+	current_entry := target
 	byte_offset := u64(ptr._pad)
 	max_steps := int(vol.master.cluster_map_size) + 1
 	for guard in 0 ..< max_steps {
@@ -73,8 +88,15 @@ resolve_lfn :: proc(vol: ^Volume, entry: ^Directory_Entry, allocator := context.
 			return "", false
 		}
 
-		run_sector := sector_for(current_cluster, Sector_Offset(current_entry.sector_start), vol.master.cluster_size)
-		bytes_to_read := min(u64(current_entry.allocation_size) * SECTOR_SIZE, u64(ptr.size) - u64(len(data)))
+		run_sector := sector_for(
+			current_cluster,
+			Sector_Offset(current_entry.sector_start),
+			vol.master.cluster_size,
+		)
+		bytes_to_read := min(
+			u64(current_entry.allocation_size) * SECTOR_SIZE,
+			u64(ptr.size) - u64(len(data)),
+		)
 		if bytes_to_read == 0 {
 			break
 		}
@@ -90,12 +112,17 @@ resolve_lfn :: proc(vol: ^Volume, entry: ^Directory_Entry, allocator := context.
 			break
 		}
 
-		next, find_err := find_cluster_entry(vol, Cluster(current_entry.next_cluster), Sector_Offset(current_entry.next_sector_index))
+		next, find_err := find_cluster_entry(
+			vol,
+			Cluster(current_entry.next_cluster),
+			Sector_Offset(current_entry.next_sector_index),
+		)
 		if find_err != .None {
 			break
 		}
+
 		current_cluster = Cluster(current_entry.next_cluster)
-		current_entry  = next
+		current_entry = next
 	}
 	if len(data) > int(ptr.size) {
 		resize(&data, int(ptr.size))
@@ -104,7 +131,13 @@ resolve_lfn :: proc(vol: ^Volume, entry: ^Directory_Entry, allocator := context.
 }
 
 // write_directory_entry_at writes a single Directory_Entry back to disk.
-write_directory_entry_at :: proc(vol: ^Volume, cluster: Cluster, sector_offset: Sector_Offset, entry_index: int, entry: ^Directory_Entry) -> FS_Error {
+write_directory_entry_at :: proc(
+	vol: ^Volume,
+	cluster: Cluster,
+	sector_offset: Sector_Offset,
+	entry_index: int,
+	entry: ^Directory_Entry,
+) -> FS_Error {
 	buf: [SECTOR_SIZE]u8
 	table_sector := sector_for(cluster, sector_offset, vol.master.cluster_size)
 	if err := sector_read(vol, table_sector, buf[:]); err != .None {
@@ -121,7 +154,16 @@ write_directory_entry_at :: proc(vol: ^Volume, cluster: Cluster, sector_offset: 
 // entry_sector_for_index returns the absolute sector and the entry index
 // within that sector for a directory entry addressed by a chain-relative
 // index. Returns ok=false when the index falls outside the chain.
-entry_sector_for_index :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset, index: int) -> (Sector, int, bool) {
+entry_sector_for_index :: proc(
+	vol: ^Volume,
+	cluster: Cluster,
+	offset: Sector_Offset,
+	index: int,
+) -> (
+	Sector,
+	int,
+	bool,
+) {
 	runs, err := resolve_extents(vol, cluster, offset)
 	defer delete(runs)
 	if err != .None {
@@ -143,7 +185,15 @@ entry_sector_for_index :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Of
 
 // read_entry_at_index reads a Directory_Entry addressed by a chain-relative
 // index. Returns .Entry_Not_Found when the slot is not marked .Exists.
-read_entry_at_index :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset, index: int) -> (entry: Directory_Entry, err: FS_Error) {
+read_entry_at_index :: proc(
+	vol: ^Volume,
+	cluster: Cluster,
+	offset: Sector_Offset,
+	index: int,
+) -> (
+	entry: Directory_Entry,
+	err: FS_Error,
+) {
 	sec, within, ok := entry_sector_for_index(vol, cluster, offset, index)
 	if !ok {
 		return {}, .Entry_Not_Found
@@ -165,7 +215,13 @@ read_entry_at_index :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offse
 
 // write_entry_at_index writes a Directory_Entry addressed by a chain-relative
 // index.
-write_entry_at_index :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset, index: int, entry: ^Directory_Entry) -> FS_Error {
+write_entry_at_index :: proc(
+	vol: ^Volume,
+	cluster: Cluster,
+	offset: Sector_Offset,
+	index: int,
+	entry: ^Directory_Entry,
+) -> FS_Error {
 	sec, within, ok := entry_sector_for_index(vol, cluster, offset, index)
 	if !ok {
 		return .Entry_Not_Found

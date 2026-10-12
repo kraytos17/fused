@@ -9,8 +9,8 @@ package mounter
 import "core:c"
 import "core:mem"
 import "core:sys/linux"
-import "src:fuse3"
 import "src:fs"
+import "src:fuse3"
 
 // ensure_chain_covers resolves a file's extent chain and extends it (via
 // allocate_sectors) when it is shorter than total_sectors. When the chain was
@@ -20,12 +20,18 @@ import "src:fs"
 // err: .No_Space on allocation failure, .Entry_Not_Found when extents cannot
 // be resolved after an extension.
 ensure_chain_covers :: proc(
-	fsys:         ^FS,
-	entry:        ^fs.Directory_Entry,
+	fsys: ^FS,
+	entry: ^fs.Directory_Entry,
 	data_cluster: fs.Cluster,
-	data_offset:  fs.Sector_Offset,
+	data_offset: fs.Sector_Offset,
 	total_sectors: u64,
-) -> (cluster: fs.Cluster, offset: fs.Sector_Offset, runs: []fs.Extent_Run, extended: bool, err: fs.FS_Error) {
+) -> (
+	cluster: fs.Cluster,
+	offset: fs.Sector_Offset,
+	runs: []fs.Extent_Run,
+	extended: bool,
+	err: fs.FS_Error,
+) {
 	ext_ok: bool
 	runs, ext_ok = resolve_extents_cached(fsys, data_cluster, data_offset)
 	current := fs.chain_sector_count(runs) if ext_ok else 0
@@ -33,7 +39,13 @@ ensure_chain_covers :: proc(
 		return data_cluster, data_offset, runs, false, .None
 	}
 
-	new_c, new_o, aerr := fs.allocate_sectors(&fsys.vol, data_cluster, data_offset, total_sectors, .File_Content)
+	new_c, new_o, aerr := fs.allocate_sectors(
+		&fsys.vol,
+		data_cluster,
+		data_offset,
+		total_sectors,
+		.File_Content,
+	)
 	if aerr != .None {
 		return {}, 0, {}, false, aerr
 	}
@@ -41,8 +53,8 @@ ensure_chain_covers :: proc(
 		entry.stored_cluster = u64(new_c)
 		entry.sector_index = u16(new_o)
 	}
-	fsys.free_sectors -= total_sectors - current
 
+	fsys.free_sectors -= total_sectors - current
 	extent_cache_invalidate(fsys, new_c, new_o)
 	runs, ext_ok = resolve_extents_cached(fsys, new_c, new_o)
 	if !ext_ok {
@@ -61,7 +73,14 @@ Buf_Source :: struct {
 
 // write_range_to_runs writes a byte range across an extent run list starting
 // at file offset write_off, consuming from src.
-write_range_to_runs :: proc(fsys: ^FS, runs: []fs.Extent_Run, write_off: u64, src: ^Buf_Source) -> (bytes_written: u64) {
+write_range_to_runs :: proc(
+	fsys: ^FS,
+	runs: []fs.Extent_Run,
+	write_off: u64,
+	src: ^Buf_Source,
+) -> (
+	bytes_written: u64,
+) {
 	pos_in_file: u64
 	sector_rw: [fs.SECTOR_SIZE]u8
 	for run in runs {
@@ -170,9 +189,15 @@ _mem_bulk :: proc(user: rawptr, sec: fs.Sector, sectors: u64) -> u64 {
 	s := (^Mem_Source)(user)
 	n := sectors * fs.SECTOR_SIZE
 	src_off := s.size - s.remaining
-	if fs.sector_write_bulk(&s.fsys.vol, sec, ([^]u8)(rawptr(uintptr(s.buf) + uintptr(src_off)))[:n]) != .None {
+	if fs.sector_write_bulk(
+		   &s.fsys.vol,
+		   sec,
+		   ([^]u8)(rawptr(uintptr(s.buf) + uintptr(src_off)))[:n],
+	   ) !=
+	   .None {
 		return 0
 	}
+
 	s.remaining -= n
 	return sectors
 }
@@ -232,9 +257,13 @@ _bufvec_bulk :: proc(user: rawptr, sec: fs.Sector, sectors: u64) -> u64 {
 		written: u64
 		for written < bulk_len {
 			n, err := linux.splice(
-				linux.Fd(b.fd), nil,
-				linux.Fd(s.fsys.disk_raw_fd), &phys_off,
-				uint(bulk_len - written), {})
+				linux.Fd(b.fd),
+				nil,
+				linux.Fd(s.fsys.disk_raw_fd),
+				&phys_off,
+				uint(bulk_len - written),
+				{},
+			)
 			if err != .NONE || n == 0 {
 				return 0
 			}
@@ -287,21 +316,29 @@ _zero_bulk :: proc(user: rawptr, sec: fs.Sector, sectors: u64) -> u64 {
 			return i
 		}
 	}
+
 	s.remaining -= sectors * fs.SECTOR_SIZE
 	return sectors
 }
 
 // Read_Sink receives bytes from read_range_from_runs.
 Read_Sink :: struct {
-	user:     rawptr,
-	copy_to:  proc(user: rawptr, src: []u8, src_byte_off: u64, dst_off: u64, take: u64) -> u64,
-	bulk:     proc(user: rawptr, sec: fs.Sector, sectors: u64, dst_off: u64) -> u64,
+	user:      rawptr,
+	copy_to:   proc(user: rawptr, src: []u8, src_byte_off: u64, dst_off: u64, take: u64) -> u64,
+	bulk:      proc(user: rawptr, sec: fs.Sector, sectors: u64, dst_off: u64) -> u64,
 	remaining: proc(user: rawptr) -> u64,
 }
 
 // read_range_from_runs reads a byte range across an extent run list starting
 // at file offset read_off, delivering up to size bytes into sink.
-read_range_from_runs :: proc(fsys: ^FS, runs: []fs.Extent_Run, read_off: u64, sink: ^Read_Sink) -> (bytes_read: u64) {
+read_range_from_runs :: proc(
+	fsys: ^FS,
+	runs: []fs.Extent_Run,
+	read_off: u64,
+	sink: ^Read_Sink,
+) -> (
+	bytes_read: u64,
+) {
 	pos_in_file: u64
 	sector_buf: [fs.SECTOR_SIZE]u8
 	for run in runs {
@@ -386,7 +423,15 @@ ReadSlice :: struct {
 // [off, off+size) as a list of {sector,len}. Used by fused_read_buf to
 // avoid walking runs twice (count then fill). Caller deletes the returned
 // dynamic array.
-collect_read_slices :: proc(runs: []fs.Extent_Run, off: u64, size: u64, allocator := context.allocator) -> (slices: [dynamic]ReadSlice, total: u64) {
+collect_read_slices :: proc(
+	runs: []fs.Extent_Run,
+	off: u64,
+	size: u64,
+	allocator := context.allocator,
+) -> (
+	slices: [dynamic]ReadSlice,
+	total: u64,
+) {
 	slices = make([dynamic]ReadSlice, 0, 8, allocator)
 	remaining := size
 	req_off := off
@@ -399,10 +444,13 @@ collect_read_slices :: proc(runs: []fs.Extent_Run, off: u64, size: u64, allocato
 
 		avail := min(run_bytes - req_off, remaining)
 		if avail > 0 {
-			append(&slices, ReadSlice{
-				sector = fs.Sector(u64(run.sector) + req_off / fs.SECTOR_SIZE),
-				len    = avail,
-			})
+			append(
+				&slices,
+				ReadSlice {
+					sector = fs.Sector(u64(run.sector) + req_off / fs.SECTOR_SIZE),
+					len = avail,
+				},
+			)
 
 			total += avail
 			remaining -= avail
@@ -427,7 +475,13 @@ _mem_read_remaining :: proc(user: rawptr) -> u64 {
 	return (^Mem_Read_Sink)(user).remaining
 }
 
-_mem_read_copy_to :: proc(user: rawptr, src: []u8, src_byte_off: u64, dst_off: u64, take: u64) -> u64 {
+_mem_read_copy_to :: proc(
+	user: rawptr,
+	src: []u8,
+	src_byte_off: u64,
+	dst_off: u64,
+	take: u64,
+) -> u64 {
 	s := (^Mem_Read_Sink)(user)
 	n := min(take, s.remaining, u64(len(src[src_byte_off:])))
 	if n == 0 {
@@ -446,6 +500,7 @@ _mem_read_bulk :: proc(user: rawptr, sec: fs.Sector, sectors: u64, dst_off: u64)
 	if fs.sector_read(&s.fsys.vol, sec, dst_buf) != .None {
 		return 0
 	}
+
 	s.remaining -= n
 	return sectors
 }
@@ -468,13 +523,13 @@ run_cursor_init :: proc(runs: []fs.Extent_Run, file_off: u64) -> RunCursor {
 		run_bytes := u64(run.count) * fs.SECTOR_SIZE
 		if pos + run_bytes > file_off {
 			skip := file_off - pos
-			return RunCursor{
-				runs       = runs,
-				run_idx    = i,
-				pos        = pos,
-				sec        = fs.Sector(u64(run.sector) + skip / fs.SECTOR_SIZE),
+			return RunCursor {
+				runs = runs,
+				run_idx = i,
+				pos = pos,
+				sec = fs.Sector(u64(run.sector) + skip / fs.SECTOR_SIZE),
 				off_in_sec = skip % fs.SECTOR_SIZE,
-				ok         = true,
+				ok = true,
 			}
 		}
 		pos += run_bytes

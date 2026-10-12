@@ -3,7 +3,14 @@
 package fs
 
 // resolve_extents walks a cluster-entry chain and returns a flat list of extent runs.
-resolve_extents :: proc(vol: ^Volume, start_cluster: Cluster, start_offset: Sector_Offset) -> (runs: [dynamic]Extent_Run, err: FS_Error) {
+resolve_extents :: proc(
+	vol: ^Volume,
+	start_cluster: Cluster,
+	start_offset: Sector_Offset,
+) -> (
+	runs: [dynamic]Extent_Run,
+	err: FS_Error,
+) {
 	if start_cluster == 0 {
 		return {}, .Entry_Not_Found
 	}
@@ -21,7 +28,7 @@ resolve_extents :: proc(vol: ^Volume, start_cluster: Cluster, start_offset: Sect
 			return {}, .Entry_Not_Found
 		}
 
-		er := Extent_Run{
+		er := Extent_Run {
 			sector_for(ec, Sector_Offset(entry.sector_start), cluster_size),
 			entry.allocation_size,
 		}
@@ -57,7 +64,15 @@ chain_sector_count :: proc(runs: []Extent_Run) -> u64 {
 
 // read_chain reads the full extent chain starting at (cluster, offset) into a
 // contiguous buffer. The caller owns the returned slice and must delete it.
-read_chain :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset, allocator := context.allocator) -> (data: []u8, err: FS_Error) {
+read_chain :: proc(
+	vol: ^Volume,
+	cluster: Cluster,
+	offset: Sector_Offset,
+	allocator := context.allocator,
+) -> (
+	data: []u8,
+	err: FS_Error,
+) {
 	runs, rerr := resolve_extents(vol, cluster, offset)
 	defer delete(runs)
 	if rerr != .None {
@@ -73,7 +88,8 @@ read_chain :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset, alloca
 	pos := 0
 	for r in runs {
 		for si in 0 ..< int(r.count) {
-			if sector_read(vol, Sector(u64(r.sector) + u64(si)), data[pos:pos + SECTOR_SIZE]) != .None {
+			if sector_read(vol, Sector(u64(r.sector) + u64(si)), data[pos:pos + SECTOR_SIZE]) !=
+			   .None {
 				delete(data, allocator)
 				return {}, .Sector_Read_Error
 			}
@@ -86,7 +102,12 @@ read_chain :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset, alloca
 // write_chain writes a byte buffer across the extent chain starting at
 // (cluster, offset). The final sector is zero-padded when the buffer is not
 // sector-aligned. The chain must be large enough to hold len(data).
-write_chain :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset, data: []u8) -> FS_Error {
+write_chain :: proc(
+	vol: ^Volume,
+	cluster: Cluster,
+	offset: Sector_Offset,
+	data: []u8,
+) -> FS_Error {
 	runs, rerr := resolve_extents(vol, cluster, offset)
 	defer delete(runs)
 	if rerr != .None {
@@ -121,7 +142,13 @@ write_chain :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset, data:
 // walk_chain_sectors iterates the sectors of an extent chain, calling visit
 // for each one. The visitor reads the sector itself and returns false to stop
 // the walk early.
-walk_chain_sectors :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset, visit: proc(sector: Sector, user: rawptr) -> bool, user: rawptr) -> FS_Error {
+walk_chain_sectors :: proc(
+	vol: ^Volume,
+	cluster: Cluster,
+	offset: Sector_Offset,
+	visit: proc(sector: Sector, user: rawptr) -> bool,
+	user: rawptr,
+) -> FS_Error {
 	runs, rerr := resolve_extents(vol, cluster, offset)
 	defer delete(runs)
 	if rerr != .None {

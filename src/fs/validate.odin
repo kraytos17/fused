@@ -14,8 +14,12 @@ validate_master :: proc(master: ^Master_Record, image_size: Byte_Offset) -> FS_E
 		return .Version_Too_New
 	}
 
-	unknown := master.features & ~ALL_SUPPORTED_FEATURES
-	if unknown != {} {
+	// Unknown bits (including the retired rev-7 journal bit 1) are rejected.
+	// NOTE: the comparison is done on the u64 representation, not the
+	// bit_set: `~` on a bit_set only covers live enum values, so a deleted
+	// variant's bit would be invisible to a bit_set-level check.
+	unknown := transmute(u64)master.features & ~transmute(u64)ALL_SUPPORTED_FEATURES
+	if unknown != 0 {
 		return .Feature_Not_Supported
 	}
 	if master.end_sig != 0x0BB0 {
@@ -34,7 +38,15 @@ validate_master :: proc(master: ^Master_Record, image_size: Byte_Offset) -> FS_E
 	}
 
 	total_clusters := sector_count / u64(master.cluster_size)
-	if master.cluster_map_size > total_clusters {
+	if master.cluster_map_size == 0 || master.cluster_map_size > total_clusters {
+		return .Corrupt_Master_Record
+	}
+	// Root directory cluster and sector index must lie within the cluster
+	// map so path resolution doesn't read garbage on first lookup.
+	if master.root_cluster >= master.cluster_map_size {
+		return .Corrupt_Master_Record
+	}
+	if u64(master.root_sector_index) >= u64(master.cluster_size) {
 		return .Corrupt_Master_Record
 	}
 	return .None

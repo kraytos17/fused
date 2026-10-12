@@ -1,9 +1,9 @@
 // audit.odin — Audit FUSE callbacks for begin_op() usage.
 package main
 
+import "core:fmt"
 import "core:odin/ast"
 import "core:odin/parser"
-import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
@@ -37,8 +37,8 @@ run_audit :: proc(dh: ^os.File) {
 		fmt.eprintf("cannot list src/mounter: %v\n", err)
 		os.exit(1)
 	}
-	defer os.file_info_slice_delete(fis, context.allocator)
 
+	defer os.file_info_slice_delete(fis, context.allocator)
 	total_p, total_f := 0, 0
 	for fi in fis {
 		if !strings.has_suffix(fi.name, ".odin") { continue }
@@ -48,6 +48,7 @@ run_audit :: proc(dh: ^os.File) {
 		total_p += p
 		total_f += f
 	}
+
 	fmt.printf("=== Context audit: %d passed, %d failed ===\n", total_p, total_f)
 	if total_f > 0 { os.exit(1) }
 }
@@ -70,17 +71,19 @@ audit_file :: proc(path: string) -> (passed, failed: int) {
 	for stmt in file.decls {
 		vd: ^ast.Value_Decl
 		#partial switch v in stmt.derived_stmt {
-		case ^ast.Value_Decl: vd = v
+		case ^ast.Value_Decl:
+			vd = v
 		}
 		if vd == nil { continue }
 		if len(vd.names) == 0 { continue }
 
 		name_ident: ^ast.Ident
 		#partial switch v in vd.names[0].derived_expr {
-		case ^ast.Ident: name_ident = v
+		case ^ast.Ident:
+			name_ident = v
 		}
 		if name_ident == nil || !strings.has_prefix(name_ident.name, "fused_") {
-		 continue
+			continue
 		}
 
 		name := name_ident.name
@@ -88,7 +91,8 @@ audit_file :: proc(path: string) -> (passed, failed: int) {
 
 		proc_lit: ^ast.Proc_Lit
 		#partial switch v in vd.values[0].derived_expr {
-		case ^ast.Proc_Lit: proc_lit = v
+		case ^ast.Proc_Lit:
+			proc_lit = v
 		}
 		if proc_lit == nil { continue }
 
@@ -105,7 +109,8 @@ audit_file :: proc(path: string) -> (passed, failed: int) {
 
 		block: ^ast.Block_Stmt
 		#partial switch v in proc_lit.body.derived_stmt {
-		case ^ast.Block_Stmt: block = v
+		case ^ast.Block_Stmt:
+			block = v
 		}
 		if block == nil || len(block.stmts) == 0 {
 			fmt.printf("FAIL   %s: empty body\n", name)
@@ -165,12 +170,22 @@ audit_fs_attributes :: proc(strict: bool) -> bool {
 	ok := true
 	{
 		count := 0
-		paths := []string{"src/fs/alloc_cache.odin", "src/fs/journal.odin", "src/fs/xattr.odin", "src/fs/allocate.odin", "src/fs/display.odin"}
-		for path in paths {
-			data, err := os.read_entire_file(path, context.temp_allocator)
-			if err != nil { continue }
-			if strings.contains(string(data), "private=\"file\"") {
-				count += 1
+		dh, derr := os.open("src/fs")
+		if derr == nil {
+			defer os.close(dh)
+			fis, ferr := os.read_dir(dh, 0, context.temp_allocator)
+			if ferr == nil {
+				defer os.file_info_slice_delete(fis, context.temp_allocator)
+				for fi in fis {
+					if !strings.has_suffix(fi.name, ".odin") { continue }
+
+					path, _ := filepath.join([]string{"src/fs", fi.name})
+					data, err := os.read_entire_file(path, context.temp_allocator)
+					if err != nil { continue }
+					if strings.contains(string(data), "private=\"file\"") {
+						count += 1
+					}
+				}
 			}
 		}
 		if count < 3 {
@@ -179,9 +194,12 @@ audit_fs_attributes :: proc(strict: bool) -> bool {
 		}
 	}
 	{
-		checks_data := []struct{path: string, sym: string, attr: string}{
-			{"src/fs/journal.odin", "intent_log_recover", "cold"},
-			{"src/fs/journal.odin", "journal_v2_recover", "cold"},
+		checks_data := []struct {
+			path: string,
+			sym:  string,
+			attr: string,
+		} {
+			{"src/fs/journal.odin", "journal_recover", "cold"},
 			{"src/fs/format.odin", "format_image", "favor_size"},
 		}
 
@@ -191,23 +209,24 @@ audit_fs_attributes :: proc(strict: bool) -> bool {
 			if err != nil { continue }
 
 			lines := strings.split(string(data), "\n", context.temp_allocator)
-			for i in 0..<len(lines) {
+			for i in 0 ..< len(lines) {
 				if strings.contains(lines[i], c.sym) && strings.contains(lines[i], ":: proc") {
 					has := false
-					for k in max(0, i-2)..<i+1 {
+					for k in max(0, i - 2) ..< i + 1 {
 						if strings.contains(lines[k], c.attr) {
 							has = true
 							break
 						}
 					}
 					if !has {
-						fmt.printf("WARN   %s:%d %s missing @(%s)\n", c.path, i+1, c.sym, c.attr)
+						fmt.printf("WARN   %s:%d %s missing @(%s)\n", c.path, i + 1, c.sym, c.attr)
 						if strict { ok = false }
 					}
 				}
 			}
 		}
 	}
+
 	fmt.printf("=== Attribute audit: done ===\n")
 	return ok
 }

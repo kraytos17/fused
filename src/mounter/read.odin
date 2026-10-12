@@ -15,13 +15,13 @@ import "core:strings"
 import "core:sync"
 import "core:sys/posix"
 import "core:time"
-import "src:fuse3"
 import "src:fs"
+import "src:fuse3"
 
-@(private="file")
+@(private = "file")
 Readdir_Ctx :: struct {
 	fsys:        ^FS,
-	depc:      int,
+	depc:        int,
 	sector_buf:  [fs.SECTOR_SIZE]u8,
 	dir_cluster: fs.Cluster,
 	filler:      fuse3.Fill_Dir_Proc,
@@ -44,7 +44,6 @@ fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Inf
 	}
 
 	stbuf^ = {}
-
 	// Mode construction is table-driven: pick a base profile by entry kind,
 	// then clear permission bits that the entry's flags deny. A new Dir_Flag
 	// that affects permissions only needs one subtraction line here.
@@ -83,8 +82,12 @@ fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Inf
 
 	dt := entry.date_time
 	t, _ := time.components_to_time(
-		i64(entry.year), i64(dt.month), i64(dt.date),
-		i64(dt.hour), i64(dt.minute), i64(dt.second),
+		i64(entry.year),
+		i64(dt.month),
+		i64(dt.date),
+		i64(dt.hour),
+		i64(dt.minute),
+		i64(dt.second),
 	)
 
 	ts := posix.time_t(time.time_to_unix(t))
@@ -92,8 +95,12 @@ fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Inf
 	stbuf.st_ctim.tv_sec = ts
 	at := entry.atime_date_time
 	atime_t, _ := time.components_to_time(
-		i64(entry.atime_year), i64(at.month), i64(at.date),
-		i64(at.hour), i64(at.minute), i64(at.second),
+		i64(entry.atime_year),
+		i64(at.month),
+		i64(at.date),
+		i64(at.hour),
+		i64(at.minute),
+		i64(at.second),
 	)
 
 	stbuf.st_atim.tv_sec = posix.time_t(time.time_to_unix(atime_t))
@@ -104,12 +111,12 @@ fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Inf
 
 // fused_readdir fills a directory listing using the FUSE filler callback.
 fused_readdir :: proc "c" (
-	path:   cstring,
-	buf:    rawptr,
+	path: cstring,
+	buf: rawptr,
 	filler: fuse3.Fill_Dir_Proc,
-	off:    posix.off_t,
-	_:      ^fuse3.File_Info,
-	flags:  c.int,
+	off: posix.off_t,
+	_: ^fuse3.File_Info,
+	flags: c.int,
 ) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
@@ -128,7 +135,6 @@ fused_readdir :: proc "c" (
 
 	dir_cluster := fs.Cluster(entry.stored_cluster)
 	dir_offset := fs.Sector_Offset(entry.sector_index)
-
 	sync.mutex_unlock(&fsys.mu)
 	if rc := fuse3.fill_dir(filler, buf, ".", nil); rc != 0 {
 		return rc
@@ -145,15 +151,23 @@ fused_readdir :: proc "c" (
 		}
 		for i in 0 ..< ctx.depc {
 			if .Exists in get_dir_entry(ctx.sector_buf[:], i, ctx.fsys.vol.master.features).flags {
-				name := fs.entry_short_name(get_dir_entry(ctx.sector_buf[:], i, ctx.fsys.vol.master.features))
-				if .LFN in get_dir_entry(ctx.sector_buf[:], i, ctx.fsys.vol.master.features).flags {
+				name := fs.entry_short_name(
+					get_dir_entry(ctx.sector_buf[:], i, ctx.fsys.vol.master.features),
+				)
+				if .LFN in
+				   get_dir_entry(ctx.sector_buf[:], i, ctx.fsys.vol.master.features).flags {
 					// LFN cache is read-only after setup, safe without lock
-					sec_off := fs.Sector_Offset(u64(sec) - u64(ctx.dir_cluster) * ctx.fsys.vol.master.cluster_size)
+					sec_off := fs.Sector_Offset(
+						u64(sec) - u64(ctx.dir_cluster) * ctx.fsys.vol.master.cluster_size,
+					)
 					cache_k := lfn_cache_key(ctx.dir_cluster, sec_off, i)
 					if cached, hit := lru.get(&ctx.fsys.lfn_cache, cache_k); hit {
 						name = cached
 					} else {
-						lfn, l_ok := fs.resolve_lfn(&ctx.fsys.vol, get_dir_entry(ctx.sector_buf[:], i, ctx.fsys.vol.master.features))
+						lfn, l_ok := fs.resolve_lfn(
+							&ctx.fsys.vol,
+							get_dir_entry(ctx.sector_buf[:], i, ctx.fsys.vol.master.features),
+						)
 						if l_ok {
 							name = lfn
 							c := strings.clone(name, context.allocator)
@@ -168,6 +182,7 @@ fused_readdir :: proc "c" (
 					ctx.stop_rc = rc
 					return false
 				}
+
 				delete(name_cstr)
 				ctx.e += 1
 			}
@@ -175,8 +190,15 @@ fused_readdir :: proc "c" (
 		return true
 	}
 
-	ctx := Readdir_Ctx{fsys = fsys, depc = depc, dir_cluster = dir_cluster, filler = filler, buf = buf}
-	if werr := fs.walk_chain_sectors(&fsys.vol, dir_cluster, dir_offset, visit, &ctx); werr != .None {
+	ctx := Readdir_Ctx {
+		fsys        = fsys,
+		depc        = depc,
+		dir_cluster = dir_cluster,
+		filler      = filler,
+		buf         = buf,
+	}
+	if werr := fs.walk_chain_sectors(&fsys.vol, dir_cluster, dir_offset, visit, &ctx);
+	   werr != .None {
 		log.debugf("readdir: %s → extent resolve failed", path)
 		return fuse3.nix(.ENOENT)
 	}
@@ -195,7 +217,11 @@ fused_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	fsys := begin_op()
 	defer end_op(fsys)
 
-	entry, parent_cluster, parent_offset, entry_idx, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
+	entry, parent_cluster, parent_offset, entry_idx, ok := resolve_path_cached(
+		fsys,
+		string(path),
+		context.temp_allocator,
+	)
 	if !ok {
 		log.debugf("open: %s → ENOENT", path)
 		return fuse3.nix(.ENOENT)
@@ -214,7 +240,12 @@ fused_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 		return fuse3.nix(.EACCES)
 	}
 
-	fi.fh = transmute(u64)(fs.File_Handle{dir_cluster = u64(parent_cluster), dir_offset = u16(parent_offset), entry_index = u16(entry_idx)})
+	fi.fh = transmute(u64)(fs.File_Handle {
+			dir_cluster = u64(parent_cluster),
+			dir_offset = u16(parent_offset),
+			entry_index = u16(entry_idx),
+		})
+
 	log.debugf("open: %s → ok", path)
 	return 0
 }
@@ -222,10 +253,10 @@ fused_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 // fused_read reads data from a file at a given offset.
 fused_read :: proc "c" (
 	path: cstring,
-	buf:  [^]c.char,
+	buf: [^]c.char,
 	size: c.size_t,
-	off:  posix.off_t,
-	fi:   ^fuse3.File_Info,
+	off: posix.off_t,
+	fi: ^fuse3.File_Info,
 ) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
@@ -241,8 +272,13 @@ fused_read :: proc "c" (
 		return fuse3.nix(.ENOENT)
 	}
 
-	mem_sink := Mem_Read_Sink{fsys = fsys, buf = ([^]u8)(buf), size = u64(size), remaining = u64(size)}
-	sink := Read_Sink{
+	mem_sink := Mem_Read_Sink {
+		fsys      = fsys,
+		buf       = ([^]u8)(buf),
+		size      = u64(size),
+		remaining = u64(size),
+	}
+	sink := Read_Sink {
 		user      = &mem_sink,
 		copy_to   = _mem_read_copy_to,
 		bulk      = _mem_read_bulk,
@@ -250,7 +286,14 @@ fused_read :: proc "c" (
 	}
 
 	bytes_read := read_range_from_runs(fsys, runs, u64(off), &sink)
-	log.debugf("read: %s off=%d size=%d → %d bytes (%v)", path, off, size, bytes_read, time.since(read_start))
+	log.debugf(
+		"read: %s off=%d size=%d → %d bytes (%v)",
+		path,
+		off,
+		size,
+		bytes_read,
+		time.since(read_start),
+	)
 	return c.int(bytes_read)
 }
 
@@ -260,8 +303,8 @@ fused_read_buf :: proc "c" (
 	path: cstring,
 	bufp: ^^fuse3.Bufvec,
 	size: c.size_t,
-	off:  posix.off_t,
-	fi:   ^fuse3.File_Info,
+	off: posix.off_t,
+	fi: ^fuse3.File_Info,
 ) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
@@ -277,7 +320,13 @@ fused_read_buf :: proc "c" (
 		return fuse3.nix(.ENOENT)
 	}
 
-	slices, total_provided := collect_read_slices(runs, u64(off), u64(size), context.temp_allocator)
+	slices, total_provided := collect_read_slices(
+		runs,
+		u64(off),
+		u64(size),
+		context.temp_allocator,
+	)
+
 	defer delete(slices)
 	if len(slices) == 0 {
 		return fuse3.nix(.ENOENT)
@@ -304,8 +353,15 @@ fused_read_buf :: proc "c" (
 	}
 
 	bufp^ = bv
-	log.debugf("read_buf: %s off=%d size=%d → %d bytes (%d bufs, %v)",
-		path, off, size, total_provided, buf_count, time.since(read_start))
+	log.debugf(
+		"read_buf: %s off=%d size=%d → %d bytes (%d bufs, %v)",
+		path,
+		off,
+		size,
+		total_provided,
+		buf_count,
+		time.since(read_start),
+	)
 	return c.int(total_provided)
 }
 
@@ -326,7 +382,11 @@ fused_readlink :: proc "c" (path: cstring, buf: [^]c.char, size: c.size_t) -> c.
 		return fuse3.nix(.EIO)
 	}
 
-	runs, ext_ok := resolve_extents_cached(fsys, fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index))
+	runs, ext_ok := resolve_extents_cached(
+		fsys,
+		fs.Cluster(entry.stored_cluster),
+		fs.Sector_Offset(entry.sector_index),
+	)
 	if !ext_ok {
 		return fuse3.nix(.EIO)
 	}

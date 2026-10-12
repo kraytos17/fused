@@ -4,7 +4,7 @@
 
 fused is a FUSE filesystem daemon implemented in Odin. It provides a libfuse3
 FFI binding, a cluster-based on-disk format (rev 8 with feature flags), and
-read-write FUSE mounting (41 of 43 `fuse_operations` callbacks implemented).
+read-write FUSE mounting (all 43 `fuse_operations` callbacks implemented).
 
 ```
 ┌─────────────┐     ┌──────────────────┐     ┌──────────────┐
@@ -39,7 +39,7 @@ read-write FUSE mounting (41 of 43 `fuse_operations` callbacks implemented).
 | 0 | `sig` | `[7]u8` | Filesystem identifier: `"FUSED\0\0"` |
 | 7 | `rev_min` | `u8` | Minimum compatible format version (6) |
 | 8 | `rev_max` | `u8` | Format version written by formatter (8) |
-| 9 | `features` | `Features` | `bit_set[Feature_Flag; u64]` — bit 0 = `.Uid_Gid`, bit 1 = `.Journal_V2`, bit 2 = `.XAttr` |
+| 9 | `features` | `Features` | `bit_set[Feature_Flag; u64]` — bit 0 = `.Uid_Gid`, bit 1 = retired (rev-7 journal selector, rejected), bit 2 = `.XAttr` |
 | 17–22 | reserved | — | Zero |
 | 23 | `cluster_map_offset` | `u64` | Sector index of the first ClusterMapEntry (always 1) |
 | 31 | `cluster_map_size` | `u64` | Number of ClusterMapEntry records |
@@ -52,8 +52,9 @@ read-write FUSE mounting (41 of 43 `fuse_operations` callbacks implemented).
 
 **Feature flags** enable runtime dispatch. `.Uid_Gid` grows `Directory_Entry`
 from 48 to 56 bytes (9 entries/sector vs 10). `.XAttr` grows it further to
-64 bytes (8 entries/sector) and adds the `xattr_cluster` field. `.Journal_V2`
-selects the physical redo-log WAL over the legacy intent log. The mounter
+64 bytes (8 entries/sector) and adds the `xattr_cluster` field. Bit 1 is
+retired: it selected the rev-7 journal WAL when two journals existed, and
+images carrying it are now rejected by validation (reformat to migrate). The mounter
 reads `master.features` directly (it's a `bit_set` field, no transmute needed)
 and selects the correct entry size at runtime via
 `dir_entry_size()` / `dir_entries_per_sector()`.
@@ -128,7 +129,7 @@ XAttr_Record_Header (6 bytes) × count
 
 Limits follow Linux: name ≤ 255 (`XATTR_NAME_MAX`), value ≤ 65536
 (`XATTR_SIZE_MAX`). Allocation and deallocation of xattr chains go through
-the journal (v2 WAL on rev-8 images).
+the journal (WAL on rev-8 images).
 
 ### LFN_Pointer (16 bytes, packed into `file_name[16]`)
 
@@ -179,11 +180,13 @@ At `cluster_size = N`, the metadata overhead is `1/N`.
 
 ### Design decisions
 
-**Format versioning with feature flags.** On-disk format rev 6–8. `validate_master`
+**Format versioning with feature flags.** On-disk format rev 7–8. `validate_master`
 checks `rev_max < SUPPORTED_REV_MIN` (too old), `rev_min > SUPPORTED_REV_MAX` (too new),
-and validates feature flags (no unknown bits set). `SUPPORTED_REV_MIN = 6`,
+and validates feature flags (no unknown bits set, compared on the u64
+representation so retired bits stay visible). `SUPPORTED_REV_MIN = 7`,
 `SUPPORTED_REV_MAX = 8`. Rev 4 images can't be read by this layout (the
-MasterRecord struct changed between rev 4 and 5).
+MasterRecord struct changed between rev 4 and 5); rev 6 images are rejected
+as too old since the intent log was removed.
 
 **`bit_set` for flag fields.** `ClusterMapEntry.flags`, `ClusterEntry.state`,
 and `DirectoryEntry.flags` use `bit_set[Enum; uN]`. The compiler enforces
@@ -315,27 +318,21 @@ layout change, highest-revision feature first, V4 fallback). A future
 revision that changes the entry layout adds one table row instead of editing
 two parallel `if` chains.
 
-### Journal backends (`src/fs/journal.odin`)
+### Journal (`src/fs/journal.odin`)
 
-The two journal implementations (rev 6 intent log, rev 7+ v2 WAL) sit behind
-a single `Journal_Backend` procedure table selected once per operation by
-`journal_backend_for(&vol.master)`:
+Crash consistency comes from a single journal: the physical redo-log WAL
+in a dedicated journal region, exposed as the `JOURNAL_BACKEND` procedure
+table (`begin` / `add` / `commit` / `abort` / `recover`):
 
-- `begin` / `add` / `commit` / `abort` / `recover` — `allocate_sectors`,
-  `deallocate_sectors`, and `volume_open` call through the table instead of
-  branching on `.Journal_V2` at every journaling step. A third journal format
-  is a third backend value, not more `if` arms.
-- **Discard-on-error**: `abort` is the unified error path. The v6 adapter
-  clears its (possibly empty) log sector and bumps seq; the v2 adapter is a
-  no-op (nothing is persisted before commit).
+- `allocate_sectors`, `deallocate_sectors`, and `volume_open` call through
+  the table. The table is kept (rather than direct calls) so a future
+  journal format only adds a new backend value.
+- **Discard-on-error**: `abort` is the unified error path and a no-op
+  (nothing is persisted before commit).
 - `Journal_Entry` construction from a `Cluster_Entry` write is centralized in
   `journal_entry_from_cluster_entry`.
-- Fixes folded in during unification: the v2 `add` cap now matches the
-  transaction array (34) instead of one record (21), so large allocations
-  keep full journal coverage; the `Intent_Log` CRC field moved to the
-  sector's final 4 bytes (`_pad: [20]u8`), where the `[:SECTOR_SIZE-4]` CRC
-  range excludes it — previously the field overlapped the hashed range and
-  the v6 recovery check could never pass.
+- Recovery collects valid ring slots, sorts by seq, and replays oldest-first
+  so a wrapped-around older transaction can't overwrite a newer one.
 
 ### Write path (`src/mounter/write_data.odin` + `src/mounter/write.odin`)
 
@@ -371,7 +368,7 @@ near-identical loops:
 (cluster map, journal region, reserved/root clusters), MasterRecord, cluster
 map, zeroed journal region, and the root cluster (CE table, root directory
 entry, optional `/Kernel` demo file). The `format` tool (`cmd/format`) and
-the test harness (`tests/journal_test.odin`'s rev-6 image) both drive it;
+the test harness both drive it;
 `features`/`rev` are parameters, so a future revision-variant image is a
 parameter rather than a code fork.
 
@@ -406,7 +403,7 @@ release builds. Leaked allocations are reported at unmount time.
 | **Locks** | `lock` (POSIX region locks), `flock` (BSD whole-file) |
 | **xattr** | `setxattr`, `getxattr`, `listxattr`, `removexattr` |
 | **Stubs** | `mknod`, `ioctl` (return ENOSYS) |
-| **Not yet** | `bmap`, `poll` |
+| **Block/poll** | `bmap` (sector mapping), `poll` (returns POLLERR) |
 
 ## Testing
 
@@ -466,8 +463,7 @@ master record includes `rev_min`, `rev_max`, and `features` fields.
 
 ## Remaining work
 
-2 of 43 `fuse_operations` callbacks are not yet wired:
-`bmap`, `poll`.
+All 43 `fuse_operations` callbacks are wired.
 
 ### Deferred refactors
 

@@ -8,42 +8,42 @@ import "core:c"
 import "core:sys/posix"
 
 // current_libfuse_version returns the runtime libfuse3 version from the foreign function.
-current_libfuse_version :: #force_inline proc "contextless"() -> Libfuse_Version {
+current_libfuse_version :: #force_inline proc "contextless" () -> Libfuse_Version {
 	return Libfuse_Version {
-		major   = FUSE_USE_VERSION_MAJOR,
-		minor   = FUSE_USE_VERSION_MINOR,
-		hotfix  = FUSE_HOTFIX_VERSION,
+		major = FUSE_USE_VERSION_MAJOR,
+		minor = FUSE_USE_VERSION_MINOR,
+		hotfix = FUSE_HOTFIX_VERSION,
 		padding = 0,
 	}
 }
 
 // run starts the FUSE event loop with the given operations and user_data.
 @(require_results)
-run :: proc "c"(argc: c.int, argv: [^]cstring, ops: ^Operations, user_data: rawptr) -> c.int {
+run :: proc "c" (argc: c.int, argv: [^]cstring, ops: ^Operations, user_data: rawptr) -> c.int {
 	v := current_libfuse_version()
 	return fuse_main_real_versioned(argc, argv, ops, size_of(Operations), &v, user_data)
 }
 
 // fill_dir adds an entry to a directory buffer during readdir.
 @(require_results)
-fill_dir :: #force_inline proc "c"(
+fill_dir :: #force_inline proc "c" (
 	filler: Fill_Dir_Proc,
-	buf:    rawptr,
-	name:   cstring,
-	stbuf:  ^Stat,
-	off:    posix.off_t = 0,
+	buf: rawptr,
+	name: cstring,
+	stbuf: ^Stat,
+	off: posix.off_t = 0,
 ) -> c.int {
 	return filler(buf, name, stbuf, off, c.int(Fill_Dir_Flags.Defaults))
 }
 
 // check_version checks compile-time vs runtime FUSE versions are compatible.
-check_version :: #force_inline proc "contextless"() -> (major, minor: c.int) {
+check_version :: #force_inline proc "contextless" () -> (major, minor: c.int) {
 	v := fuse_version()
 	return v / 100, v % 100
 }
 
 // pkgversion returns the libfuse3 package version string.
-pkgversion :: #force_inline proc "contextless"() -> cstring {
+pkgversion :: #force_inline proc "contextless" () -> cstring {
 	return fuse_pkgversion()
 }
 
@@ -51,7 +51,7 @@ pkgversion :: #force_inline proc "contextless"() -> cstring {
 //   nix(.None)  → 0   (success)
 //   nix(.NOENT) → -2  (no such file)
 //   nix(.ACCES) → -13 (permission denied)
-nix :: #force_inline proc "contextless"(e: posix.Errno) -> c.int {
+nix :: #force_inline proc "contextless" (e: posix.Errno) -> c.int {
 	return -c.int(e)
 }
 
@@ -60,11 +60,11 @@ nix :: #force_inline proc "contextless"(e: posix.Errno) -> c.int {
 ODIN_MOUNTER_TEST :: #config(ODIN_MOUNTER_TEST, false)
 
 // test_ctx is the fake FUSE context installed by set_test_context.
-@private
+@(private)
 test_ctx: Context
 
 // test_ctx_installed is true once set_test_context has been called.
-@private
+@(private)
 test_ctx_installed: bool
 
 // set_test_context installs a fake FUSE context so callbacks can be exercised
@@ -82,7 +82,7 @@ set_test_context :: proc(ctx: ^Context) {
 // fuse_get_context returns the current FUSE context.  In a test build with a
 // context installed via set_test_context, the fake context is returned;
 // otherwise it forwards to the libfuse3 implementation.
-fuse_get_context :: proc "c"() -> ^Context {
+fuse_get_context :: proc "c" () -> ^Context {
 	when ODIN_MOUNTER_TEST {
 		if test_ctx_installed {
 			return &test_ctx
@@ -96,7 +96,7 @@ fuse_get_context :: proc "c"() -> ^Context {
 // FUSE operation — returning by value (not by pointer) prevents storing
 // a dangling reference beyond the callback scope.  Must be called from
 // within a FUSE callback.
-ctx :: #force_inline proc "c"() -> Context {
+ctx :: #force_inline proc "c" () -> Context {
 	return fuse_get_context()^
 }
 
@@ -106,7 +106,7 @@ ctx :: #force_inline proc "c"() -> Context {
 // the path wasn't cached yet (not an error per se).  Must be called from
 // within a FUSE callback.
 @(require_results)
-invalidate :: proc "c"(path: cstring) -> c.int {
+invalidate :: proc "c" (path: cstring) -> c.int {
 	c := fuse_get_context()
 	return fuse_invalidate_path(c.fuse, path)
 }
@@ -115,7 +115,7 @@ invalidate :: proc "c"(path: cstring) -> c.int {
 // Can be called from within any FUSE callback.  After the call, the
 // current callback should return as normal; the loop exits when it
 // gets back to the top of the event dispatch.
-exit :: proc "c"() {
+exit :: proc "c" () {
 	c := fuse_get_context()
 	fuse_exit(c.fuse)
 }
@@ -124,17 +124,17 @@ exit :: proc "c"() {
 // the init callback.  Returns true if the kernel supports the flag.
 // Call from the init callback, before returning.
 @(require_results)
-set_feature :: #force_inline proc "c"(conn: ^Conn_Info, flag: c.uint64_t) -> bool {
+set_feature :: #force_inline proc "c" (conn: ^Conn_Info, flag: c.uint64_t) -> bool {
 	return bool(fuse_set_feature_flag(conn, flag))
 }
 
 // unset_feature clears a capability flag requested by set_feature.
-unset_feature :: #force_inline proc "c"(conn: ^Conn_Info, flag: c.uint64_t) {
+unset_feature :: #force_inline proc "c" (conn: ^Conn_Info, flag: c.uint64_t) {
 	fuse_unset_feature_flag(conn, flag)
 }
 
 // get_feature returns whether a capability flag is set on the connection.
 @(require_results)
-get_feature :: #force_inline proc "c"(conn: ^Conn_Info, flag: c.uint64_t) -> bool {
+get_feature :: #force_inline proc "c" (conn: ^Conn_Info, flag: c.uint64_t) -> bool {
 	return bool(fuse_get_feature_flag(conn, flag))
 }

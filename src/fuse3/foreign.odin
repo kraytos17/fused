@@ -15,25 +15,18 @@ foreign libfuse3 {
 	// fuse_main_real_versioned is the real entry point for fuse_main (the
 	// C macro expands to this when versioned symbols are enabled).
 	@(link_name = "fuse_main_real_versioned")
-	fuse_main_real_versioned :: proc "c"(
-		argc:      c.int,
-		argv:      [^]cstring,
-		op:        ^Operations,
-		op_size:   c.size_t,
-		version:   ^Libfuse_Version,
-		user_data: rawptr,
-	) -> c.int ---
+	fuse_main_real_versioned :: proc "c" (argc: c.int, argv: [^]cstring, op: ^Operations, op_size: c.size_t, version: ^Libfuse_Version, user_data: rawptr) -> c.int ---
 
 	// fuse_version returns the libfuse3 version as an integer (major*100 + minor).
-	fuse_version    :: proc "c"() -> c.int   ---
+	fuse_version :: proc "c" () -> c.int ---
 	// fuse_pkgversion returns the libfuse3 version as a string.
-	fuse_pkgversion :: proc "c"() -> cstring ---
+	fuse_pkgversion :: proc "c" () -> cstring ---
 
 	// fuse_get_context returns a pointer to the current FUSE context (valid only
 	// during the callback).  The public `fuse_get_context` wrapper in api.odin
 	// forwards here (or serves a test-injected context when ODIN_MOUNTER_TEST).
 	@(link_name = "fuse_get_context")
-	_fuse_get_context_impl :: proc "c"() -> ^Context ---
+	_fuse_get_context_impl :: proc "c" () -> ^Context ---
 }
 
 foreign libfuse3 {
@@ -42,24 +35,24 @@ foreign libfuse3 {
 	// relative to the mount root.  Returns 0 on success, -errno on error.
 	// May return -ENOENT if the path hasn't been cached yet (not an error).
 	@(link_name = "fuse_invalidate_path")
-	fuse_invalidate_path :: proc "c"(f: rawptr, path: cstring) -> c.int ---
+	fuse_invalidate_path :: proc "c" (f: rawptr, path: cstring) -> c.int ---
 
 	// Signals the event loop to exit.  Can be called from within a
 	// callback (e.g., in response to a custom signal or shutdown command).
 	// The fuse handle is obtained from fuse_get_context().fuse.
 	@(link_name = "fuse_exit")
-	fuse_exit :: proc "c"(f: rawptr) ---
+	fuse_exit :: proc "c" (f: rawptr) ---
 
 	// Set a feature flag in fuse_conn_info.want_ext.
 	// Returns true if the flag was successfully set (kernel supports it).
 	@(link_name = "fuse_set_feature_flag")
-	fuse_set_feature_flag :: proc "c"(conn: ^Conn_Info, flag: c.uint64_t) -> c.bool ---
+	fuse_set_feature_flag :: proc "c" (conn: ^Conn_Info, flag: c.uint64_t) -> c.bool ---
 
 	// Unset a feature flag in fuse_conn_info.want_ext.
 	@(link_name = "fuse_unset_feature_flag")
-	fuse_unset_feature_flag :: proc "c"(conn: ^Conn_Info, flag: c.uint64_t) ---
+	fuse_unset_feature_flag :: proc "c" (conn: ^Conn_Info, flag: c.uint64_t) ---
 
 	// Query whether a feature flag is set in fuse_conn_info.want_ext.
 	@(link_name = "fuse_get_feature_flag")
-	fuse_get_feature_flag :: proc "c"(conn: ^Conn_Info, flag: c.uint64_t) -> c.bool ---
+	fuse_get_feature_flag :: proc "c" (conn: ^Conn_Info, flag: c.uint64_t) -> c.bool ---
 }

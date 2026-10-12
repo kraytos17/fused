@@ -30,27 +30,27 @@ Log_Level :: enum c.int {
 	Debug,
 }
 
-OPT_KEY_OPT     :: c.int(-1)
-OPT_KEY_NONOPT  :: c.int(-2)
-OPT_KEY_KEEP    :: c.int(-3)
+OPT_KEY_OPT :: c.int(-1)
+OPT_KEY_NONOPT :: c.int(-2)
+OPT_KEY_KEEP :: c.int(-3)
 OPT_KEY_DISCARD :: c.int(-4)
 
 RENAME_NOREPLACE :: c.uint(1 << 0)
-RENAME_EXCHANGE  :: c.uint(1 << 1)
-RENAME_WHITEOUT  :: c.uint(1 << 2)
+RENAME_EXCHANGE :: c.uint(1 << 1)
+RENAME_WHITEOUT :: c.uint(1 << 2)
 
 // xattr setxattr flags (linux/xattr.h)
-XATTR_CREATE   :: c.int(1 << 0) // fail if the attribute already exists
-XATTR_REPLACE  :: c.int(1 << 1) // fail if the attribute does not exist
+XATTR_CREATE :: c.int(1 << 0) // fail if the attribute already exists
+XATTR_REPLACE :: c.int(1 << 1) // fail if the attribute does not exist
 
 SEEK_DATA :: c.int(3)
 SEEK_HOLE :: c.int(4)
 
-FALLOC_FL_KEEP_SIZE      :: c.int(1 << 0)
-FALLOC_FL_PUNCH_HOLE     :: c.int(1 << 1)
-FALLOC_FL_ZERO_RANGE     :: c.int(1 << 2)
+FALLOC_FL_KEEP_SIZE :: c.int(1 << 0)
+FALLOC_FL_PUNCH_HOLE :: c.int(1 << 1)
+FALLOC_FL_ZERO_RANGE :: c.int(1 << 2)
 FALLOC_FL_COLLAPSE_RANGE :: c.int(1 << 3)
-FALLOC_FL_INSERT_RANGE   :: c.int(1 << 5)
+FALLOC_FL_INSERT_RANGE :: c.int(1 << 5)
 
 Cap_Bit :: enum u32 {
 	Async_Read, // 1<<0
@@ -87,4 +87,4 @@ Cap_Bit :: enum u32 {
 	Over_Io_Uring, // 1<<31
 }
 
-Cap_Flags :: bit_set[Cap_Bit; u32]
+Cap_Flags :: bit_set[Cap_Bit;u32]

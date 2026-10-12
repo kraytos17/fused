@@ -12,10 +12,10 @@ import "core:testing"
 import "src:fs"
 
 // Fill a directory past one sector, verify entries in all extents.
-@test
+@(test)
 test_dir_many_entries_across_extents :: proc(t: ^testing.T) {
 	vol, vol_ok := open_test_volume()
-	if !vol_ok {testing.fail(t); return}
+	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
 	// Create a fresh directory cluster
@@ -31,8 +31,16 @@ test_dir_many_entries_across_extents :: proc(t: ^testing.T) {
 	ce, ce_err := fs.find_cluster_entry(&vol, dc, d_o)
 	testing.expectf(t, ce_err == .None, "CE")
 
-	write_file_entry :: proc(vol: ^fs.Volume, dc: fs.Cluster, ce: fs.Cluster_Entry, didx: int, name: string) {
-		e := fs.Directory_Entry{flags = fs.Dir_Flags{.Allocated, .Exists}}
+	write_file_entry :: proc(
+		vol: ^fs.Volume,
+		dc: fs.Cluster,
+		ce: fs.Cluster_Entry,
+		didx: int,
+		name: string,
+	) {
+		e := fs.Directory_Entry {
+			flags = fs.Dir_Flags{.Allocated, .Exists},
+		}
 		copy(e.file_name[:], name)
 		e.file_name[min(15, len(name))] = 0
 		fs.write_directory_entry_at(vol, dc, fs.Sector_Offset(ce.sector_start), didx, &e)
@@ -58,7 +66,7 @@ test_dir_many_entries_across_extents :: proc(t: ^testing.T) {
 	// Extend directory to a second sector
 	existing_runs, _ := fs.resolve_extents(&vol, dc, d_o)
 	existing_total: u64
-	for r in existing_runs {existing_total += u64(r.count)}
+	for r in existing_runs { existing_total += u64(r.count) }
 	// Need at least existing_total + 1 sectors; the two extra entries may already
 	// have triggered extension if they went past the first sector.
 	if existing_total == 1 {
@@ -74,19 +82,25 @@ test_dir_many_entries_across_extents :: proc(t: ^testing.T) {
 	fs.sector_read(&vol, last_sec, buf[:])
 	raw_new := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(buf[:]))
 
-	e_a := fs.Directory_Entry{flags = fs.Dir_Flags{.Allocated, .Exists}}
+	e_a := fs.Directory_Entry {
+		flags = fs.Dir_Flags{.Allocated, .Exists},
+	}
 	copy(e_a.file_name[:], "FILEa")
 	e_a.file_name[5] = 0
 	raw_new[0] = e_a
 
-	e_b := fs.Directory_Entry{flags = fs.Dir_Flags{.Allocated, .Exists}}
+	e_b := fs.Directory_Entry {
+		flags = fs.Dir_Flags{.Allocated, .Exists},
+	}
 	copy(e_b.file_name[:], "FILEb")
 	e_b.file_name[5] = 0
 	raw_new[1] = e_b
 	fs.sector_write(&vol, last_sec, buf[:])
 
 	// Write "EXTRA" entry in the new sector at slot 2
-	e_extra := fs.Directory_Entry{flags = fs.Dir_Flags{.Allocated, .Exists}}
+	e_extra := fs.Directory_Entry {
+		flags = fs.Dir_Flags{.Allocated, .Exists},
+	}
 	copy(e_extra.file_name[:], "EXTRA")
 	e_extra.file_name[5] = 0
 	new_sector_offset := fs.Sector_Offset(u64(last_sec) - u64(dc) * vol.master.cluster_size)
@@ -108,7 +122,7 @@ test_dir_many_entries_across_extents :: proc(t: ^testing.T) {
 		n := int(run.count)
 		for si in 0 ..< n {
 			s := fs.Sector(u64(run.sector) + u64(si))
-			if fs.sector_read(&vol, s, scan_buf[:]) != .None {break}
+			if fs.sector_read(&vol, s, scan_buf[:]) != .None { break }
 			scan_raw := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(scan_buf[:]))
 			for j in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
 				if .Exists in scan_raw[j].flags {
@@ -132,10 +146,10 @@ test_dir_many_entries_across_extents :: proc(t: ^testing.T) {
 }
 
 // Free a slot in the second sector and verify it's reused.
-@test
+@(test)
 test_dir_reuse_slot_in_extended_sector :: proc(t: ^testing.T) {
 	vol, vol_ok := open_test_volume()
-	if !vol_ok {testing.fail(t); return}
+	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
 	dc, d_o, derr := fs.allocate_sectors(&vol, 0, 0, 1, .Directory)
@@ -150,7 +164,9 @@ test_dir_reuse_slot_in_extended_sector :: proc(t: ^testing.T) {
 	testing.expectf(t, ce_err == .None, "CE")
 
 	// Fill first sector
-	e := fs.Directory_Entry{flags = fs.Dir_Flags{.Allocated, .Exists}}
+	e := fs.Directory_Entry {
+		flags = fs.Dir_Flags{.Allocated, .Exists},
+	}
 	for i in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
 		copy(e.file_name[:], fmt.tprintf("F%d", i))
 		fs.write_directory_entry_at(&vol, dc, fs.Sector_Offset(ce.sector_start), i, &e)
@@ -159,7 +175,7 @@ test_dir_reuse_slot_in_extended_sector :: proc(t: ^testing.T) {
 	// Extend
 	existing_runs, _ := fs.resolve_extents(&vol, dc, d_o)
 	et: u64
-	for r in existing_runs {et += u64(r.count)}
+	for r in existing_runs { et += u64(r.count) }
 	_, _, ext_err := fs.allocate_sectors(&vol, dc, d_o, et + 1, .Directory)
 	testing.expect_value(t, ext_err, fs.FS_Error.None)
 
@@ -172,7 +188,13 @@ test_dir_reuse_slot_in_extended_sector :: proc(t: ^testing.T) {
 	ce, _ = fs.find_cluster_entry(&vol, dc, d_o)
 
 	// Write one entry in the new sector, then free it
-	fs.write_directory_entry_at(&vol, dc, fs.Sector_Offset(u64(last_sec) - u64(dc) * vol.master.cluster_size), 0, &e)
+	fs.write_directory_entry_at(
+		&vol,
+		dc,
+		fs.Sector_Offset(u64(last_sec) - u64(dc) * vol.master.cluster_size),
+		0,
+		&e,
+	)
 	buf: [fs.SECTOR_SIZE]u8
 	fs.sector_read(&vol, last_sec, buf[:])
 	rw := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(buf[:]))
@@ -186,7 +208,7 @@ test_dir_reuse_slot_in_extended_sector :: proc(t: ^testing.T) {
 		n := int(run.count)
 		for si in 0 ..< n {
 			s := fs.Sector(u64(run.sector) + u64(si))
-			if fs.sector_read(&vol, s, scan_buf[:]) != .None {break}
+			if fs.sector_read(&vol, s, scan_buf[:]) != .None { break }
 			raw := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(scan_buf[:]))
 			for j in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
 				zf: fs.Dir_Flags
@@ -210,10 +232,10 @@ test_dir_reuse_slot_in_extended_sector :: proc(t: ^testing.T) {
 
 // Simulate cross-directory rename where destination directory spans multiple
 // sectors — verifies the extent scan finds a slot in an extended sector.
-@test
+@(test)
 test_dir_rename_to_extended_target :: proc(t: ^testing.T) {
 	vol, vol_ok := open_test_volume()
-	if !vol_ok {testing.fail(t); return}
+	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
 	zf: fs.Dir_Flags
@@ -228,7 +250,9 @@ test_dir_rename_to_extended_target :: proc(t: ^testing.T) {
 	fs.sector_write(&vol, src_runs[0].sector, src_zero[:])
 	src_ce, _ := fs.find_cluster_entry(&vol, src_c, src_o)
 
-	fe := fs.Directory_Entry{flags = fs.Dir_Flags{.Allocated, .Exists}}
+	fe := fs.Directory_Entry {
+		flags = fs.Dir_Flags{.Allocated, .Exists},
+	}
 	copy(fe.file_name[:], "MOVEME")
 	fe.file_name[6] = 0
 	fs.write_directory_entry_at(&vol, src_c, fs.Sector_Offset(src_ce.sector_start), 0, &fe)
@@ -243,7 +267,9 @@ test_dir_rename_to_extended_target :: proc(t: ^testing.T) {
 	fs.sector_write(&vol, dst_runs[0].sector, dst_zero[:])
 	dst_ce, _ := fs.find_cluster_entry(&vol, dst_c, dst_o)
 
-	dst_e := fs.Directory_Entry{flags = fs.Dir_Flags{.Allocated, .Exists}}
+	dst_e := fs.Directory_Entry {
+		flags = fs.Dir_Flags{.Allocated, .Exists},
+	}
 	for i in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
 		nm := fmt.tprintf("D%d", i)
 		copy(dst_e.file_name[:], nm)
@@ -254,7 +280,7 @@ test_dir_rename_to_extended_target :: proc(t: ^testing.T) {
 	// Extend dst dir
 	dst_existing_runs, _ := fs.resolve_extents(&vol, dst_c, dst_o)
 	et: u64
-	for r in dst_existing_runs {et += u64(r.count)}
+	for r in dst_existing_runs { et += u64(r.count) }
 	_, _, ext_err := fs.allocate_sectors(&vol, dst_c, dst_o, et + 1, .Directory)
 	testing.expect_value(t, ext_err, fs.FS_Error.None)
 
@@ -271,12 +297,18 @@ test_dir_rename_to_extended_target :: proc(t: ^testing.T) {
 		n := int(run.count)
 		for si in 0 ..< n {
 			s := fs.Sector(u64(run.sector) + u64(si))
-			if fs.sector_read(&vol, s, scan_buf[:]) != .None {break}
+			if fs.sector_read(&vol, s, scan_buf[:]) != .None { break }
 			raw := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(scan_buf[:]))
 			for j in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
 				if raw[j].flags == zf {
 					// Found free slot in dst — write the moved entry here
-					fs.write_directory_entry_at(&vol, dst_c, fs.Sector_Offset(u64(s) - u64(dst_c) * vol.master.cluster_size), j, &fe)
+					fs.write_directory_entry_at(
+						&vol,
+						dst_c,
+						fs.Sector_Offset(u64(s) - u64(dst_c) * vol.master.cluster_size),
+						j,
+						&fe,
+					)
 					found_free = true
 					break scan_loop
 				}
@@ -302,13 +334,21 @@ test_dir_rename_to_extended_target :: proc(t: ^testing.T) {
 	testing.expect(t, name == "MOVEME", "name preserved in dst")
 
 	// Cleanup dst entries
-	fs.sector_read(&vol, fs.Sector(u64(dst_c) * vol.master.cluster_size + u64(dst_ce.sector_start)), dst_buf[:])
+	fs.sector_read(
+		&vol,
+		fs.Sector(u64(dst_c) * vol.master.cluster_size + u64(dst_ce.sector_start)),
+		dst_buf[:],
+	)
 	dst_first := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(dst_buf[:]))
 	for i in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
 		dst_first[i].flags -= {.Exists, .Allocated}
 	}
 
-	fs.sector_write(&vol, fs.Sector(u64(dst_c) * vol.master.cluster_size + u64(dst_ce.sector_start)), dst_buf[:])
+	fs.sector_write(
+		&vol,
+		fs.Sector(u64(dst_c) * vol.master.cluster_size + u64(dst_ce.sector_start)),
+		dst_buf[:],
+	)
 	dst_raw[0].flags -= {.Exists, .Allocated}
 	fs.sector_write(&vol, dst_last_sec, dst_buf[:])
 }

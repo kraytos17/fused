@@ -15,16 +15,23 @@ Resolved_Entry :: struct {
 // resolve_path walks a path string through the directory tree and returns the final entry.
 // It handles both short names and LFNs, parses components without heap allocation,
 // and returns false if any intermediate path component is missing or not a directory.
-resolve_path :: proc(vol: ^Volume, path: string, allocator := context.allocator) -> (res: Resolved_Entry, ok: bool) {
+resolve_path :: proc(
+	vol: ^Volume,
+	path: string,
+	allocator := context.allocator,
+) -> (
+	res: Resolved_Entry,
+	ok: bool,
+) {
 	if path == "/" || len(path) == 0 {
-		res.entry = Directory_Entry{
+		res.entry = Directory_Entry {
 			flags          = Dir_Flags{.Allocated, .Directory, .Exists},
 			sector_index   = vol.master.root_sector_index,
 			stored_cluster = vol.master.root_cluster,
 		}
 
 		res.cluster = Cluster(vol.master.root_cluster)
-		res.offset  = Sector_Offset(vol.master.root_sector_index)
+		res.offset = Sector_Offset(vol.master.root_sector_index)
 		return res, true
 	}
 
@@ -42,9 +49,9 @@ resolve_path :: proc(vol: ^Volume, path: string, allocator := context.allocator)
 	}
 
 	current_cluster := Cluster(vol.master.root_cluster)
-	current_offset  := Sector_Offset(vol.master.root_sector_index)
+	current_offset := Sector_Offset(vol.master.root_sector_index)
 	for comp_idx in 0 ..< n_comps {
-		target  := comps[comp_idx]
+		target := comps[comp_idx]
 		is_last := comp_idx == n_comps - 1
 		dirs, dirs_err := read_directory_entries(vol, current_cluster, current_offset)
 		defer delete(dirs)
@@ -70,7 +77,7 @@ resolve_path :: proc(vol: ^Volume, path: string, allocator := context.allocator)
 				}
 
 				current_cluster = Cluster(d.stored_cluster)
-				current_offset  = Sector_Offset(d.sector_index)
+				current_offset = Sector_Offset(d.sector_index)
 				break
 			}
 		}

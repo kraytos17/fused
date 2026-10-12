@@ -7,11 +7,17 @@ import "core:c"
 import "core:log"
 import "core:mem"
 import "core:strings"
-import "src:fuse3"
 import "src:fs"
+import "src:fuse3"
 
 // fused_setxattr sets an extended attribute on a file or directory.
-fused_setxattr :: proc "c" (path: cstring, name: cstring, value: [^]c.char, size: c.size_t, flags: c.int) -> c.int {
+fused_setxattr :: proc "c" (
+	path: cstring,
+	name: cstring,
+	value: [^]c.char,
+	size: c.size_t,
+	flags: c.int,
+) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
 	defer end_op(fsys)
@@ -66,10 +72,7 @@ fused_setxattr :: proc "c" (path: cstring, name: cstring, value: [^]c.char, size
 			}
 		}
 	} else {
-		append(&attrs, fs.XAttr{
-			name  = strings.clone(attr_name),
-			value = make([]u8, int(size)),
-		})
+		append(&attrs, fs.XAttr{name = strings.clone(attr_name), value = make([]u8, int(size))})
 		if size > 0 {
 			mem.copy(raw_data(attrs[len(attrs) - 1].value), value, int(size))
 		}
@@ -93,7 +96,12 @@ fused_setxattr :: proc "c" (path: cstring, name: cstring, value: [^]c.char, size
 //   size == 0        → return required size (probe)
 //   size <  required → return -ERANGE
 //   otherwise        → copy value and return its length
-fused_getxattr :: proc "c" (path: cstring, name: cstring, value: [^]c.char, size: c.size_t) -> c.int {
+fused_getxattr :: proc "c" (
+	path: cstring,
+	name: cstring,
+	value: [^]c.char,
+	size: c.size_t,
+) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
 	defer end_op(fsys)
@@ -117,6 +125,7 @@ fused_getxattr :: proc "c" (path: cstring, name: cstring, value: [^]c.char, size
 	if len(val) > 0 {
 		mem.copy(value, raw_data(val), len(val))
 	}
+
 	log.debugf("getxattr: %s %s (%d bytes)", path, name, len(val))
 	return c.int(len(val))
 }
@@ -164,6 +173,7 @@ fused_listxattr :: proc "c" (path: cstring, list: [^]c.char, size: c.size_t) -> 
 		list[off] = 0
 		off += 1
 	}
+
 	log.debugf("listxattr: %s (%d names)", path, len(attrs))
 	return c.int(needed)
 }

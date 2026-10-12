@@ -4,46 +4,46 @@
 #+build linux
 package fs
 
-Sector        :: distinct u64 // absolute sector number on disk
-Cluster       :: distinct u64 // cluster index
+Sector :: distinct u64 // absolute sector number on disk
+Cluster :: distinct u64 // cluster index
 Sector_Offset :: distinct u16 // sector offset within a cluster
 // Journal_Seq distinct type for journal sequence numbers
-Journal_Seq   :: distinct u64 // journal transaction sequence number
+Journal_Seq :: distinct u64 // journal transaction sequence number
 // Byte_Offset distinct type for byte positions/sizes
-Byte_Offset   :: distinct u64 // byte position or size in the image
+Byte_Offset :: distinct u64 // byte position or size in the image
 
-SECTOR_SIZE                :: 512
+SECTOR_SIZE :: 512
 CLUSTER_ENTRIES_PER_SECTOR :: 32
 CLUSTER_MAP_ENTRIES_PER_SECTOR :: 64
-DEFAULT_CLUSTER_SIZE       :: 16
-DEFAULT_IMAGE_SIZE         :: 1 * 1024 * 1024 // 1 MB
-FUSED_SIG                  :: [7]u8{'F', 'U', 'S', 'E', 'D', 0, 0}
+DEFAULT_CLUSTER_SIZE :: 16
+DEFAULT_IMAGE_SIZE :: 1 * 1024 * 1024 // 1 MB
+FUSED_SIG :: [7]u8{'F', 'U', 'S', 'E', 'D', 0, 0}
 
 #assert(size_of(Cluster_Map_Entry) == 8)
 #assert(SECTOR_SIZE / size_of(Cluster_Map_Entry) == CLUSTER_MAP_ENTRIES_PER_SECTOR)
-#assert(SECTOR_SIZE / size_of(Cluster_Entry)     == CLUSTER_ENTRIES_PER_SECTOR)
+#assert(SECTOR_SIZE / size_of(Cluster_Entry) == CLUSTER_ENTRIES_PER_SECTOR)
 #assert(DIR_ENTRY_SIZE_V5 * DIR_ENTRIES_PER_SECTOR_V5 <= SECTOR_SIZE)
-#assert((DIR_ENTRIES_PER_SECTOR_V5 + 1) * DIR_ENTRY_SIZE_V5 >  SECTOR_SIZE)
+#assert((DIR_ENTRIES_PER_SECTOR_V5 + 1) * DIR_ENTRY_SIZE_V5 > SECTOR_SIZE)
 #assert(DIR_ENTRY_SIZE_V4 * DIR_ENTRIES_PER_SECTOR_V4 <= SECTOR_SIZE)
-#assert((DIR_ENTRIES_PER_SECTOR_V4 + 1) * DIR_ENTRY_SIZE_V4 >  SECTOR_SIZE)
+#assert((DIR_ENTRIES_PER_SECTOR_V4 + 1) * DIR_ENTRY_SIZE_V4 > SECTOR_SIZE)
 #assert(DIR_ENTRY_SIZE_V6 * DIR_ENTRIES_PER_SECTOR_V6 == SECTOR_SIZE)
 
 Cluster_Map_Flag :: enum u16 {
 	Allocated, // bit 0
-	Reserved,  // bit 1
-	Full,      // bit 2
+	Reserved, // bit 1
+	Full, // bit 2
 }
-Cluster_Map_Flags :: bit_set[Cluster_Map_Flag; u16]
+Cluster_Map_Flags :: bit_set[Cluster_Map_Flag;u16]
 
 Cluster_Entry_Flag :: enum u8 {
-	Allocated,    // bit 0
-	Cluster_Map,  // bit 1
-	Directory,    // bit 2
+	Allocated, // bit 0
+	Cluster_Map, // bit 1
+	Directory, // bit 2
 	File_Content, // bit 3
-	LFN,          // bit 4
-	XAttr,        // bit 5: extended-attribute data chain
+	LFN, // bit 4
+	XAttr, // bit 5: extended-attribute data chain
 }
-Cluster_Entry_State :: bit_set[Cluster_Entry_Flag; u8]
+Cluster_Entry_State :: bit_set[Cluster_Entry_Flag;u8]
 
 Dir_Flag :: enum u16 {
 	Allocated,
@@ -56,7 +56,7 @@ Dir_Flag :: enum u16 {
 	No_Read,
 	No_Execute,
 }
-Dir_Flags :: bit_set[Dir_Flag; u16]
+Dir_Flags :: bit_set[Dir_Flag;u16]
 
 Packed_Date_Time :: bit_field u32 {
 	month:    u32 | 4,
@@ -97,27 +97,31 @@ FS_Error :: enum {
 // Rev 4 images had a single rev byte at offset 7 and can't be parsed
 // by the rev 5 Master_Record layout (rev_max would read garbage).
 // Rev 5 added uid/gid in Directory_Entry (56-byte entries).
-// Rev 6 added intent log for crash-consistent allocation transactions.
-// Rev 7 added physical redo-log WAL (Journal_V2) for full crash consistency.
+// Rev 6 added an intent log for crash-consistent allocation transactions;
+// the intent log was removed and rev 6 images are no longer mountable.
+// Rev 7 added a physical redo-log WAL for full crash consistency (now the
+// only journal; its feature bit is retired, see Feature_Flag).
 // Rev 8 added XAttr support (extended attributes stored in a dedicated chain).
-SUPPORTED_REV_MIN :: 6
+SUPPORTED_REV_MIN :: 7
 SUPPORTED_REV_MAX :: 8
 
 // Feature version map: each flag is associated with the rev it was introduced.
 // When adding a new feature: add it here, add to ALL_SUPPORTED_FEATURES, bump SUPPORTED_REV_MAX.
 Feature_Flag :: enum u64 {
-	Uid_Gid     = 0,  // rev 5: uid/gid fields in Directory_Entry, 56-byte entries, 9 per sector
-	Journal_V2  = 1,  // rev 7: physical redo-log WAL
-	XAttr       = 2,  // rev 8: xattr_cluster field in Directory_Entry, 64-byte entries, 8 per sector
+	Uid_Gid = 0, // rev 5: uid/gid fields in Directory_Entry, 56-byte entries, 9 per sector
+	// Bit 1 (rev 7 journal WAL selector) is retired: the WAL is the only
+	// journal, so no flag is needed. Images with bit 1 set are rejected
+	// by validation (unknown feature bit); reformat to migrate.
+	XAttr   = 2, // rev 8: xattr_cluster field in Directory_Entry, 64-byte entries, 8 per sector
 }
-Features :: bit_set[Feature_Flag; u64]
+Features :: bit_set[Feature_Flag;u64]
 
 // All features that this version understands.
 // When adding a new feature: add it here AND bump SUPPORTED_REV_MAX.
-ALL_SUPPORTED_FEATURES :: Features{.Uid_Gid, .Journal_V2, .XAttr}
+ALL_SUPPORTED_FEATURES :: Features{.Uid_Gid, .XAttr}
 
 // Every defined Feature_Flag must be accounted for in ALL_SUPPORTED_FEATURES.
-#assert(ALL_SUPPORTED_FEATURES <= Features{.Uid_Gid, .Journal_V2, .XAttr})
+#assert(ALL_SUPPORTED_FEATURES <= Features{.Uid_Gid, .XAttr})
 
 // MasterRecord — sector 0, 512 bytes
 Master_Record :: struct #packed #all_or_none {
@@ -139,9 +143,9 @@ Master_Record :: struct #packed #all_or_none {
 
 // ClusterMapEntry — 8 bytes, 64 per sector
 Cluster_Map_Entry :: struct #packed {
-	sector_index:   u16,
-	flags:          Cluster_Map_Flags,
-	reserved1:      u32,
+	sector_index: u16,
+	flags:        Cluster_Map_Flags,
+	reserved1:    u32,
 }
 #assert(size_of(Cluster_Map_Entry) == 8)
 
@@ -177,26 +181,26 @@ DIR_ENTRY_SIZE :: DIR_ENTRY_SIZE_V6
 // defaults when no layout feature is present.  A future revision that changes
 // the entry layout adds one row here instead of editing two parallel chains.
 Dir_Entry_Layout :: struct {
-	feature:   Feature_Flag,
-	size:      u16,
+	feature:    Feature_Flag,
+	size:       u16,
 	per_sector: u16,
 }
 
-DIR_ENTRY_LAYOUTS :: [2]Dir_Entry_Layout{
-	{.XAttr,   DIR_ENTRY_SIZE_V6, DIR_ENTRIES_PER_SECTOR_V6},
+DIR_ENTRY_LAYOUTS :: [2]Dir_Entry_Layout {
+	{.XAttr, DIR_ENTRY_SIZE_V6, DIR_ENTRIES_PER_SECTOR_V6},
 	{.Uid_Gid, DIR_ENTRY_SIZE_V5, DIR_ENTRIES_PER_SECTOR_V5},
 }
 
 dir_entry_size :: proc(features: Features) -> u16 {
 	for layout in DIR_ENTRY_LAYOUTS {
-		if layout.feature in features {return layout.size}
+		if layout.feature in features { return layout.size }
 	}
 	return DIR_ENTRY_SIZE_V4
 }
 
 dir_entries_per_sector :: proc(features: Features) -> u16 {
 	for layout in DIR_ENTRY_LAYOUTS {
-		if layout.feature in features {return layout.per_sector}
+		if layout.feature in features { return layout.per_sector }
 	}
 	return DIR_ENTRIES_PER_SECTOR_V4
 }
@@ -235,79 +239,55 @@ Extent_Run :: struct {
 	count:  u16,
 }
 
-JOURNAL_MAGIC :: 0xF11E
-Jv2_MAGIC :: 0xF11E0002
+JOURNAL_WAL_MAGIC :: 0xF11E0002
 
-JOURNAL_SEQ_OFFSET       :: 0  // u64: next transaction seq (resv offset)
-JOURNAL_WATERMARK_OFFSET :: 8  // u64: last fully-applied seq
-JOURNAL_REGION_OFFSET    :: 16 // u64: journal region size in sectors
-
-// Intent_Log_Entry — describes a single CE-table write (rev 6 format, 14 bytes).
-Intent_Log_Entry :: struct #packed {
-	cluster:         u64,
-	sector_offset:   u16,
-	ce_index:        u8,
-	alloc_size:      u16,
-	state:           u8,
-}
+JOURNAL_SEQ_OFFSET :: 0 // u64: next transaction seq (resv offset)
+JOURNAL_WATERMARK_OFFSET :: 8 // u64: last fully-applied seq
+JOURNAL_REGION_OFFSET :: 16 // u64: journal region size in sectors
 
 // Journal_Entry — full Cluster_Entry data for rev 7 replay (24 bytes).
 Journal_Entry :: struct #packed {
-	cluster:          u64,
-	ce_index:         u8,
-	state:            u8,
-	sector_start:     u16,
-	alloc_size:       u16,
-	next_cluster:     u64,
+	cluster:           u64,
+	ce_index:          u8,
+	state:             u8,
+	sector_start:      u16,
+	alloc_size:        u16,
+	next_cluster:      u64,
 	next_sector_index: u16,
 }
 
-// Jv2_Record — one sector in the ring buffer, containing packed Journal_Entry records.
-Jv2_Record :: struct #packed {
+// Journal_Record — one sector in the ring buffer, containing packed Journal_Entry records.
+Journal_Record :: struct #packed {
 	entries: [JOURNAL_ENTRIES_PER_RECORD]Journal_Entry,
 }
-JOURNAL_ENTRIES_PER_RECORD :: 21  // 504 / 24, no padding needed
-#assert(size_of(Jv2_Record) == 21 * 24)
-#assert(size_of(Jv2_Record) <= SECTOR_SIZE)
+
+JOURNAL_ENTRIES_PER_RECORD :: 21 // 504 / 24, no padding needed
+#assert(size_of(Journal_Record) == 21 * 24)
+#assert(size_of(Journal_Record) <= SECTOR_SIZE)
 #assert(size_of(Journal_Entry) == 24)
 
-// Jv2_Header — one sector, starts every transaction in the ring buffer.
-Jv2_Header :: struct #packed {
-	magic:        u32,
-	seq:          u64,
-	rec_count:    u16,
-	rec_sectors:  u16,
-	committed:    u8,
-	_pad:         [5]u8,
-	header_crc:   u32,
-	_resv:        [482]u8,
-	tail_magic:   u32,
+// Journal_Header — one sector, starts every transaction in the ring buffer.
+Journal_Header :: struct #packed {
+	magic:       u32,
+	seq:         u64,
+	rec_count:   u16,
+	rec_sectors: u16,
+	committed:   u8,
+	_pad:        [5]u8,
+	header_crc:  u32,
+	_resv:       [482]u8,
+	tail_magic:  u32,
 }
-#assert(size_of(Jv2_Header) == SECTOR_SIZE)
+#assert(size_of(Journal_Header) == SECTOR_SIZE)
 
-// Intent_Log — single sector (512 bytes), rev 6 format.
-// crc sits at the sector's final 4 bytes so it is outside the
-// `[:SECTOR_SIZE-4]` CRC range (a shorter _pad would put crc inside the
-// hashed range and the check could never pass).
-Intent_Log :: struct #packed {
-	magic:   u16,
-	seq:     u64,
-	count:   u16,
-	entries: [MAX_JOURNAL_ENTRIES_v6]Intent_Log_Entry,
-	_pad:    [20]u8,
-	crc:     u32,
-}
-#assert(size_of(Intent_Log) == SECTOR_SIZE)
-MAX_JOURNAL_ENTRIES_v6 :: 34
-
-#assert(size_of(Intent_Log_Entry) == 14)
+MAX_JOURNAL_ENTRIES :: 34
 
 // XAttr blob — packed records stored in a dedicated cluster chain.
 // The chain is found by scanning the owning cluster's CE table for an
 // entry whose state carries .XAttr (mirrors LFN pointer resolution).
-XATTR_MAGIC       :: 0x58415452 // "XATR"
-XATTR_NAME_MAX    :: 255
-XATTR_SIZE_MAX    :: 65536
+XATTR_MAGIC :: 0x58415452 // "XATR"
+XATTR_NAME_MAX :: 255
+XATTR_SIZE_MAX :: 65536
 
 XAttr_Blob_Header :: struct #packed {
 	magic: u32,

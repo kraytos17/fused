@@ -12,16 +12,19 @@ import "src:fs"
 
 // Ensure a cluster's bitmap is cached, then write its CME via the
 // write helper and verify the cache entry is invalidated.
-@test
+@(test)
 test_invalidate_via_write_cme :: proc(t: ^testing.T) {
 	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil {testing.fail(t); return}
+	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
 	master, mok := fs.read_master_record(fd)
 	testing.expect(t, mok, "read_master_record")
 
-	vol := fs.Volume{disk = fd, master = master}
+	vol := fs.Volume {
+		disk   = fd,
+		master = master,
+	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
 	defer fs.alloc_cache_destroy(&vol.cache)
 
@@ -55,23 +58,35 @@ test_invalidate_via_write_cme :: proc(t: ^testing.T) {
 			expected_used += e.allocation_size
 		}
 	}
-	testing.expectf(t, used_after == expected_used,
-		"used count after CME write: cache=%d expected=%d", used_after, expected_used)
+	testing.expectf(
+		t,
+		used_after == expected_used,
+		"used count after CME write: cache=%d expected=%d",
+		used_after,
+		expected_used,
+	)
 	// Restore original CME
-	testing.expectf(t, fs.write_cluster_map_entry(&vol, test_cluster, &cme_backup) == .None, "restore CME")
+	testing.expectf(
+		t,
+		fs.write_cluster_map_entry(&vol, test_cluster, &cme_backup) == .None,
+		"restore CME",
+	)
 }
 
 // Write a CE table via the helper with cache, verify invalidation.
-@test
+@(test)
 test_invalidate_via_write_ce_table :: proc(t: ^testing.T) {
 	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil {testing.fail(t); return}
+	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
 	master, mok := fs.read_master_record(fd)
 	testing.expect(t, mok, "read_master_record")
 
-	vol := fs.Volume{disk = fd, master = master}
+	vol := fs.Volume {
+		disk   = fd,
+		master = master,
+	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
 	defer fs.alloc_cache_destroy(&vol.cache)
 
@@ -113,23 +128,35 @@ test_invalidate_via_write_ce_table :: proc(t: ^testing.T) {
 		}
 	}
 
-	testing.expectf(t, used_after == expected_used,
-		"used count after CE table write: cache=%d expected=%d", used_after, expected_used)
+	testing.expectf(
+		t,
+		used_after == expected_used,
+		"used count after CE table write: cache=%d expected=%d",
+		used_after,
+		expected_used,
+	)
 	// Restore
-	testing.expectf(t, fs.write_cluster_entry_table(&vol, test_cluster, &table_backup) == .None, "restore CE table")
+	testing.expectf(
+		t,
+		fs.write_cluster_entry_table(&vol, test_cluster, &table_backup) == .None,
+		"restore CE table",
+	)
 }
 
 // Verify that write_cluster_entry_at with cache invalidates.
-@test
+@(test)
 test_invalidate_via_write_ce_at :: proc(t: ^testing.T) {
 	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil {testing.fail(t); return}
+	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
 	master, mok := fs.read_master_record(fd)
 	testing.expect(t, mok, "read_master_record")
 
-	vol := fs.Volume{disk = fd, master = master}
+	vol := fs.Volume {
+		disk   = fd,
+		master = master,
+	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
 	defer fs.alloc_cache_destroy(&vol.cache)
 
@@ -172,21 +199,29 @@ test_invalidate_via_write_ce_at :: proc(t: ^testing.T) {
 			expected_used += e.allocation_size
 		}
 	}
-	testing.expectf(t, used_after == expected_used,
-		"used count after CE at write: cache=%d expected=%d", used_after, expected_used)
+	testing.expectf(
+		t,
+		used_after == expected_used,
+		"used count after CE at write: cache=%d expected=%d",
+		used_after,
+		expected_used,
+	)
 }
 
 // Verify that write functions properly invalidate the built-in cache.
-@test
+@(test)
 test_invalidate_via_write_always_invalidates :: proc(t: ^testing.T) {
 	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil {testing.fail(t); return}
+	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
 	master, mok := fs.read_master_record(fd)
 	testing.expect(t, mok, "read_master_record")
 
-	vol := fs.Volume{disk = fd, master = master}
+	vol := fs.Volume {
+		disk   = fd,
+		master = master,
+	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
 	defer fs.alloc_cache_destroy(&vol.cache)
 
@@ -202,8 +237,13 @@ test_invalidate_via_write_always_invalidates :: proc(t: ^testing.T) {
 	// Cache should have been invalidated — re-ensure should return fresh data
 	_, used_after, bok2 := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
 	testing.expect(t, bok2, "ensure after CME write")
-	testing.expectf(t, used_after == used_before,
-		"used same after CME write: before=%d after=%d", used_before, used_after)
+	testing.expectf(
+		t,
+		used_after == used_before,
+		"used same after CME write: before=%d after=%d",
+		used_before,
+		used_after,
+	)
 
 	// Same for write_cluster_entry_table
 	table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
@@ -212,25 +252,37 @@ test_invalidate_via_write_always_invalidates :: proc(t: ^testing.T) {
 		return
 	}
 
-	testing.expectf(t, fs.write_cluster_entry_table(&vol, test_cluster, &table) == .None, "write CE table")
+	testing.expectf(
+		t,
+		fs.write_cluster_entry_table(&vol, test_cluster, &table) == .None,
+		"write CE table",
+	)
 	_, used_after2, bok3 := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
 	testing.expect(t, bok3, "ensure after CE table write")
-	testing.expectf(t, used_after2 == used_before,
-		"used same after CE table write: before=%d after=%d", used_before, used_after2)
+	testing.expectf(
+		t,
+		used_after2 == used_before,
+		"used same after CE table write: before=%d after=%d",
+		used_before,
+		used_after2,
+	)
 }
 
 // Verify the full alloc -> dealloc cycle through allocate_sectors works with
 // the centralized invalidation (smoke test for the 7 mutation sites).
-@test
+@(test)
 test_invalidation_full_cycle :: proc(t: ^testing.T) {
 	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil {testing.fail(t); return}
+	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
 	master, mok := fs.read_master_record(fd)
 	testing.expect(t, mok, "read_master_record")
 
-	vol := fs.Volume{disk = fd, master = master}
+	vol := fs.Volume {
+		disk   = fd,
+		master = master,
+	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
 	defer fs.alloc_cache_destroy(&vol.cache)
 
@@ -254,8 +306,13 @@ test_invalidation_full_cycle :: proc(t: ^testing.T) {
 		}
 	}
 
-	testing.expectf(t, used == expected_used,
-		"used after alloc: cache=%d expected=%d", used, expected_used)
+	testing.expectf(
+		t,
+		used == expected_used,
+		"used after alloc: cache=%d expected=%d",
+		used,
+		expected_used,
+	)
 	// Deallocate — exercises the deallocate_sectors write paths
 	derr := fs.deallocate_sectors(&vol, fc, fo)
 	testing.expect_value(t, derr, fs.FS_Error.None)
@@ -274,22 +331,30 @@ test_invalidation_full_cycle :: proc(t: ^testing.T) {
 			expected_used2 += e.allocation_size
 		}
 	}
-	testing.expectf(t, used2 == expected_used2,
-		"used after dealloc: cache=%d expected=%d", used2, expected_used2)
+	testing.expectf(
+		t,
+		used2 == expected_used2,
+		"used after dealloc: cache=%d expected=%d",
+		used2,
+		expected_used2,
+	)
 }
 
 // Verify that allocation chain extension correctly invalidates both
 // the new cluster AND the previous (patched) cluster's cache entry.
-@test
+@(test)
 test_invalidation_chain_extension :: proc(t: ^testing.T) {
 	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil {testing.fail(t); return}
+	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
 	master, mok := fs.read_master_record(fd)
 	testing.expect(t, mok, "read_master_record")
 
-	vol := fs.Volume{disk = fd, master = master}
+	vol := fs.Volume {
+		disk   = fd,
+		master = master,
+	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
 	defer fs.alloc_cache_destroy(&vol.cache)
 
@@ -309,7 +374,7 @@ test_invalidation_chain_extension :: proc(t: ^testing.T) {
 	runs, ext_err := fs.resolve_extents(&vol, fc, fo)
 	testing.expectf(t, ext_err == .None, "resolve_extents after extension")
 	tt: u64
-	for r in runs {tt += u64(r.count)}
+	for r in runs { tt += u64(r.count) }
 	testing.expectf(t, tt == 16, "total sectors: expected 16 got %d", tt)
 
 	// Verify cache is consistent for BOTH clusters
@@ -318,10 +383,10 @@ test_invalidation_chain_extension :: proc(t: ^testing.T) {
 	ci_vals := []u64{ci_a, ci_b}
 	for _, ci in ci_vals {
 		_, used, bok := fs.alloc_cache_ensure(&vol.cache, &vol, u64(ci))
-		if !bok {continue}
+		if !bok { continue }
 
 		table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
-		if fs.read_cluster_entry_table(&vol, fs.Cluster(ci), &table) != .None {continue}
+		if fs.read_cluster_entry_table(&vol, fs.Cluster(ci), &table) != .None { continue }
 
 		expected_used: u16 = 0
 		for &e in table {
@@ -329,8 +394,14 @@ test_invalidation_chain_extension :: proc(t: ^testing.T) {
 				expected_used += e.allocation_size
 			}
 		}
-		testing.expectf(t, used == expected_used,
-			"cluster %d after extension: cache used=%d expected=%d", ci, used, expected_used)
+		testing.expectf(
+			t,
+			used == expected_used,
+			"cluster %d after extension: cache used=%d expected=%d",
+			ci,
+			used,
+			expected_used,
+		)
 	}
 	// Cleanup
 	derr := fs.deallocate_sectors(&vol, fc, fo)
