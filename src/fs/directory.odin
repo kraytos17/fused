@@ -43,6 +43,10 @@ read_directory_entries :: proc(
 }
 
 // resolve_lfn reconstructs a long filename from the LFN data sector.
+// The returned string is allocated with `allocator` and owned by the
+// caller — except callers passing a bump/arena allocator (e.g. temp) need
+// no free. Heap callers must free with delete_string using the same
+// allocator once they have copied what they need.
 resolve_lfn :: proc(
 	vol: ^Volume,
 	entry: ^Directory_Entry,
@@ -75,8 +79,6 @@ resolve_lfn :: proc(
 	}
 
 	data := make([dynamic]u8, 0, int(ptr.size), allocator)
-	defer delete(data)
-
 	sector_buf: [SECTOR_SIZE]u8
 	current_cluster := Cluster(ptr.cluster)
 	current_entry := target

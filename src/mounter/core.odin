@@ -44,8 +44,11 @@ FS :: struct {
 	disk_raw_fd:  c.int,
 	// logger is the per-mount logger instance.
 	logger:       log.Logger,
-	// mu serialises access to the volume and caches.
-	mu:           sync.Mutex,
+	// mu serialises access to the volume and caches. Mutating callbacks take
+	// it exclusively (begin_op); read-only callbacks share it
+	// (begin_read_op) and must use only non-mutating cache access (peek or
+	// snapshot helpers) while it is held.
+	mu:           sync.RW_Mutex,
 	// allocator is the allocator passed to init_fs_state; used for cache
 	// reconstruction so tests with custom allocators stay consistent.
 	allocator:    mem.Allocator,
@@ -78,19 +81,41 @@ get_fs :: #force_inline proc "contextless" () -> ^FS {
 	return (^FS)(fuse3.fuse_get_context().private_data)
 }
 
-// begin_op locks the mutex, resets the temp allocator, sets the logger, and
-// returns the FS pointer. Must be paired with end_op.
+// begin_op locks the mutex exclusively, resets the temp allocator, sets the
+// logger, and returns the FS pointer. Must be paired with end_op. Use for
+// callbacks that mutate shared state (caches, lock tables, free count).
 begin_op :: proc() -> ^FS {
 	fsys := get_fs()
 	free_all(context.temp_allocator)
 	context.logger = fsys.logger
-	sync.mutex_lock(&fsys.mu)
+	sync.rw_mutex_lock(&fsys.mu)
 	return fsys
 }
 
 // end_op unlocks the mutex.
 end_op :: proc(fsys: ^FS) {
-	sync.mutex_unlock(&fsys.mu)
+	sync.rw_mutex_unlock(&fsys.mu)
+}
+
+// begin_read_op takes the mutex shared, resets the temp allocator, sets the
+// logger, and returns the FS pointer. Must be paired with end_read_op. Use
+// for read-only callbacks: while the shared lock is held, touch shared
+// state only through non-mutating access (lru.peek, snapshot helpers that
+// upgrade internally). Never insert into or clear a cache while shared-held
+// except through an upgrade helper (resolve_extents_shared,
+// lfn_lookup_shared), which releases shared, takes exclusive, re-checks,
+// and re-takes shared before returning.
+begin_read_op :: proc() -> ^FS {
+	fsys := get_fs()
+	free_all(context.temp_allocator)
+	context.logger = fsys.logger
+	sync.rw_mutex_shared_lock(&fsys.mu)
+	return fsys
+}
+
+// end_read_op releases the shared lock.
+end_read_op :: proc(fsys: ^FS) {
+	sync.rw_mutex_shared_unlock(&fsys.mu)
 }
 
 // fs_error_to_errno translates an FS_Error to a POSIX errno value.
@@ -155,7 +180,7 @@ set_entry_atime_to_now :: proc(entry: ^fs.Directory_Entry) {
 
 // _set_time_fields writes year/month/day/hour/minute/second into the given
 // fields from a Unix timestamp.
-@(private)
+@(private = "file")
 _set_time_fields :: proc(year: ^u16, dt: ^fs.Packed_Date_Time, sec: i64) {
 	t := time.unix(sec, 0)
 	y, mo, d := time.date(t)
@@ -172,7 +197,7 @@ _set_time_fields :: proc(year: ^u16, dt: ^fs.Packed_Date_Time, sec: i64) {
 
 // _set_time_fields_now writes the current wall-clock time into the given
 // date/time fields.
-@(private)
+@(private = "file")
 _set_time_fields_now :: proc(year: ^u16, dt: ^fs.Packed_Date_Time) {
 	now := time.now()
 	y, mo, d := time.date(now)
@@ -280,6 +305,60 @@ lfn_cache_key :: #force_inline proc(
 	return (u64(cluster) << 32) | (u64(offset) << 16) | u64(index)
 }
 
+// lfn_lookup_shared resolves a long filename through the LFN cache without
+// requiring the write lock. Caller must hold the READ lock on entry; it is
+// still held on return. Uses lru.peek (non-mutating, unlike lru.get which
+// rewrites recency) under shared; on a miss upgrades internally — releases
+// shared, takes exclusive, re-checks, resolves, inserts, releases, re-takes
+// shared — then re-peeks rather than reusing the inserted value, so a
+// concurrent clear between downgrade and re-acquire cannot hand back a freed
+// string. The returned string is cloned into the temp allocator: safe to use
+// after the read lock is released.
+lfn_lookup_shared :: proc(
+	fsys: ^FS,
+	key: u64,
+	vol: ^fs.Volume,
+	entry: ^fs.Directory_Entry,
+) -> (
+	name: string,
+	ok: bool,
+) {
+	if cached, hit := lru.peek(&fsys.lfn_cache, key); hit {
+		out, _ := strings.clone(cached, context.temp_allocator)
+		return out, true
+	}
+
+	sync.rw_mutex_shared_unlock(&fsys.mu)
+	sync.rw_mutex_lock(&fsys.mu)
+	if cached, hit := lru.peek(&fsys.lfn_cache, key); hit {
+		out, _ := strings.clone(cached, context.temp_allocator)
+		sync.rw_mutex_unlock(&fsys.mu)
+		sync.rw_mutex_shared_lock(&fsys.mu)
+		return out, true
+	}
+
+	lfn, l_ok := fs.resolve_lfn(vol, entry, context.temp_allocator)
+	if l_ok {
+		c, _ := strings.clone(lfn, context.allocator)
+		if c != "" {
+			if lru.set(&fsys.lfn_cache, key, c) != nil {
+				delete(c)
+			}
+		}
+	}
+
+	sync.rw_mutex_unlock(&fsys.mu)
+	sync.rw_mutex_shared_lock(&fsys.mu)
+	if !l_ok {
+		return "", false
+	}
+	if cached, hit := lru.peek(&fsys.lfn_cache, key); hit {
+		out, _ := strings.clone(cached, context.temp_allocator)
+		return out, true
+	}
+	return lfn, true
+}
+
 // path_cache_get retrieves a cached path resolution.
 path_cache_get :: proc(fsys: ^FS, path: string) -> (Path_Cache_Value, bool) {
 	return lru.get(&fsys.path_cache, path)
@@ -324,22 +403,6 @@ resolve_path_cached :: proc(
 	if res_ok {
 		path_cache_put(fsys, path, {res.entry, res.cluster, res.offset, res.entry_index})
 	}
-	return res.entry, res.cluster, res.offset, res.entry_index, res_ok
-}
-
-// resolve_path resolves a path without caching. Wraps fs.resolve_path.
-resolve_path :: proc(
-	fsys: ^FS,
-	path: string,
-	allocator := context.allocator,
-) -> (
-	entry: fs.Directory_Entry,
-	cluster: fs.Cluster,
-	offset: fs.Sector_Offset,
-	entry_index: int,
-	ok: bool,
-) {
-	res, res_ok := fs.resolve_path(&fsys.vol, path, allocator)
 	return res.entry, res.cluster, res.offset, res.entry_index, res_ok
 }
 
@@ -402,8 +465,9 @@ init_fs_state :: proc(fsys: ^FS, allocator := context.allocator) {
 	fsys.flock_locks = make(map[File_Identity][dynamic]Flock_State, allocator)
 }
 
-// destroy_fs_for_test tears down an FS created by init_fs_for_test.  Does not
-// close the volume (the caller owns it).
+// destroy_fs_for_test tears down an FS: drops the extent/path/LFN caches
+// and lock tables without closing the volume (the caller owns it). Shared
+// by the test harness and the daemon unmount path so the two can't drift.
 destroy_fs_for_test :: proc(fsys: ^FS) {
 	extent_cache_invalidate_all(fsys)
 	for _, recs in fsys.locks {
@@ -422,7 +486,9 @@ destroy_fs_for_test :: proc(fsys: ^FS) {
 
 // resolve_extents_cached resolves an extent chain, caching the result so
 // repeated reads/writes on the same file skip the metadata walk.  The returned
-// slice is owned by the cache — callers must NOT delete it.
+// slice is owned by the cache — callers must NOT delete it.  Caller must hold
+// the WRITE lock (begin_op): the lookup may insert, and the borrowed slice
+// is only valid until the next invalidation, which also requires the lock.
 resolve_extents_cached :: proc(
 	fsys: ^FS,
 	cluster: fs.Cluster,
@@ -445,6 +511,54 @@ resolve_extents_cached :: proc(
 	delete(r)
 	fsys.extents[key] = slice_copy
 	return slice_copy, true
+}
+
+// resolve_extents_shared resolves an extent chain for read-only paths.
+// Caller must hold the READ lock on entry; it is still held on return.  The
+// returned slice is cloned into the temp allocator, so it stays valid after
+// the read lock is released (unlike the cache-borrowed resolve_extents_cached
+// slice).  On a cache miss it upgrades internally: releases shared, takes
+// exclusive, re-checks (another thread may have filled), fills, releases,
+// and re-takes shared.  Never nests locks — shared is always released before
+// exclusive is taken, so no deadlock against concurrent writers.
+resolve_extents_shared :: proc(
+	fsys: ^FS,
+	cluster: fs.Cluster,
+	offset: fs.Sector_Offset,
+) -> (
+	runs: []fs.Extent_Run,
+	ok: bool,
+) {
+	key := Extent_Cache_Key{u64(cluster), u16(offset)}
+	if cached, hit := fsys.extents[key]; hit {
+		out, _ := slice.clone(cached, context.temp_allocator)
+		return out, true
+	}
+
+	sync.rw_mutex_shared_unlock(&fsys.mu)
+	sync.rw_mutex_lock(&fsys.mu)
+	if cached, hit := fsys.extents[key]; hit {
+		out, _ := slice.clone(cached, context.temp_allocator)
+		sync.rw_mutex_unlock(&fsys.mu)
+		sync.rw_mutex_shared_lock(&fsys.mu)
+		return out, true
+	}
+
+	r, err := fs.resolve_extents(&fsys.vol, cluster, offset)
+	if err != .None {
+		sync.rw_mutex_unlock(&fsys.mu)
+		sync.rw_mutex_shared_lock(&fsys.mu)
+		return nil, false
+	}
+
+	slice_copy, _ := slice.clone(r[:])
+	delete(r)
+
+	fsys.extents[key] = slice_copy
+	out, _ := slice.clone(slice_copy, context.temp_allocator)
+	sync.rw_mutex_unlock(&fsys.mu)
+	sync.rw_mutex_shared_lock(&fsys.mu)
+	return out, true
 }
 
 // extent_cache_invalidate_all drops every cached extent chain.  Call after any

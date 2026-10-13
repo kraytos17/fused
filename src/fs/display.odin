@@ -12,7 +12,7 @@ write_flag :: proc(sb: ^strings.Builder, n: ^int, name: string) {
 }
 
 // cme_flags_str formats Cluster_Map_Flags into a human-readable string
-cme_flags_str :: proc(f: Cluster_Map_Flags, buf: []byte) -> string {
+cme_flags_str :: proc(f: Cluster_Map_Flags, buf: []u8) -> string {
 	sb := strings.builder_from_slice(buf)
 	n := 0
 	if .Allocated in f { write_flag(&sb, &n, "ALLOCATED") }
@@ -23,7 +23,7 @@ cme_flags_str :: proc(f: Cluster_Map_Flags, buf: []byte) -> string {
 }
 
 // ce_state_str formats Cluster_Entry_State into a human-readable string
-ce_state_str :: proc(s: Cluster_Entry_State, buf: []byte) -> string {
+ce_state_str :: proc(s: Cluster_Entry_State, buf: []u8) -> string {
 	sb := strings.builder_from_slice(buf)
 	n := 0
 	if .Allocated in s { write_flag(&sb, &n, "ALLOCATED") }
@@ -37,7 +37,7 @@ ce_state_str :: proc(s: Cluster_Entry_State, buf: []byte) -> string {
 }
 
 // dir_flags_str formats Dir_Flags into a human-readable string
-dir_flags_str :: proc(f: Dir_Flags, buf: []byte) -> string {
+dir_flags_str :: proc(f: Dir_Flags, buf: []u8) -> string {
 	sb := strings.builder_from_slice(buf)
 	n := 0
 	if .Allocated in f { write_flag(&sb, &n, "ALLOCATED") }

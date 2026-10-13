@@ -35,7 +35,7 @@ journal_seq_init :: proc(master: ^Master_Record) {
 
 write_master_record :: proc(vol: ^Volume) -> FS_Error {
 	buf: [SECTOR_SIZE]u8
-	(^Master_Record)(&buf[0])^ = vol.master
+	(^Master_Record)(raw_data(buf[:]))^ = vol.master
 	return sector_write(vol, Sector(0), buf[:])
 }
 
@@ -88,7 +88,7 @@ journal_commit :: proc(vol: ^Volume, txn: ^Journal_Txn) -> bool {
 	rec_secs := u16((txn.count + JOURNAL_ENTRIES_PER_RECORD - 1) / JOURNAL_ENTRIES_PER_RECORD)
 	for ri in 0 ..< rec_secs {
 		rec_buf: [SECTOR_SIZE]u8
-		rec := (^Journal_Record)(&rec_buf[0])
+		rec := (^Journal_Record)(raw_data(rec_buf[:]))
 		base := int(ri) * JOURNAL_ENTRIES_PER_RECORD
 		for ei in 0 ..< JOURNAL_ENTRIES_PER_RECORD {
 			idx := base + ei
@@ -111,10 +111,10 @@ journal_commit :: proc(vol: ^Volume, txn: ^Journal_Txn) -> bool {
 	}
 
 	hdr_buf: [SECTOR_SIZE]u8
-	(^Journal_Header)(&hdr_buf[0])^ = hdr
+	(^Journal_Header)(raw_data(hdr_buf[:]))^ = hdr
 	hdr.header_crc = hash.crc32(hdr_buf[:24])
 
-	(^Journal_Header)(&hdr_buf[0])^ = hdr
+	(^Journal_Header)(raw_data(hdr_buf[:]))^ = hdr
 	if sector_write(vol, pos, hdr_buf[:]) != .None {
 		return false
 	}
@@ -153,7 +153,7 @@ journal_recover :: proc(vol: ^Volume) {
 		hdr_buf: [SECTOR_SIZE]u8
 		if sector_read(vol, pos, hdr_buf[:]) != .None { continue }
 
-		hdr := (^Journal_Header)(&hdr_buf[0])^
+		hdr := (^Journal_Header)(raw_data(hdr_buf[:]))^
 		if hdr.magic != JOURNAL_WAL_MAGIC { continue }
 		if hdr.tail_magic != JOURNAL_WAL_MAGIC {
 			log.warnf("journal: torn header at sector %d — discarding", pos)
@@ -193,7 +193,7 @@ journal_recover :: proc(vol: ^Volume) {
 				break
 			}
 
-			rec := (^Journal_Record)(&rec_buf[0])
+			rec := (^Journal_Record)(raw_data(rec_buf[:]))
 			for ei in 0 ..< JOURNAL_ENTRIES_PER_RECORD {
 				idx := int(ri) * JOURNAL_ENTRIES_PER_RECORD + ei
 				if idx >= int(s.hdr.rec_count) { break }

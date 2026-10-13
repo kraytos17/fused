@@ -168,7 +168,7 @@ fused_listxattr :: proc "c" (path: cstring, list: [^]c.char, size: c.size_t) -> 
 
 	off: c.size_t
 	for &a in attrs {
-		mem.copy(rawptr(uintptr(list) + uintptr(off)), raw_data(a.name), len(a.name))
+		mem.copy(rawptr(&list[off]), raw_data(a.name), len(a.name))
 		off += c.size_t(len(a.name))
 		list[off] = 0
 		off += 1

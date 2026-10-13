@@ -7,7 +7,6 @@ package mounter
 
 import "base:runtime"
 import "core:c"
-import "core:container/lru"
 import "core:log"
 import "core:mem"
 import "core:slice"
@@ -121,21 +120,23 @@ fused_readdir :: proc "c" (
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
-	// Fast path: resolve path without holding the lock long-term.
-	// We release the lock after resolving, since the directory's
-	// on-disk data is stable for the duration of the readdir call.
-	sync.mutex_lock(&fsys.mu)
+	// Fast path: resolve path under the write lock (resolution may insert
+	// into the path cache), then release before the I/O phase. The walk
+	// below re-takes the read lock per entry; on-disk data reads are
+	// pread-based and thread-safe, and LFN names go through
+	// lfn_lookup_shared, so concurrent writers are never blocked by fill_dir.
+	sync.rw_mutex_lock(&fsys.mu)
 	depc := dir_entries_per_buf(fsys.vol.master.features)
 	entry, _, _, _, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
 	if !ok || .Directory not_in entry.flags {
-		sync.mutex_unlock(&fsys.mu)
+		sync.rw_mutex_unlock(&fsys.mu)
 		log.debugf("readdir: %s → ENOENT/not-dir", path)
 		return fuse3.nix(.ENOENT)
 	}
 
 	dir_cluster := fs.Cluster(entry.stored_cluster)
 	dir_offset := fs.Sector_Offset(entry.sector_index)
-	sync.mutex_unlock(&fsys.mu)
+	sync.rw_mutex_unlock(&fsys.mu)
 	if rc := fuse3.fill_dir(filler, buf, ".", nil); rc != 0 {
 		return rc
 	}
@@ -151,39 +152,41 @@ fused_readdir :: proc "c" (
 		}
 		for i in 0 ..< ctx.depc {
 			if .Exists in get_dir_entry(ctx.sector_buf[:], i, ctx.fsys.vol.master.features).flags {
-				name := fs.entry_short_name(
-					get_dir_entry(ctx.sector_buf[:], i, ctx.fsys.vol.master.features),
-				)
-				if .LFN in
-				   get_dir_entry(ctx.sector_buf[:], i, ctx.fsys.vol.master.features).flags {
-					// LFN cache is read-only after setup, safe without lock
+				entry := get_dir_entry(ctx.sector_buf[:], i, ctx.fsys.vol.master.features)^
+				name := fs.entry_short_name(&entry)
+				if .LFN in entry.flags {
+					// Look up under the read lock; the helper upgrades to
+					// exclusive internally on a miss. The borrowed string is
+					// copied to temp before unlocking so fill_dir below runs
+					// lock-free without stalling writers.
 					sec_off := fs.Sector_Offset(
 						u64(sec) - u64(ctx.dir_cluster) * ctx.fsys.vol.master.cluster_size,
 					)
 					cache_k := lfn_cache_key(ctx.dir_cluster, sec_off, i)
-					if cached, hit := lru.get(&ctx.fsys.lfn_cache, cache_k); hit {
-						name = cached
-					} else {
-						lfn, l_ok := fs.resolve_lfn(
-							&ctx.fsys.vol,
-							get_dir_entry(ctx.sector_buf[:], i, ctx.fsys.vol.master.features),
-						)
-						if l_ok {
-							name = lfn
-							c := strings.clone(name, context.allocator)
-							lru.set(&ctx.fsys.lfn_cache, cache_k, c)
+					sync.rw_mutex_shared_lock(&ctx.fsys.mu)
+					lfn, l_ok := lfn_lookup_shared(ctx.fsys, cache_k, &ctx.fsys.vol, &entry)
+					lfn_cstr: cstring
+					if l_ok {
+						lfn_cstr, _ = strings.clone_to_cstring(lfn, context.temp_allocator)
+					}
+
+					sync.rw_mutex_shared_unlock(&ctx.fsys.mu)
+					if l_ok {
+						if rc := fuse3.fill_dir(ctx.filler, ctx.buf, lfn_cstr, nil); rc != 0 {
+							ctx.stop_rc = rc
+							return false
 						}
+
+						ctx.e += 1
+						continue
 					}
 				}
 
-				name_cstr := strings.clone_to_cstring(name) or_continue
+				name_cstr := strings.clone_to_cstring(name, context.temp_allocator) or_continue
 				if rc := fuse3.fill_dir(ctx.filler, ctx.buf, name_cstr, nil); rc != 0 {
-					delete(name_cstr)
 					ctx.stop_rc = rc
 					return false
 				}
-
-				delete(name_cstr)
 				ctx.e += 1
 			}
 		}
@@ -259,15 +262,16 @@ fused_read :: proc "c" (
 	fi: ^fuse3.File_Info,
 ) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
+	fsys := begin_read_op()
+	defer end_read_op(fsys)
+
 	read_start := time.now()
 	_, data_cluster, data_offset, ok := read_entry_from_fh(fsys, fi.fh)
 	if !ok {
 		return fuse3.nix(.ENOENT)
 	}
 
-	runs, ext_ok := resolve_extents_cached(fsys, data_cluster, data_offset)
+	runs, ext_ok := resolve_extents_shared(fsys, data_cluster, data_offset)
 	if !ext_ok {
 		return fuse3.nix(.ENOENT)
 	}
@@ -294,7 +298,9 @@ fused_read :: proc "c" (
 		bytes_read,
 		time.since(read_start),
 	)
-	return c.int(bytes_read)
+	// Saturate: bytes_read cannot exceed the requested size, but the u64 →
+	// c.int narrowing must be total on 64-bit.
+	return c.int(min(bytes_read, u64(max(c.int))))
 }
 
 // fused_read_buf reads data with zero-copy splice support (FUSE read_buf
@@ -307,15 +313,16 @@ fused_read_buf :: proc "c" (
 	fi: ^fuse3.File_Info,
 ) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
+	fsys := begin_read_op()
+	defer end_read_op(fsys)
+
 	read_start := time.now()
 	_, data_cluster, data_offset, ok := read_entry_from_fh(fsys, fi.fh)
 	if !ok {
 		return fuse3.nix(.ENOENT)
 	}
 
-	runs, ext_ok := resolve_extents_cached(fsys, data_cluster, data_offset)
+	runs, ext_ok := resolve_extents_shared(fsys, data_cluster, data_offset)
 	if !ext_ok {
 		return fuse3.nix(.ENOENT)
 	}
@@ -362,7 +369,9 @@ fused_read_buf :: proc "c" (
 		buf_count,
 		time.since(read_start),
 	)
-	return c.int(total_provided)
+	// Saturate the u64 → c.int narrowing (total_provided ≤ requested size,
+	// but the conversion must be total regardless).
+	return c.int(min(total_provided, u64(max(c.int))))
 }
 
 // fused_readlink reads the target of a symbolic link.

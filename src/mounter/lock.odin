@@ -2,8 +2,9 @@
 //
 // Both lock types are in-memory only — no on-disk format change.  Lock state
 // is per-mount and lost on unmount, matching advisory-lock semantics (locks
-// are process-lifetime state).  All callbacks serialize on fsys.mu via
-// begin_op/end_op, so a plain map + dynamic arrays is thread-safe.
+// are process-lifetime state).  fused_lock/fused_flock serialize on the write
+// lock via begin_op/end_op (and fused_release, which mutates the tables on
+// close, does too), so a plain map + dynamic arrays is thread-safe.
 #+build linux
 package mounter
 

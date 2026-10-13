@@ -180,7 +180,12 @@ _mem_copy :: proc(user: rawptr, dst: []u8, byte_off: u64, take: u64) -> u64 {
 	}
 
 	src_off := s.size - s.remaining
-	mem.copy(raw_data(dst[byte_off:]), rawptr(uintptr(s.buf) + uintptr(src_off)), int(n))
+	mem.copy(
+		raw_data(dst[byte_off:]),
+		rawptr(mem.ptr_offset(([^]u8)(s.buf), int(src_off))),
+		int(n),
+	)
+
 	s.remaining -= n
 	return n
 }
@@ -189,11 +194,7 @@ _mem_bulk :: proc(user: rawptr, sec: fs.Sector, sectors: u64) -> u64 {
 	s := (^Mem_Source)(user)
 	n := sectors * fs.SECTOR_SIZE
 	src_off := s.size - s.remaining
-	if fs.sector_write_bulk(
-		   &s.fsys.vol,
-		   sec,
-		   ([^]u8)(rawptr(uintptr(s.buf) + uintptr(src_off)))[:n],
-	   ) !=
+	if fs.sector_write_bulk(&s.fsys.vol, sec, mem.ptr_offset(([^]u8)(s.buf), int(src_off))[:n]) !=
 	   .None {
 		return 0
 	}
@@ -202,12 +203,16 @@ _mem_bulk :: proc(user: rawptr, sec: fs.Sector, sectors: u64) -> u64 {
 	return sectors
 }
 
-// Bufvec_Source writes from a FUSE bufvec (fused_write_buf).
+// Bufvec_Source writes from a FUSE bufvec (fused_write_buf). err is sticky:
+// set when a source failure (fd-backed partial copy, splice/I/O error)
+// aborts the transfer; fused_write_buf maps it to EIO instead of a silent
+// short count. Must never unwind (panic) out of a "c" callback.
 Bufvec_Source :: struct {
 	fsys:    ^FS,
 	bufs:    []fuse3.Buf,
 	count:   u32,
 	buf_idx: int,
+	err:     bool,
 }
 
 _bufvec_remaining :: proc(user: rawptr) -> u64 {
@@ -231,13 +236,18 @@ _bufvec_copy :: proc(user: rawptr, dst: []u8, byte_off: u64, take: u64) -> u64 {
 		return 0
 	}
 	if b.flags & fuse3.FUSE_BUF_IS_FD != 0 {
-		panic("write_buf: fd-backed buf at unaligned offset not supported")
+		// Fd-backed bufs have no userspace address: a partial-sector copy
+		// through the staging buffer is impossible. Flag the error (the
+		// caller maps it to EIO) instead of panicking through C.
+		s.err = true
+		return 0
 	}
 
 	src := ([^]u8)(b.mem)[:b.size]
-	mem.copy(raw_data(dst[byte_off:]), raw_data(src), int(n))
+	copy(dst[byte_off:], src[:int(n)])
+
 	b.size -= c.size_t(n)
-	b.mem = rawptr(uintptr(b.mem) + uintptr(n))
+	b.mem = rawptr(mem.ptr_offset(([^]u8)(b.mem), int(n)))
 	if b.size == 0 {
 		s.buf_idx += 1
 	}
@@ -265,6 +275,7 @@ _bufvec_bulk :: proc(user: rawptr, sec: fs.Sector, sectors: u64) -> u64 {
 				{},
 			)
 			if err != .NONE || n == 0 {
+				s.err = true
 				return 0
 			}
 			written += u64(n)
@@ -272,13 +283,14 @@ _bufvec_bulk :: proc(user: rawptr, sec: fs.Sector, sectors: u64) -> u64 {
 	} else {
 		src := ([^]u8)(b.mem)[:bulk_len]
 		if fs.sector_write_bulk(&s.fsys.vol, sec, src) != .None {
+			s.err = true
 			return 0
 		}
 	}
 
 	b.size -= c.size_t(bulk_len)
 	if b.flags & fuse3.FUSE_BUF_IS_FD == 0 {
-		b.mem = rawptr(uintptr(b.mem) + uintptr(bulk_len))
+		b.mem = rawptr(mem.ptr_offset(([^]u8)(b.mem), int(bulk_len)))
 	}
 	if b.size == 0 {
 		s.buf_idx += 1
@@ -488,7 +500,12 @@ _mem_read_copy_to :: proc(
 		return 0
 	}
 
-	mem.copy(rawptr(uintptr(s.buf) + uintptr(dst_off)), raw_data(src[src_byte_off:]), int(n))
+	mem.copy(
+		rawptr(mem.ptr_offset(([^]u8)(s.buf), int(dst_off))),
+		raw_data(src[src_byte_off:]),
+		int(n),
+	)
+
 	s.remaining -= n
 	return n
 }
@@ -496,7 +513,7 @@ _mem_read_copy_to :: proc(
 _mem_read_bulk :: proc(user: rawptr, sec: fs.Sector, sectors: u64, dst_off: u64) -> u64 {
 	s := (^Mem_Read_Sink)(user)
 	n := sectors * fs.SECTOR_SIZE
-	dst_buf := ([^]u8)(rawptr(uintptr(s.buf) + uintptr(dst_off)))[:n]
+	dst_buf := mem.ptr_offset(([^]u8)(s.buf), int(dst_off))[:n]
 	if fs.sector_read(&s.fsys.vol, sec, dst_buf) != .None {
 		return 0
 	}

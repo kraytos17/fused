@@ -1,19 +1,13 @@
-// main.odin — fused read-only FUSE mounter.
+// main.odin — fused read-write FUSE mounter daemon lifecycle.
 //
-// Opens a fused disk image, validates the MasterRecord, wires the
-// FUSE callbacks from the mounter package (core.odin, create.odin, dir.odin,
-// read.odin, write.odin, misc.odin), and calls fuse3.run.
-//
-// Usage: fused [--log-file=<path>] [--log-level=<level>] [--log-format=<format>] <image-path> [fuse-options...] <mountpoint>
-// Example: fused --log-file=fused.log --log-level=warn fused.img -f mnt
-// Levels: debug, info, warn, error (default: debug)
-// Formats: long (default, with date/time/location), short (level only), full (level + thread id)
+// Opens a fused disk image from a pre-parsed Mount_Options, validates the
+// MasterRecord, wires the FUSE callbacks from the mounter package, and calls
+// fuse3.run. CLI parsing lives in cmd/mount (usage text included there).
 #+build linux
 package mounter
 
 import "base:runtime"
 import "core:c"
-import "core:fmt"
 import "core:log"
 import "core:mem"
 import "core:os"
@@ -21,26 +15,27 @@ import "core:strings"
 import "src:fs"
 import "src:fuse3"
 
-usage :: proc() {
-	fmt.println(
-		"Usage: fused [--log-file=<path>] [--log-level=<level>] [--log-format=<format>] <image-path> [fuse-options...] <mountpoint>",
-	)
-	fmt.println("Levels:  debug, info, warn, error  (default: debug)")
-	fmt.println(
-		"Formats: long (default, date/time/location), short (level only), full (level + thread id)",
-	)
-	fmt.println("Flags:   --log-file=<path>  --log-level=<level>  --log-format=<format>")
-	fmt.println("         -f (foreground, default), -d (FUSE debug), -s (single-threaded)")
+// Mount_Options carries the parsed CLI state into run. The mount CLI mixes
+// fused-owned flags (--log-*) with opaque FUSE passthrough (-d, -s, -o…),
+// which core:flags cannot express (unknown flags abort parsing with
+// Missing_Flag), so argv is partitioned by the cmd/mount entry point and
+// passed here pre-split. The library never reads os.args.
+Mount_Options :: struct {
+	// image_path is the fused disk image to mount.
+	image_path: string,
+	// log_file_path selects file logging; "" means console logging.
+	log_file_path: string,
+	// log_level is the logger verbosity.
+	log_level: log.Level,
+	// log_opts selects the console logger format.
+	log_opts: log.Options,
+	// fuse_args is the opaque FUSE passthrough (options + mountpoint),
+	// NOT including image_path. Borrowed: the caller owns it.
+	fuse_args: []string,
 }
 
-run :: proc() {
+run :: proc(opts: Mount_Options) -> bool {
 	context = runtime.default_context()
-	for arg in os.args[1:] {
-		if arg == "--help" || arg == "-h" {
-			usage()
-			os.exit(0)
-		}
-	}
 
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
@@ -53,54 +48,18 @@ run :: proc() {
 		_ = track
 	}
 
-	log_file_path: string
-	log_level := log.Level.Debug
-	log_opts := log.Default_Console_Logger_Opts
-	fuse_args: [dynamic]string
-	defer delete(fuse_args)
-
-	for i in 1 ..< len(os.args) {
-		arg := os.args[i]
-		switch {
-		case strings.has_prefix(arg, "--log-file="):
-			log_file_path = strings.trim_prefix(arg, "--log-file=")
-		case strings.has_prefix(arg, "--log-level="):
-			level_str := strings.trim_prefix(arg, "--log-level=")
-			switch level_str {
-			case "debug":
-				log_level = log.Level.Debug
-			case "info":
-				log_level = log.Level.Info
-			case "warn":
-				log_level = log.Level.Warning
-			case "error":
-				log_level = log.Level.Error
-			case:
-				log.errorf("unknown log level: %s (use debug|info|warn|error)", level_str)
-			}
-		case strings.has_prefix(arg, "--log-format="):
-			fmt_str := strings.trim_prefix(arg, "--log-format=")
-			switch fmt_str {
-			case "short":
-				log_opts = {.Level}
-			case "long":
-				log_opts = log.Default_Console_Logger_Opts
-			case "full":
-				log_opts = log.Default_Console_Logger_Opts + {.Thread_Id}
-			case:
-				log.errorf("unknown log format: %s (use short|long|full)", fmt_str)
-			}
-		case:
-			append(&fuse_args, arg)
-		}
-	}
+	log_file_path := opts.log_file_path
+	log_level := opts.log_level
+	log_opts := opts.log_opts
+	fuse_args := opts.fuse_args
 
 	fsys := new(FS)
 	if log_file_path != "" {
 		log_fd, log_open_err := os.open(log_file_path, {.Create, .Write, .Append})
 		if log_open_err != nil {
 			log.errorf("cannot open log file %s: %v", log_file_path, log_open_err)
-			os.exit(1)
+			free(fsys)
+			return false
 		}
 
 		file_logger := log.create_file_logger(log_fd, log_level, log.Default_File_Logger_Opts)
@@ -114,18 +73,12 @@ run :: proc() {
 		fsys.logger = context.logger
 	}
 
-	if len(fuse_args) < 1 {
-		log.errorf(
-			"usage: fused [--log-file=<path>] [--log-level=<level>] <image-path> [fuse-options...] <mountpoint>",
-		)
-		os.exit(1)
-	}
-
-	image_path := fuse_args[0]
+	image_path := opts.image_path
 	vol, vol_err := fs.volume_open(image_path)
 	if vol_err != .None {
 		log.errorf("failed to open image: %v", vol_err)
-		os.exit(1)
+		free(fsys)
+		return false
 	}
 
 	defer fs.volume_close(&vol)
@@ -188,12 +141,15 @@ run :: proc() {
 		poll            = fused_poll,
 	}
 
-	dynamic_argv: [dynamic; 16]cstring
+	// Plain dynamic (not SVO): this nightly has no delete overload for
+	// [dynamic; N]T, and the backing must be freed explicitly below.
+	dynamic_argv: [dynamic]cstring
 	append(&dynamic_argv, "fused")
-	for i in 1 ..< len(fuse_args) {
-		append(&dynamic_argv, strings.clone_to_cstring(fuse_args[i], context.temp_allocator))
+	for arg in fuse_args {
+		append(&dynamic_argv, strings.clone_to_cstring(arg, context.allocator))
 	}
 
+	n_cloned := len(fuse_args)
 	has_f := false
 	for a in dynamic_argv {
 		if a == "-f" {
@@ -205,9 +161,21 @@ run :: proc() {
 	}
 
 	rc := fuse3.run(c.int(len(dynamic_argv)), raw_data(dynamic_argv[:]), &ops, fsys)
+	// Session over: argv is no longer needed. Free exactly the cloned
+	// entries (index 0 "fused" and a possible trailing "-f" are static).
+	for i in 1 ..< 1 + n_cloned {
+		delete(dynamic_argv[i])
+	}
+
+	delete(dynamic_argv)
+	// NOTE: opts.fuse_args is borrowed — the cmd/mount caller frees it.
+	// Full teardown before the leak dump: caches, lock tables, FS shell.
+	// The volume itself is closed by the deferred volume_close.
+	destroy_fs_for_test(fsys)
+	free(fsys)
 	if rc != 0 {
 		log.errorf("fuse_main returned %d", rc)
-		os.exit(1)
+		return false
 	}
 
 	log.infof("unmounted")
@@ -219,4 +187,5 @@ run :: proc() {
 			}
 		}
 	}
+	return true
 }

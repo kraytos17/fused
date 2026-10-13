@@ -103,7 +103,9 @@ write_finish :: proc(
 	}
 
 	path_cache_invalidate_all(fsys)
-	return c.int(bytes_written)
+	// Saturate the u64 → c.int narrowing (bytes_written ≤ requested size,
+	// but the conversion must be total regardless).
+	return c.int(min(bytes_written, u64(max(c.int))))
 }
 
 // fused_write_buf writes data with bufvec/splice support (FUSE write_buf
@@ -169,6 +171,15 @@ fused_write_buf :: proc "c" (
 
 	bytes_written := write_range_to_runs(fsys, runs, write_off, &bytes_src)
 	new_size := max(u64(entry.file_size), write_off + bytes_written)
+	if bufvec_src.err {
+		// A source failure (fd-backed partial, splice/I/O error) aborts the
+		// transfer: persist the partial size + invalidate caches, but report
+		// EIO rather than a silent short count.
+		log.errorf("write_buf: %s → source error after %d bytes", path, bytes_written)
+		_ = write_finish(fsys, &entry, fh, new_size, bytes_written)
+		return fuse3.nix(.EIO)
+	}
+
 	log.debugf(
 		"write_buf: %s off=%d → %d bytes (%v)",
 		path,

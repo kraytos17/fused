@@ -88,7 +88,7 @@ format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 	}
 	{
 		master_buf: [SECTOR_SIZE]u8
-		(^Master_Record)(&master_buf[0])^ = master
+		(^Master_Record)(raw_data(master_buf[:]))^ = master
 		if sector_write(&vol, 0, master_buf[:]) != .None {
 			return .Sector_Write_Error
 		}
@@ -96,7 +96,7 @@ format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 
 	// Cluster map: reserved clusters + the root cluster are in use.
 	cm_buf: [SECTOR_SIZE]u8
-	entries := (^[CLUSTER_MAP_ENTRIES_PER_SECTOR]Cluster_Map_Entry)(&cm_buf[0])
+	entries := (^[CLUSTER_MAP_ENTRIES_PER_SECTOR]Cluster_Map_Entry)(raw_data(cm_buf[:]))
 	for sec_idx in 0 ..< cm_sectors {
 		cm_buf = {}
 		base := int(sec_idx) * CLUSTER_MAP_ENTRIES_PER_SECTOR
@@ -130,7 +130,7 @@ format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 	// Root cluster: CE table with root dir entry and optional demo file.
 	root_sector := root_cluster * p.cluster_size
 	ce_buf: [SECTOR_SIZE]u8
-	ce_table := (^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry)(&ce_buf[0])
+	ce_table := (^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry)(raw_data(ce_buf[:]))
 	ce_table[0] = {
 		state           = {.Allocated, .Cluster_Map},
 		allocation_size = 1,
@@ -182,7 +182,7 @@ format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 		}
 
 		copy(entry.file_name[:], "Kernel")
-		(^Directory_Entry)(&dir_buf[0])^ = entry
+		(^Directory_Entry)(raw_data(dir_buf[:]))^ = entry
 	}
 	if sector_write(&vol, Sector(root_sector + 1), dir_buf[:]) != .None {
 		return .Sector_Write_Error

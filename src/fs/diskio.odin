@@ -50,6 +50,7 @@ read_master_record :: proc(disk: ^os.File) -> (master: Master_Record, ok: bool) 
 	if err != nil || n != SECTOR_SIZE {
 		return {}, false
 	}
-	master = (^Master_Record)(&buf[0])^
+
+	master = (^Master_Record)(raw_data(buf[:]))^
 	return master, true
 }

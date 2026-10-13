@@ -139,6 +139,7 @@ fused_chown :: proc "c" (
 }
 
 // fused_flush flushes a file by syncing the underlying disk.
+// UNLOCKED: fd-level os.sync only; touches no shared state.
 fused_flush :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
@@ -151,16 +152,18 @@ fused_flush :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 // fused_release closes a file handle.
 fused_release :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
+	fsys := begin_op()
+	defer end_op(fsys)
 	// Drop this owner's locks when the fd closes (kernel releases a
-	// process's locks when its last fd to the file closes).
+	// process's locks when its last fd to the file closes). Takes the write
+	// lock: the lock tables are shared mutable state.
 	locks_remove_owner(fsys, file_identity_from_fh(fi.fh), fi.lock_owner)
 	log.debugf("release: %s → ok", path)
 	return 0
 }
 
 // fused_opendir opens a directory (no-op).
+// UNLOCKED: no-op; touches no shared state.
 fused_opendir :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
@@ -169,6 +172,7 @@ fused_opendir :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 }
 
 // fused_releasedir closes a directory handle (no-op).
+// UNLOCKED: no-op; touches no shared state.
 fused_releasedir :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
@@ -177,6 +181,7 @@ fused_releasedir :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 }
 
 // fused_fsync fsyncs a file by syncing the underlying disk.
+// UNLOCKED: fd-level os.sync only; touches no shared state.
 fused_fsync :: proc "c" (path: cstring, datasync: c.int, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
@@ -244,11 +249,13 @@ fused_lseek :: proc "c" (
 	return posix.off_t(file_size)
 }
 
-// fused_statfs returns filesystem statistics.
+// fused_statfs returns filesystem statistics. Takes the read lock: it reads
+// the shared free-sector count (and master record) but mutates nothing.
 fused_statfs :: proc "c" (path: cstring, stbuf: ^posix.statvfs_t) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
-	context.logger = fsys.logger
+	fsys := begin_read_op()
+	defer end_read_op(fsys)
+
 	total_sectors := u64(fsys.vol.image_size) / fs.SECTOR_SIZE
 	free_sectors := fsys.free_sectors
 	stbuf^ = {
@@ -273,6 +280,7 @@ fused_statfs :: proc "c" (path: cstring, stbuf: ^posix.statvfs_t) -> c.int {
 }
 
 // fused_fsyncdir fsyncs a directory by syncing the underlying disk.
+// UNLOCKED: fd-level os.sync only; touches no shared state.
 fused_fsyncdir :: proc "c" (path: cstring, datasync: c.int, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
@@ -282,6 +290,7 @@ fused_fsyncdir :: proc "c" (path: cstring, datasync: c.int, fi: ^fuse3.File_Info
 }
 
 // fused_mknod is a stub that returns ENOSYS.
+// UNLOCKED: stub; touches no shared state (debug log only).
 fused_mknod :: proc "c" (path: cstring, mode: posix.mode_t, rdev: posix.dev_t) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
@@ -291,6 +300,7 @@ fused_mknod :: proc "c" (path: cstring, mode: posix.mode_t, rdev: posix.dev_t) -
 }
 
 // fused_ioctl is a stub that returns ENOSYS.
+// UNLOCKED: stub; touches no shared state (debug log only).
 fused_ioctl :: proc "c" (
 	path: cstring,
 	cmd: c.int,
@@ -307,6 +317,7 @@ fused_ioctl :: proc "c" (
 }
 
 // fused_link is a stub that returns ENOSYS.
+// UNLOCKED: stub; touches no shared state (debug log only).
 fused_link :: proc "c" (oldpath: cstring, newpath: cstring) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
@@ -316,6 +327,7 @@ fused_link :: proc "c" (oldpath: cstring, newpath: cstring) -> c.int {
 }
 
 // fused_statx is a stub that returns ENOSYS.
+// UNLOCKED: stub; touches no shared state (debug log only).
 fused_statx :: proc "c" (
 	path: cstring,
 	flags: c.int,
@@ -376,6 +388,7 @@ fused_bmap :: proc "c" (path: cstring, blocksize: c.size_t, idx: ^c.uint64_t) ->
 // fused_poll returns POLLERR — this filesystem has no special I/O readiness
 // semantics; the kernel uses standard page-cache notification for reads and
 // writes.
+// UNLOCKED: returns a constant; touches no shared state.
 fused_poll :: proc "c" (
 	path: cstring,
 	fi: ^fuse3.File_Info,
@@ -393,6 +406,7 @@ fused_poll :: proc "c" (
 
 // fused_init initialises FUSE, configures connection info, and returns the FS
 // pointer as private_data.
+// UNLOCKED: mount-time handshake, single-threaded; only fills conn fields.
 fused_init :: proc "c" (conn_info: ^fuse3.Conn_Info, cfg: ^fuse3.Config) -> rawptr {
 	context = runtime.default_context()
 	fsys := get_fs()
@@ -413,6 +427,7 @@ fused_init :: proc "c" (conn_info: ^fuse3.Conn_Info, cfg: ^fuse3.Config) -> rawp
 }
 
 // fused_destroy performs FUSE cleanup on unmount.
+// UNLOCKED: unmount-time logging only; event loop already exited, no concurrency.
 fused_destroy :: proc "c" (private_data: rawptr) {
 	context = runtime.default_context()
 	fsys := (^FS)(private_data)

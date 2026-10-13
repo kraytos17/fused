@@ -4,6 +4,7 @@ package fs
 
 import "core:container/bit_array"
 import "core:container/lru"
+import "core:log"
 
 @(private = "file")
 // Alloc_Cache_Entry struct holding a cached bitmap and its used count
@@ -90,7 +91,17 @@ _alloc_cache_build :: proc(cache: ^Cluster_Bitmap_Cache, vol: ^Volume, cluster: 
 		return
 	}
 
-	bit_array.unsafe_set(&bitmap, int(cme.sector_index))
+	// Indices come from disk: guard the range explicitly and keep unsafe_set
+	// (checked set would grow the bitmap via resize_if_needed instead of
+	// failing). Out-of-range bits can only hide free space, never expose
+	// allocated sectors, so skipping is fail-closed.
+	skipped := 0
+	if int(cme.sector_index) < cache.cache_size {
+		bit_array.unsafe_set(&bitmap, int(cme.sector_index))
+	} else {
+		skipped += 1
+	}
+
 	used: u16 = 0
 	table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 	if read_cluster_entry_table(vol, cluster, &table) != .None {
@@ -102,10 +113,22 @@ _alloc_cache_build :: proc(cache: ^Cluster_Bitmap_Cache, vol: ^Volume, cluster: 
 	for &e in table {
 		if .Allocated in e.state {
 			for off in 0 ..< e.allocation_size {
-				bit_array.unsafe_set(&bitmap, int(e.sector_start + off))
+				s := int(e.sector_start) + int(off)
+				if s < cache.cache_size {
+					bit_array.unsafe_set(&bitmap, s)
+					used += 1
+				} else {
+					skipped += 1
+				}
 			}
-			used += e.allocation_size
 		}
+	}
+	if skipped > 0 {
+		log.warnf(
+			"alloc_cache: cluster %d has %d out-of-range bits — image may be corrupt",
+			u64(cluster),
+			skipped,
+		)
 	}
 	if err := lru.set(&cache.lru, u64(cluster), Alloc_Cache_Entry{bitmap, used}); err != nil {
 		bit_array.destroy(&bitmap)

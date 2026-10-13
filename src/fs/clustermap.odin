@@ -25,7 +25,7 @@ read_cluster_map_entry :: proc(
 		return {}, .Sector_Read_Error
 	}
 
-	entries := (^[CLUSTER_MAP_ENTRIES_PER_SECTOR]Cluster_Map_Entry)(&buf[0])
+	entries := (^[CLUSTER_MAP_ENTRIES_PER_SECTOR]Cluster_Map_Entry)(raw_data(buf[:]))
 	return entries[entry_index], .None
 }
 
@@ -51,7 +51,7 @@ read_cluster_entry_table :: proc(
 		return .Sector_Read_Error
 	}
 
-	raw := (^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry)(&buf[0])
+	raw := (^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry)(raw_data(buf[:]))
 	#unroll for i in 0 ..< CLUSTER_ENTRIES_PER_SECTOR {
 		table[i] = raw[i]
 	}
@@ -141,7 +141,7 @@ write_cluster_map_entry :: proc(
 		return .Sector_Read_Error
 	}
 
-	entries := (^[CLUSTER_MAP_ENTRIES_PER_SECTOR]Cluster_Map_Entry)(&buf[0])
+	entries := (^[CLUSTER_MAP_ENTRIES_PER_SECTOR]Cluster_Map_Entry)(raw_data(buf[:]))
 	entries[entry_index] = entry^
 	if sector_write(vol, entry_sector, buf[:]) != .None {
 		return .Sector_Write_Error
@@ -166,7 +166,7 @@ write_cluster_entry_table :: proc(
 
 	table_sector := sector_for(cluster, Sector_Offset(cme.sector_index), vol.master.cluster_size)
 	buf: [SECTOR_SIZE]u8
-	dst := (^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry)(&buf[0])
+	dst := (^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry)(raw_data(buf[:]))
 	#unroll for i in 0 ..< CLUSTER_ENTRIES_PER_SECTOR {
 		dst[i] = table[i]
 	}

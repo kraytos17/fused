@@ -448,3 +448,122 @@ test_mount_fs_error_to_errno :: proc(t: ^testing.T) {
 		testing.expect_value(t, mounter.fs_error_to_errno(c.err), c.want)
 	}
 }
+
+// test_mount_read_shared_resolver — write, then read back twice with an
+// extend + truncate in between. Exercises resolve_extents_shared through
+// fused_read: miss (upgrade + fill), hit (temp snapshot), invalidate,
+// miss again. Data must be exact on every read.
+@(test)
+test_mount_read_shared_resolver :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	ok := setup_mounter(t, &fsys)
+	if !ok { return }
+	defer teardown_mounter(&fsys)
+	cleanup_root(&fsys, []string{"shfile"})
+	defer cleanup_root(&fsys, []string{"shfile"})
+
+	fi: fuse3.File_Info
+	rc := mounter.fused_create("/shfile", posix.mode_t{.IRUSR, .IWUSR}, &fi)
+	testing.expect_value(t, rc, 0)
+
+	data := "shared resolver data\n"
+	rc = mounter.fused_write("/shfile", raw_data(data), c.size_t(len(data)), 0, &fi)
+	testing.expect_value(t, rc, c.int(len(data)))
+
+	buf := make([]u8, 64)
+	defer delete(buf)
+	// First read: cache miss → upgrade → fill.
+	rc = mounter.fused_read("/shfile", raw_data(buf), c.size_t(len(data)), 0, &fi)
+	testing.expect_value(t, rc, c.int(len(data)))
+	testing.expect(t, string(buf[:rc]) == data, "read 1 exact")
+	// Second read: cache hit → temp snapshot.
+	rc = mounter.fused_read("/shfile", raw_data(buf), c.size_t(len(data)), 0, &fi)
+	testing.expect_value(t, rc, c.int(len(data)))
+	testing.expect(t, string(buf[:rc]) == data, "read 2 exact")
+
+	// Extend past the first chain, then read the full span: forces
+	// invalidation + re-resolve through the shared path.
+	more := "extended tail\n"
+	rc = mounter.fused_write(
+		"/shfile",
+		raw_data(more),
+		c.size_t(len(more)),
+		posix.off_t(len(data)),
+		&fi,
+	)
+	testing.expect_value(t, rc, c.int(len(more)))
+
+	big := make([]u8, 128)
+	defer delete(big)
+	rc = mounter.fused_read("/shfile", raw_data(big), c.size_t(len(data) + len(more)), 0, &fi)
+	testing.expect_value(t, rc, c.int(len(data) + len(more)))
+	testing.expect(t, string(big[:len(data)]) == data, "extended head exact")
+	testing.expect(t, string(big[len(data):rc]) == more, "extended tail exact")
+}
+
+// test_mount_readdir_lfn_shared — readdir over a long (>16 char) name twice.
+// Exercises lfn_lookup_shared (miss + peek-hit) and the resolve_lfn
+// ownership fix: names must match exactly, not just be non-empty.
+@(test)
+test_mount_readdir_lfn_shared :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	ok := setup_mounter(t, &fsys)
+	if !ok { return }
+	defer teardown_mounter(&fsys)
+	long := "this_is_a_very_long_filename_for_lfn"
+	cleanup_root(&fsys, []string{long})
+	defer cleanup_root(&fsys, []string{long})
+
+	fi: fuse3.File_Info
+	path_buf := make([]u8, 1 + len(long))
+	defer delete(path_buf)
+	path_buf[0] = '/'
+	copy(path_buf[1:], long)
+	rc := mounter.fused_create(cstring(raw_data(path_buf)), posix.mode_t{.IRUSR, .IWUSR}, &fi)
+	testing.expect_value(t, rc, 0)
+
+	for _ in 0 ..< 2 {
+		collector: Dir_Collector
+		rc = mounter.fused_readdir("/", &collector, collect_filler, 0, nil, 0)
+		testing.expect_value(t, rc, 0)
+
+		list := strings.split(string(collector.buf[:collector.len]), "\x00")
+		defer delete(list)
+		found := false
+		for e in list {
+			if e == long {
+				found = true
+			}
+		}
+		testing.expect(t, found, "long name exact on pass")
+	}
+}
+
+// test_mount_write_buf_fd_backed_partial_is_eio — an fd-backed bufvec at an
+// unaligned offset cannot stage through the sector buffer. It must report
+// EIO, not panic through the C boundary (and not a silent short count).
+@(test)
+test_mount_write_buf_fd_backed_partial_is_eio :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	ok := setup_mounter(t, &fsys)
+	if !ok { return }
+	defer teardown_mounter(&fsys)
+	cleanup_root(&fsys, []string{"fdfile"})
+	defer cleanup_root(&fsys, []string{"fdfile"})
+
+	fi: fuse3.File_Info
+	rc := mounter.fused_create("/fdfile", posix.mode_t{.IRUSR, .IWUSR}, &fi)
+	testing.expect_value(t, rc, 0)
+
+	bv: fuse3.Bufvec
+	bv.count = 1
+	bv._buf[0] = fuse3.Buf{
+		size  = 10,
+		flags = fuse3.FUSE_BUF_IS_FD,
+		fd    = -1,
+	}
+	// off=1: unaligned head forces the copy path, which has no userspace
+	// address for fd-backed bufs.
+	rc = mounter.fused_write_buf("/fdfile", &bv, 1, &fi)
+	expect_errno(t, rc, .EIO)
+}

@@ -216,6 +216,7 @@ test_resolve_lfn_actual_resolution :: proc(t: ^testing.T) {
 			name, name_ok := fs.resolve_lfn(&vol, &d)
 			testing.expect(t, name_ok, "resolve_lfn ok")
 			if name_ok {
+				defer delete(name)
 				testing.expect(
 					t,
 					name == long_name,

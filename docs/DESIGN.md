@@ -24,7 +24,7 @@ read-write FUSE mounting (all 43 `fuse_operations` callbacks implemented).
 |---|---|---|
 | **`src/fuse3/`** | FFI binding to libfuse3. 43 `fuse_operations` callbacks, 12 cross-FFI structs with compile-time `#assert(size_of)`, 43 callback offsets verified against C ground truth. | `libfuse3.so` (system) |
 | **`src/fs/`** | Filesystem logic operating on raw disk images. No FUSE dependency. `Volume` struct bundles disk fd, master record, and alloc cache. `format_image` owns image construction (shared by the format tool and tests). | `core:os` |
-| **`src/mounter/`** | FUSE callbacks as `package mounter`. Each `fused_*` callback uses `begin_op()`/`end_op()` for locking. Translates `FS_Error` to negated errno via `fs_error_to_errno`. | `src/fs/`, `src/fuse3/` |
+| **`src/mounter/`** | FUSE callbacks as `package mounter`. Mutating callbacks use `begin_op()`/`end_op()` for exclusive locking, read-only ones `begin_read_op()`/`end_read_op()` for shared locking. Translates `FS_Error` to negated errno via `fs_error_to_errno`. | `src/fs/`, `src/fuse3/` |
 | **`cmd/mount/`** | Binary entry point — `package main`, calls `mounter.run()`. | `src/mounter/` |
 | **`cmd/format/`** | Standalone image formatter. Produces valid disk images without libfuse3. | `src/fs/` |
 | **`cmd/dump/`** | Read-only image dumper. Walks the image structure and prints it in human-readable or JSON form. | `src/fs/` |
@@ -213,11 +213,19 @@ callbacks). Low-level `fuse_lowlevel_ops` (inode-based) is deferred.
 compile-time size checks. A field reordering that changes layout fails the
 build.
 
-**Thread safety.** A `sync.Mutex` on `FS` serializes cache-mutating callbacks.
-Multi-threaded FUSE dispatch is the default (`-s` not forced). Read-only
-callbacks (`read`, `read_buf`, `statfs`, `lseek`) run lock-free. `readdir`
-releases the mutex after path resolution, before the I/O phase, to reduce
-contention with concurrent writers.
+**Thread safety.** `FS.mu` is a `sync.RW_Mutex`. Callbacks that mutate shared
+state (caches, lock tables, free count) take it exclusively via
+`begin_op()`/`end_op()`; read-only callbacks share it via
+`begin_read_op()`/`end_read_op()`. Multi-threaded FUSE dispatch is the
+default (`-s` not forced). While shared-held, paths must use only
+non-mutating cache access: `lru.peek` (unlike `lru.get`, it doesn't rewrite
+recency) and the snapshot/upgrade helpers `resolve_extents_shared` /
+`lfn_lookup_shared`, which clone results into the temp allocator so they
+outlive the lock. `fused_read`/`fused_read_buf` resolve through the shared
+helper; `readdir` resolves the path under the write lock, then re-takes the
+read lock per entry and fills the kernel buffer unlocked; `fused_release`
+takes the write lock (it mutates the lock tables); `statfs` takes the read
+lock. Disk I/O itself needs no lock (pread/pwrite).
 
 **Stack-local scratch buffers.** All procedures use stack-local `[SECTOR_SIZE]u8`
 arrays and fixed-capacity stack buffers (`[32]Extent_Run`) instead of
@@ -441,7 +449,7 @@ tests/
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `make test` (85 Odin tests: 66 fs + 13 mounter + 4 lock + 4 journal) |
+| 2. Unit tests | `make test` (86 Odin tests: 65 fs + 15 mounter + 4 lock + 2 journal) |
 | 3. Tool integration | `make pytest -m tool` (17 format + imgdump tests) |
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |
