@@ -195,6 +195,30 @@ def run(
 
     add("readdir", "ops/s", 1.0, readdir_setup, readdir_measure)
 
+    # create-storm: the most allocator-intensive path (slot search,
+    # entry Journal writes, cache churn, path resolution per op).
+    # Untimed setup empties the dir; each measure creates + unlinks
+    # STORM_FILES files and asserts the dir is empty after.
+    sdir = os.path.join(mount, "stormdir")
+    STORM_FILES = 50
+
+    def storm_setup():
+        shutil.rmtree(sdir, ignore_errors=True)
+        os.makedirs(sdir, exist_ok=True)
+
+    def storm_measure():
+        n = 0
+        for i in range(STORM_FILES):
+            with open(os.path.join(sdir, f"s{i:03d}"), "w"):
+                n += 1
+        for i in range(STORM_FILES):
+            os.unlink(os.path.join(sdir, f"s{i:03d}"))
+            n += 1
+        assert not os.listdir(sdir), "storm left files behind"
+        return n
+
+    add("create-storm", "ops/s", 1.0, storm_setup, storm_measure)
+
     proc = _mount(fused, image, mount, logs)
     try:
         for name, unit, unit_per_op, setup, measure in scenarios:
