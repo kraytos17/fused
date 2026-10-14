@@ -13,15 +13,17 @@ Resolved_Entry :: struct {
 }
 
 // resolve_path walks a path string through the directory tree and returns the final entry.
-// It handles both short names and LFNs, parses components without heap allocation,
-// and returns false if any intermediate path component is missing or not a directory.
+// It handles both short names and LFNs, parses components without heap allocation.
+// Lookup failures return Entry_Not_Found; I/O errors and structural problems
+// (over-deep paths, non-directory intermediates) propagate precisely instead
+// of collapsing to not-found.
 resolve_path :: proc(
 	vol: ^Volume,
 	path: string,
 	allocator := context.allocator,
 ) -> (
 	res: Resolved_Entry,
-	ok: bool,
+	err: FS_Error,
 ) {
 	if path == "/" || len(path) == 0 {
 		res.entry = Directory_Entry {
@@ -32,7 +34,7 @@ resolve_path :: proc(
 
 		res.cluster = Cluster(vol.master.root_cluster)
 		res.offset = Sector_Offset(vol.master.root_sector_index)
-		return res, true
+		return res, .None
 	}
 
 	comps: [16]string
@@ -40,7 +42,7 @@ resolve_path :: proc(
 	rest := path
 	for comp in strings.split_by_byte_iterator(&rest, '/') {
 		if len(comp) == 0 { continue }
-		if n_comps >= len(comps) { return {}, false }
+		if n_comps >= len(comps) { return {}, .Name_Too_Long }
 		comps[n_comps] = comp
 		n_comps += 1
 	}
@@ -55,7 +57,7 @@ resolve_path :: proc(
 		is_last := comp_idx == n_comps - 1
 		dirs, dirs_err := read_directory_entries(vol, current_cluster, current_offset)
 		defer delete(dirs)
-		if dirs_err != .None { return {}, false }
+		if dirs_err != .None { return {}, dirs_err }
 
 		found := false
 		for &d, didx in dirs {
@@ -70,10 +72,10 @@ resolve_path :: proc(
 			}
 			if found {
 				if is_last {
-					return Resolved_Entry{d, current_cluster, current_offset, didx}, true
+					return Resolved_Entry{d, current_cluster, current_offset, didx}, .None
 				}
 				if .Directory not_in d.flags {
-					return {}, false
+					return {}, .Not_A_Directory
 				}
 
 				current_cluster = Cluster(d.stored_cluster)
@@ -81,7 +83,7 @@ resolve_path :: proc(
 				break
 			}
 		}
-		if !found { return {}, false }
+		if !found { return {}, .Entry_Not_Found }
 	}
-	return {}, false
+	return {}, .Entry_Not_Found
 }

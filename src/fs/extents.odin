@@ -18,11 +18,10 @@ resolve_extents :: proc(
 	stack_buf: [32]Extent_Run
 	n := 0
 	on_heap := false
-	cursor := Chain_Cursor{start_cluster, start_offset}
+	walk := _chain_walk_start(vol, start_cluster, start_offset)
 	cluster_size := u64(vol.master.cluster_size)
-	max_steps := int(vol.master.cluster_map_size) + 1
-	for guard in 0 ..< max_steps {
-		entry, ec, step := _chain_step(vol, &cursor, guard, max_steps)
+	for walk.guard < walk.limit {
+		entry, ec, step := _chain_next(vol, &walk)
 		if step == .Corrupted {
 			if on_heap { delete(runs) }
 			return {}, .Entry_Not_Found

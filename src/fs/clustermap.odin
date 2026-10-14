@@ -279,6 +279,40 @@ Chain_Step :: enum {
 	Corrupted,
 }
 
+// Chain_Walk bundles a chain cursor with its corruption guard so every
+// chain walk terminates after at most cluster_map_size+1 links. Start one
+// with _chain_walk_start, then call _chain_next until the step is .At_End
+// (or .Corrupted, which the caller handles).
+@(private)
+Chain_Walk :: struct {
+	cursor: Chain_Cursor,
+	guard:  int,
+	limit:  int,
+}
+
+// _chain_walk_start opens a guarded walk over the chain at (cluster, offset).
+@(private)
+_chain_walk_start :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset) -> Chain_Walk {
+	return {Chain_Cursor{cluster, offset}, 0, int(vol.master.cluster_map_size) + 1}
+}
+
+// _chain_next advances the walk one link, bumping the guard. The Corrupted
+// check itself lives in _chain_step; the counter increment lives here so a
+// walk loop cannot forget it.
+@(private)
+_chain_next :: proc(
+	vol: ^Volume,
+	walk: ^Chain_Walk,
+) -> (
+	ce: Cluster_Entry,
+	entry_cluster: Cluster,
+	step: Chain_Step,
+) {
+	ce, entry_cluster, step = _chain_step(vol, &walk.cursor, walk.guard, walk.limit)
+	walk.guard += 1
+	return
+}
+
 // _chain_step advances a Chain_Cursor one link forward by looking up the
 // cluster entry at the cursor's current position and following the
 // next_cluster / next_sector_index pointers. Returns the current cluster

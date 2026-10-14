@@ -11,10 +11,11 @@ import "core:fmt"
 import "core:log"
 import "core:os"
 import "src:fs"
+import "src:logflags"
 
 Flags :: struct {
 	path:      string `args:"pos=0,required" usage:"Path to fused disk image"`,
-	log_level: string `args:"name=log-level" usage:"Log level: debug, info, warn, error (default: debug)"`,
+	log_level: log.Level `args:"name=log-level" usage:"Log level: debug, info, warn, error (default: debug)"`,
 	verbose:   bool `args:"name=verbose" usage:"Verbose output"`,
 	overflow:  [dynamic]string `args:"hidden"`,
 }
@@ -23,31 +24,15 @@ main :: proc() {
 	context = runtime.default_context()
 
 	f: Flags
+	flags.register_type_setter(logflags.set_log_level)
 	flags.parse_or_exit(&f, os.args, flags.Parsing_Style.Unix)
 	if len(f.overflow) > 0 {
 		log.errorf("unknown args: %v", f.overflow)
 		os.exit(1)
 	}
 
-	log_level := log.Level.Debug
-	switch f.log_level {
-	case "debug":
-		log_level = log.Level.Debug
-	case "info":
-		log_level = log.Level.Info
-	case "warn":
-		log_level = log.Level.Warning
-	case "error":
-		log_level = log.Level.Error
-	case "":
-	case:
-		log.errorf("unknown log level: %s", f.log_level)
-		os.exit(1)
-	}
-
-	context.logger = log.create_console_logger(log_level)
+	context.logger = log.create_console_logger(f.log_level)
 	defer log.destroy_console_logger(context.logger)
-
 	if f.verbose {
 		fmt.printf("check: opening %s (verbose)\n", f.path)
 	}

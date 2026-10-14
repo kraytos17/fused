@@ -270,9 +270,9 @@ print_directory :: proc(
 
 // print_hex_by_path prints a hex dump of a file's content.
 print_hex_by_path :: proc(vol: ^fs.Volume, path: string) {
-	entry, _, _, _, ok := resolve_file(vol, path)
-	if !ok {
-		log.errorf("path not found: %s", path)
+	entry, _, _, _, rerr := resolve_file(vol, path)
+	if rerr != .None {
+		log.errorf("cannot resolve %s: %v", path, rerr)
 		os.exit(1)
 	}
 	if .Directory in entry.flags {

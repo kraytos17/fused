@@ -23,12 +23,6 @@ sector_write :: proc(vol: ^Volume, sector: Sector, buf: []u8) -> FS_Error {
 	return .None
 }
 
-// sector_read_bulk reads multiple sectors into a byte buffer
-sector_read_bulk :: proc(vol: ^Volume, start_sector: Sector, buf: []u8) -> (n: int, ok: bool) {
-	nn, err := os.read_at(vol.disk, buf, i64(u64(start_sector) * SECTOR_SIZE))
-	return nn, err == nil && nn == len(buf)
-}
-
 // sector_write_bulk writes multiple sectors from a byte buffer
 sector_write_bulk :: proc(vol: ^Volume, start_sector: Sector, buf: []u8) -> FS_Error {
 	_, err := os.write_at(vol.disk, buf, i64(u64(start_sector) * SECTOR_SIZE))

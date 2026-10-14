@@ -7,6 +7,7 @@ import "core:flags"
 import "core:log"
 import "core:os"
 import "src:fs"
+import "src:logflags"
 
 // Flags holds the CLI flags for the image dumper.
 Flags :: struct {
@@ -14,8 +15,16 @@ Flags :: struct {
 	json:      bool `args:"name=json" usage:"Output as JSON (machine-readable)"`,
 	all:       bool `args:"name=all" usage:"Show all clusters including empty ones in text mode"`,
 	hex_path:  string `args:"name=hex" usage:"Dump file contents as hex (e.g. --hex=/Kernel or --hex for root)"`,
-	log_level: string `args:"name=log-level" usage:"Log level: debug, info, warn, error (default: debug)"`,
+	log_level: log.Level `args:"name=log-level" usage:"Log level: debug, info, warn, error (default: debug)"`,
 	overflow:  [dynamic]string `args:"hidden"`,
+}
+
+// Dump_Mode selects one dumper output. Derived once from flags so the
+// dispatch below is a single switch instead of re-testing flag combos.
+Dump_Mode :: enum {
+	Text,
+	Json,
+	Hex,
 }
 
 // main is the CLI entry point for the dumper. It opens the image, parses
@@ -24,6 +33,7 @@ main :: proc() {
 	context = runtime.default_context()
 
 	f: Flags
+	flags.register_type_setter(logflags.set_log_level)
 	flags.parse_or_exit(&f, os.args, flags.Parsing_Style.Unix)
 	if len(f.overflow) > 0 {
 		for arg in f.overflow {
@@ -41,23 +51,14 @@ main :: proc() {
 		os.exit(1)
 	}
 
-	log_level := log.Level.Debug
-	switch f.log_level {
-	case "debug":
-		log_level = log.Level.Debug
-	case "info":
-		log_level = log.Level.Info
-	case "warn":
-		log_level = log.Level.Warning
-	case "error":
-		log_level = log.Level.Error
-	case "":
-	case:
-		log.errorf("unknown log level: %s (use debug|info|warn|error)", f.log_level)
-		os.exit(1)
+	mode := Dump_Mode.Text
+	if f.hex_path != "" {
+		mode = .Hex
+	} else if f.json {
+		mode = .Json
 	}
 
-	context.logger = log.create_file_logger(os.stderr, log_level, log.Default_File_Logger_Opts)
+	context.logger = log.create_file_logger(os.stderr, f.log_level, log.Default_File_Logger_Opts)
 	vol, verr := fs.volume_open(f.path)
 	if verr != .None {
 		log.errorf("cannot open %s: %v", f.path, verr)
@@ -65,17 +66,14 @@ main :: proc() {
 	}
 
 	defer fs.volume_close(&vol)
-	if f.hex_path != "" {
-		hex_path := f.hex_path
-		print_hex_by_path(&vol, hex_path)
-		return
-	}
-	if f.json {
+	switch mode {
+	case .Hex:
+		print_hex_by_path(&vol, f.hex_path)
+	case .Json:
 		print_json(&vol)
-		return
+	case .Text:
+		print_master(&vol, false, nil)
+		print_cluster_map(&vol, false, nil, f.all)
+		print_directory_tree(&vol, false, nil)
 	}
-
-	print_master(&vol, false, nil)
-	print_cluster_map(&vol, false, nil, f.all)
-	print_directory_tree(&vol, false, nil)
 }

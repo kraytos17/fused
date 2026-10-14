@@ -13,6 +13,7 @@ import "core:log"
 import "core:os"
 import "core:strconv"
 import "src:fs"
+import "src:logflags"
 
 // DEMO_CONTENT is the embedded demo file content (a small binary blob).
 DEMO_CONTENT := [?]u8 {
@@ -87,7 +88,7 @@ Flags :: struct {
 	no_demo:     bool `args:"name=no-demo" usage:"Do not embed a demo file"`,
 	verbose:     bool `args:"name=verbose" usage:"Show progress for large images"`,
 	force:       bool `args:"name=force" usage:"Overwrite existing output"`,
-	log_level:   string `args:"name=log-level" usage:"Log level: debug, info, warn, error (default: debug)"`,
+	log_level:   log.Level `args:"name=log-level" usage:"Log level: debug, info, warn, error (default: debug)"`,
 	overflow:    [dynamic]string `args:"hidden"`,
 }
 
@@ -99,29 +100,14 @@ main :: proc() {
 	f.cluster_str = "16"
 	f.output = "fused.img"
 
+	flags.register_type_setter(logflags.set_log_level)
 	flags.parse_or_exit(&f, os.args, flags.Parsing_Style.Unix)
 	if len(f.overflow) > 0 {
 		log.errorf("unknown args: %v", f.overflow)
 		os.exit(1)
 	}
 
-	log_level := log.Level.Debug
-	switch f.log_level {
-	case "debug":
-		log_level = log.Level.Debug
-	case "info":
-		log_level = log.Level.Info
-	case "warn":
-		log_level = log.Level.Warning
-	case "error":
-		log_level = log.Level.Error
-	case "":
-	case:
-		log.errorf("unknown log level: %s (use debug|info|warn|error)", f.log_level)
-		os.exit(1)
-	}
-
-	context.logger = log.create_console_logger(log_level)
+	context.logger = log.create_console_logger(f.log_level)
 	size, size_ok := parse_size(f.size_str)
 	if !size_ok {
 		log.errorf("invalid --size: %s", f.size_str)

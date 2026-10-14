@@ -18,6 +18,7 @@ CLUSTER_MAP_ENTRIES_PER_SECTOR :: 64
 DEFAULT_CLUSTER_SIZE :: 16
 DEFAULT_IMAGE_SIZE :: 1 * 1024 * 1024 // 1 MB
 FUSED_SIG :: [7]u8{'F', 'U', 'S', 'E', 'D', 0, 0}
+END_SIG :: 0x0BB0 // Master_Record.end_sig sentinel
 
 #assert(size_of(Cluster_Map_Entry) == 8)
 #assert(SECTOR_SIZE / size_of(Cluster_Map_Entry) == CLUSTER_MAP_ENTRIES_PER_SECTOR)

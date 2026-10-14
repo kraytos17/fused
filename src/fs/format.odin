@@ -77,7 +77,7 @@ format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 	master.cluster_size = p.cluster_size
 	master.root_sector_index = 1
 	master.root_cluster = root_cluster
-	master.end_sig = 0x0BB0
+	master.end_sig = END_SIG
 	// Journal region size and initial seq are part of every image; the v2
 	// WAL reads both at commit/recovery time.
 	journal_set_region_size(&master, journal_sectors)

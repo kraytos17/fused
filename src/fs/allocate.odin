@@ -29,7 +29,7 @@ _find_contiguous_free :: proc(
 	available: u16,
 	ok: bool,
 ) {
-	run_start: u16 = 0xFFFF
+	run_start: Maybe(u16)
 	run_len: u16 = 0
 	max_s := int(min(total_sectors, 65535))
 	it := bit_array.make_iterator(bitmap)
@@ -38,24 +38,25 @@ _find_contiguous_free :: proc(
 			break
 		}
 		if set {
-			if run_len >= needed {
-				return run_start, run_len, true
+			if st, found := run_start.?; found && run_len >= needed {
+				return st, run_len, true
 			}
-			run_start = 0xFFFF
+
+			run_start = nil
 			run_len = 0
 		} else {
-			if run_start == 0xFFFF {
+			if run_start == nil {
 				run_start = u16(s)
 			}
 
 			run_len += 1
-			if run_len >= needed {
-				return run_start, run_len, true
+			if st, found := run_start.?; found && run_len >= needed {
+				return st, run_len, true
 			}
 		}
 	}
-	if run_len > 0 {
-		return run_start, run_len, true
+	if st, found := run_start.?; found && run_len > 0 {
+		return st, run_len, true
 	}
 	return 0, 0, false
 }
@@ -113,7 +114,7 @@ _cluster_entry_state_for :: proc(kind: Allocation_Kind) -> Cluster_Entry_State {
 // cleanup on error).
 //
 // Tail-chain linking: when extending an existing chain (start_cluster != 0),
-// link_tail_to_new walks the old chain and appends the first newly allocated cluster,
+// _link_tail_to_new walks the old chain and appends the first newly allocated cluster,
 // persisting the updated predecessor entry.
 //
 // Error returns: .Sector_Write_Error on I/O failure, .Entry_Not_Found if the tail
@@ -281,8 +282,9 @@ allocate_sectors :: proc(
 		return 0, 0, .No_Space
 	}
 	if start_cluster != 0 && !is_first {
-		if !link_tail_to_new(vol, start_cluster, start_offset, first_cluster, first_offset) {
-			return 0, 0, .Entry_Not_Found
+		if lerr := _link_tail_to_new(vol, start_cluster, start_offset, first_cluster, first_offset);
+		   lerr != .None {
+			return 0, 0, lerr
 		}
 
 		vol.cache.hint = (u64(first_cluster) + 1) % vol.master.cluster_map_size
@@ -368,40 +370,40 @@ deallocate_sectors :: proc(
 	return .None
 }
 
-// link_tail_to_new walks the existing chain from (start_cluster, start_offset) to
+// _link_tail_to_new walks the existing chain from (start_cluster, start_offset) to
 // its final entry and sets its next_cluster / next_sector_index to point at
 // (first_cluster, first_offset), effectively appending the newly allocated cluster(s).
 @(private = "file")
-link_tail_to_new :: proc(
+_link_tail_to_new :: proc(
 	vol: ^Volume,
 	start_cluster: Cluster,
 	start_offset: Sector_Offset,
 	first_cluster: Cluster,
 	first_offset: Sector_Offset,
-) -> bool {
-	cursor := Chain_Cursor{start_cluster, start_offset}
-	max_steps := int(vol.master.cluster_map_size) + 1
-	for guard in 0 ..< max_steps {
-		tail, tc, step := _chain_step(vol, &cursor, guard, max_steps)
+) -> FS_Error {
+	walk := _chain_walk_start(vol, start_cluster, start_offset)
+	for walk.guard < walk.limit {
+		tail, tc, step := _chain_next(vol, &walk)
 		if step == .Corrupted {
 			log.errorf("allocate: tail chain too long (corrupted)")
-			return false
+			return .Corrupt_Master_Record
 		}
 		if tail.next_cluster == 0 {
 			tail.next_cluster = u64(first_cluster)
 			tail.next_sector_index = u16(first_offset)
 			tail_table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-			if read_cluster_entry_table(vol, tc, &tail_table) == .None {
-				if tidx, tok := ce_find_by_offset(tail_table, cursor.offset);
-				   tok && .Allocated in tail_table[tidx].state {
-					tail_table[tidx] = tail
-				}
-				if write_cluster_entry_table(vol, tc, &tail_table) != .None {
-					return false
-				}
+			if rerr := read_cluster_entry_table(vol, tc, &tail_table); rerr != .None {
+				return rerr
+			}
+			if tidx, tok := ce_find_by_offset(tail_table, walk.cursor.offset);
+			   tok && .Allocated in tail_table[tidx].state {
+				tail_table[tidx] = tail
+			}
+			if werr := write_cluster_entry_table(vol, tc, &tail_table); werr != .None {
+				return werr
 			}
 			break
 		}
 	}
-	return true
+	return .None
 }

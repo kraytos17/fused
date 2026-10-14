@@ -14,11 +14,11 @@ resolve_file :: proc(
 	cluster: fs.Cluster,
 	offset: fs.Sector_Offset,
 	entry_index: int,
-	ok: bool,
+	err: fs.FS_Error,
 ) {
-	res, rok := fs.resolve_path(vol, path)
-	if !rok { return }
-	return res.entry, res.cluster, res.offset, res.entry_index, true
+	res, rerr := fs.resolve_path(vol, path)
+	if rerr != .None { return {}, 0, 0, 0, rerr }
+	return res.entry, res.cluster, res.offset, res.entry_index, .None
 }
 
 // resolve_symlink_target reads and returns the content of a symbolic link.

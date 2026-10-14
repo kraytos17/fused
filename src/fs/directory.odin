@@ -155,7 +155,8 @@ write_directory_entry_at :: proc(
 
 // entry_sector_for_index returns the absolute sector and the entry index
 // within that sector for a directory entry addressed by a chain-relative
-// index. Returns ok=false when the index falls outside the chain.
+// index. Returns Entry_Not_Found when the index falls outside the chain;
+// resolve I/O errors propagate unchanged.
 entry_sector_for_index :: proc(
 	vol: ^Volume,
 	cluster: Cluster,
@@ -164,12 +165,12 @@ entry_sector_for_index :: proc(
 ) -> (
 	Sector,
 	int,
-	bool,
+	FS_Error,
 ) {
 	runs, err := resolve_extents(vol, cluster, offset)
 	defer delete(runs)
 	if err != .None {
-		return {}, 0, false
+		return {}, 0, err
 	}
 
 	deps := int(dir_entries_per_sector(vol.master.features))
@@ -178,11 +179,11 @@ entry_sector_for_index :: proc(
 		n := int(r.count) * deps
 		if remaining < n {
 			sec := Sector(u64(r.sector) + u64(remaining / deps))
-			return sec, remaining % deps, true
+			return sec, remaining % deps, .None
 		}
 		remaining -= n
 	}
-	return {}, 0, false
+	return {}, 0, .Entry_Not_Found
 }
 
 // read_entry_at_index reads a Directory_Entry addressed by a chain-relative
@@ -196,9 +197,9 @@ read_entry_at_index :: proc(
 	entry: Directory_Entry,
 	err: FS_Error,
 ) {
-	sec, within, ok := entry_sector_for_index(vol, cluster, offset, index)
-	if !ok {
-		return {}, .Entry_Not_Found
+	sec, within, rerr := entry_sector_for_index(vol, cluster, offset, index)
+	if rerr != .None {
+		return {}, rerr
 	}
 
 	buf: [SECTOR_SIZE]u8
@@ -224,9 +225,9 @@ write_entry_at_index :: proc(
 	index: int,
 	entry: ^Directory_Entry,
 ) -> FS_Error {
-	sec, within, ok := entry_sector_for_index(vol, cluster, offset, index)
-	if !ok {
-		return .Entry_Not_Found
+	sec, within, err := entry_sector_for_index(vol, cluster, offset, index)
+	if err != .None {
+		return err
 	}
 
 	buf: [SECTOR_SIZE]u8

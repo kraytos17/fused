@@ -22,7 +22,7 @@ validate_master :: proc(master: ^Master_Record, image_size: Byte_Offset) -> FS_E
 	if unknown != 0 {
 		return .Feature_Not_Supported
 	}
-	if master.end_sig != 0x0BB0 {
+	if master.end_sig != END_SIG {
 		return .Invalid_Signature
 	}
 	if master.cluster_size == 0 || master.cluster_size > 65536 {

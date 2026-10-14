@@ -39,7 +39,7 @@ Volume :: struct {
 // MasterRecord, runs journal recovery, and initialises the alloc
 // cache.  Returns an FS_Error on failure (the caller should check
 // before using vol).
-volume_open :: proc(path: string) -> (vol: Volume, err: FS_Error) {
+volume_open :: proc(path: string, cache := DEFAULT_CACHE_CONFIG) -> (vol: Volume, err: FS_Error) {
 	fd, open_err := os.open(path, {.Read, .Write})
 	if open_err != nil {
 		return {}, .Sector_Read_Error
@@ -62,7 +62,8 @@ volume_open :: proc(path: string) -> (vol: Volume, err: FS_Error) {
 	}
 
 	vol.master = master
-	alloc_cache_init(&vol.cache, &vol.master)
+	alloc_cap := cache.alloc_cap if cache.alloc_cap > 0 else DEFAULT_CACHE_CONFIG.alloc_cap
+	alloc_cache_init(&vol.cache, &vol.master, alloc_cap)
 	JOURNAL_BACKEND.recover(&vol)
 	return vol, .None
 }
@@ -98,17 +99,18 @@ lfn_bump_write :: proc(
 	name: string,
 ) -> (
 	ptr: LFN_Pointer,
-	ok: bool,
+	err: FS_Error,
 ) {
 	needed := u16(len(name))
 	s, has_state := bump.state.?
 	if !has_state || s.next_byte + needed > SECTOR_SIZE {
 		new_c, new_o, lerr := allocate_sectors(vol, 0, 0, 1, .LFN)
-		if lerr != .None { return {}, false }
+		if lerr != .None { return {}, lerr }
 
 		runs, rok := resolve_extents(vol, new_c, new_o)
 		defer delete(runs)
-		if rok != .None || len(runs) == 0 { return {}, false }
+		if rok != .None { return {}, rok }
+		if len(runs) == 0 { return {}, .Entry_Not_Found }
 
 		new_state := LFN_Bump_State {
 			cluster   = new_c,
@@ -122,10 +124,10 @@ lfn_bump_write :: proc(
 	}
 
 	buf: [SECTOR_SIZE]u8
-	if sector_read(vol, s.sector, buf[:]) != .None { return {}, false }
+	if sector_read(vol, s.sector, buf[:]) != .None { return {}, .Sector_Read_Error }
 
 	copy(buf[s.next_byte:], transmute([]u8)name)
-	if sector_write(vol, s.sector, buf[:]) != .None { return {}, false }
+	if sector_write(vol, s.sector, buf[:]) != .None { return {}, .Sector_Write_Error }
 
 	ptr = {
 		cluster = u64(s.cluster),
@@ -141,5 +143,5 @@ lfn_bump_write :: proc(
 	}
 
 	bump.state = new_state
-	return ptr, true
+	return ptr, .None
 }
