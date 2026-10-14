@@ -94,16 +94,32 @@ locks_remove_identity :: proc(fsys: ^FS, id: File_Identity) {
 	}
 }
 
+// _retain_owner_mismatch rebuilds a holder list without one owner's entries.
+// Both holder structs carry `owner: u64`, so one parametric proc serves both
+// lock tables (resolved per instantiation). The fresh list takes the
+// caller's allocator explicitly; dynamics carry it, so later deletes stay
+// paired regardless of the freeing caller's context.
+@(private = "file")
+_retain_owner_mismatch :: proc(
+	old: [dynamic]$T,
+	owner: u64,
+	allocator := context.allocator,
+) -> (
+	kept: [dynamic]T,
+) {
+	kept = make([dynamic]T, 0, len(old), allocator)
+	for r in old {
+		if r.owner == owner { continue }
+		append(&kept, r)
+	}
+	return kept
+}
+
 // locks_remove_owner drops one owner's locks for an identity (used on
 // release — the kernel releases a process's locks when its last fd closes).
 locks_remove_owner :: proc(fsys: ^FS, id: File_Identity, owner: u64) {
 	if old, has := fsys.locks[id]; has {
-		recs := make([dynamic]Region_Lock, 0, 4)
-		for r in old {
-			if r.owner == owner { continue }
-			append(&recs, r)
-		}
-
+		recs := _retain_owner_mismatch(old, owner, fsys.allocator)
 		delete(old)
 		if len(recs) == 0 {
 			delete(recs)
@@ -113,12 +129,7 @@ locks_remove_owner :: proc(fsys: ^FS, id: File_Identity, owner: u64) {
 		}
 	}
 	if old, has := fsys.flock_locks[id]; has {
-		fls := make([dynamic]Flock_State, 0, 4)
-		for s in old {
-			if s.owner == owner { continue }
-			append(&fls, s)
-		}
-
+		fls := _retain_owner_mismatch(old, owner, fsys.allocator)
 		delete(old)
 		if len(fls) == 0 {
 			delete(fls)
