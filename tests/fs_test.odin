@@ -246,7 +246,9 @@ test_sector_write_bulk :: proc(t: ^testing.T) {
 		master = master,
 	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
+	fs.dir_cache_init(&vol.dir_cache)
 	defer fs.alloc_cache_destroy(&vol.cache)
+	defer fs.dir_cache_destroy(&vol.dir_cache)
 
 	kernel_ce, ce_err := fs.find_cluster_entry(
 		&vol,
@@ -300,7 +302,9 @@ test_deallocate_sectors_edge_cases :: proc(t: ^testing.T) {
 		master = master,
 	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
+	fs.dir_cache_init(&vol.dir_cache)
 	defer fs.alloc_cache_destroy(&vol.cache)
+	defer fs.dir_cache_destroy(&vol.dir_cache)
 
 	err := fs.deallocate_sectors(&vol, fs.Chain_Location{0, 0})
 	testing.expect_value(t, err, fs.FS_Error.None)

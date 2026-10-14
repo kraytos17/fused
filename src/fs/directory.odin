@@ -2,6 +2,7 @@
 #+build linux
 package fs
 
+import "core:container/lru"
 import "core:log"
 import "core:mem"
 import "core:strings"
@@ -25,7 +26,9 @@ Indexed_Entry :: struct {
 }
 
 // read_directory_entries reads all existing directory entries in a
-// directory's extent chain.
+// directory's extent chain. Results are memoized per directory: a hit
+// returns an owned clone (no chain walk, no sector I/O); callers delete
+// the returned array exactly as before.
 read_directory_entries :: proc(
 	vol: ^Volume,
 	cluster: Cluster,
@@ -34,6 +37,13 @@ read_directory_entries :: proc(
 	entries: [dynamic]Indexed_Entry,
 	err: FS_Error,
 ) {
+	loc := Chain_Location{cluster, sector_offset}
+	if cached, hit := lru.get(&vol.dir_cache.lru, loc); hit {
+		dup := make([dynamic]Indexed_Entry, len(cached))
+		copy(dup[:], cached[:])
+		return dup, .None
+	}
+
 	data, derr := read_chain(vol, Chain_Location{cluster, sector_offset})
 	defer delete(data)
 	if derr != .None {
@@ -50,6 +60,16 @@ read_directory_entries :: proc(
 				append(&entries, Indexed_Entry{entry^, sec_idx * deps + i})
 			}
 		}
+	}
+
+	// Memoize for repeat resolutions. The cache owns its clone; the caller
+	// owns `entries`. Puts happen only after a miss while the caller holds
+	// the volume exclusively (or runs single-threaded), so same-key
+	// overwrite — the one lru.set path that skips on_remove — cannot occur.
+	stored := make([dynamic]Indexed_Entry, len(entries))
+	copy(stored[:], entries[:])
+	if lru.set(&vol.dir_cache.lru, loc, stored) != nil {
+		delete(stored)
 	}
 	return entries, .None
 }
@@ -160,7 +180,15 @@ write_directory_entry_at :: proc(
 	des := int(dir_entry_size(features))
 	dst := (^Directory_Entry)(mem.ptr_offset(&buf[0], id.entry_index * des))
 	dst^ = entry^
-	return sector_write(vol, table_sector, buf[:])
+	if sector_write(vol, table_sector, buf[:]) != .None {
+		return .Sector_Write_Error
+	}
+	// Every slot mutation drops the directory's cached listing (see
+	// dir_cache.odin): this proc and write_entry_at_index are the only two
+	// writers, so the drop here covers mounter writers, tests, and future
+	// fs writers alike.
+	dir_cache_invalidate(&vol.dir_cache, Chain_Location{id.dir_cluster, id.dir_offset})
+	return .None
 }
 
 // data_chain_of names the data chain owned by an entry: its stored cluster
@@ -253,5 +281,9 @@ write_entry_at_index :: proc(
 	if sector_write(vol, sec, buf[:]) != .None {
 		return .Sector_Write_Error
 	}
+	// Drop the directory's cached listing with the write (see
+	// dir_cache.odin): this proc and write_directory_entry_at are the
+	// only two slot writers.
+	dir_cache_invalidate(&vol.dir_cache, Chain_Location{id.dir_cluster, id.dir_offset})
 	return .None
 }

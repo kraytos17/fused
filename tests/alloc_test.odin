@@ -198,7 +198,9 @@ test_alloc_cache_stress :: proc(t: ^testing.T) {
 		master = master,
 	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
+	fs.dir_cache_init(&vol.dir_cache)
 	defer fs.alloc_cache_destroy(&vol.cache)
+	defer fs.dir_cache_destroy(&vol.dir_cache)
 
 	baseline_used: u16 = 0
 	{

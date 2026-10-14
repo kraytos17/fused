@@ -13,12 +13,13 @@ Alloc_Cache_Entry :: struct {
 	used:   u16,
 }
 
-// Cache_Config sizes the three in-memory caches. Non-positive entries mean
+// Cache_Config sizes the four in-memory caches. Non-positive entries mean
 // "use the default", so a zero Cache_Config is valid and selects defaults.
 Cache_Config :: struct {
 	path_cap:  int, // path LRU entries (mounter)
 	lfn_cap:   int, // LFN LRU entries (mounter)
 	alloc_cap: int, // cluster-bitmap LRU entries (fs)
+	dir_cap:   int, // assembled directory listings (fs)
 }
 
 // DEFAULT_CACHE_CONFIG is the stock cache sizing (matches historic constants).
@@ -26,6 +27,7 @@ DEFAULT_CACHE_CONFIG :: Cache_Config {
 	path_cap  = 128,
 	lfn_cap   = 256,
 	alloc_cap = 1024,
+	dir_cap   = 128,
 }
 
 // Cluster_Bitmap_Cache LRU cache for cluster bitmaps

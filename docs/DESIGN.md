@@ -245,6 +245,12 @@ fd to the disk fd for the write side.
   at default cluster size regardless of filesystem size. Clusters without an
   allocated table (fresh, reserved) resolve to empty bitmaps and are *not*
   counted as free by `statfs`; only genuine I/O failures propagate as errors.
+- **Directory listing cache** (`src/fs/dir_cache.odin`): LRU cache (128
+  directories) of assembled `[dynamic]Indexed_Entry` arrays keyed by chain
+  start. `read_directory_entries` (once per path component in `resolve_path`)
+  pays a lookup plus a clone on hits instead of a chain walk plus sector I/O.
+  Sound because slots never shift (no compaction); invalidation lives in the
+  two fs entry-write procs, which every slot mutation funnels through.
 
 ### Mounter helpers (`src/mounter/`)
 

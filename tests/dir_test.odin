@@ -348,3 +348,105 @@ test_dir_rename_to_extended_target :: proc(t: ^testing.T) {
 	dst_raw[0].flags -= {.Exists, .Allocated}
 	fs.sector_write(&vol, dst_last_sec, dst_buf[:])
 }
+
+// test_dir_cache_hit_and_invalidate primes the listing cache, mutates the
+// image behind its back with raw sector I/O (entry I/O self-invalidates,
+// so only sector surgery can go stale), observes the stale hit proving
+// memoization, invalidates, and observes fresh data.
+@(test)
+test_dir_cache_hit_and_invalidate :: proc(t: ^testing.T) {
+	vol, vol_ok := open_test_volume()
+	if !vol_ok { testing.fail(t); return }
+	defer close_test_volume(&vol)
+
+	dc, d_o, derr := fs.allocate_sectors(&vol, {}, 1, .Directory)
+	testing.expect_value(t, derr, fs.FS_Error.None)
+	defer fs.deallocate_sectors(&vol, fs.Chain_Location{dc, d_o})
+
+	sec := fs.Sector(u64(dc) * vol.master.cluster_size + u64(d_o))
+	zero: [fs.SECTOR_SIZE]u8
+	testing.expect(t, fs.sector_write(&vol, sec, zero[:]) == .None, "zero dir")
+	loc := fs.Chain_Location{dc, d_o}
+
+	// Prime: the empty listing is cached (negative caching).
+	e0, err0 := fs.read_directory_entries(&vol, dc, d_o)
+	testing.expect_value(t, err0, fs.FS_Error.None)
+	testing.expect(t, len(e0) == 0, "empty dir")
+	delete(e0)
+
+	// Slip an entry in behind the cache's back.
+	sneak := fs.Directory_Entry{flags = {.Allocated, .Exists}}
+	copy(sneak.file_name[:], "SNEAK")
+	sneak.file_name[5] = 0
+	buf: [fs.SECTOR_SIZE]u8
+	testing.expect(t, fs.sector_read(&vol, sec, buf[:]) == .None, "reread")
+	raw := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(buf[:]))
+	raw[3] = sneak
+	testing.expect(t, fs.sector_write(&vol, sec, buf[:]) == .None, "sneak in")
+
+	// Stale hit: the cache still reports the empty listing.
+	e1, err1 := fs.read_directory_entries(&vol, dc, d_o)
+	testing.expect_value(t, err1, fs.FS_Error.None)
+	testing.expect(t, len(e1) == 0, "stale hit proves memoization")
+	delete(e1)
+
+	// Invalidate: the slipped entry appears with its physical slot.
+	fs.dir_cache_invalidate(&vol.dir_cache, loc)
+	e2, err2 := fs.read_directory_entries(&vol, dc, d_o)
+	testing.expect_value(t, err2, fs.FS_Error.None)
+	testing.expect(t, len(e2) == 1, "fresh after invalidate")
+	if len(e2) == 1 {
+		testing.expect(t, fs.entry_short_name(&e2[0].entry) == "SNEAK", "name")
+		testing.expect(t, e2[0].index == 3, "physical slot")
+	}
+	delete(e2)
+}
+
+// test_dir_cache_evicts_at_cap shrinks the listing cache to two entries,
+// primes three directories, and verifies the evicted one rebuilds (miss)
+// instead of returning stale data — exercising the LRU eviction and
+// on_remove free path.
+@(test)
+test_dir_cache_evicts_at_cap :: proc(t: ^testing.T) {
+	vol, vol_ok := open_test_volume()
+	if !vol_ok { testing.fail(t); return }
+	defer close_test_volume(&vol)
+
+	fs.dir_cache_destroy(&vol.dir_cache)
+	fs.dir_cache_init(&vol.dir_cache, 2)
+
+	locs: [3]fs.Chain_Location
+	for i in 0 ..< 3 {
+		dc, d_o, derr := fs.allocate_sectors(&vol, {}, 1, .Directory)
+		if derr != .None { testing.fail(t); return }
+		locs[i] = {dc, d_o}
+		sec := fs.Sector(u64(dc) * vol.master.cluster_size + u64(d_o))
+		zero: [fs.SECTOR_SIZE]u8
+		if fs.sector_write(&vol, sec, zero[:]) != .None { testing.fail(t); return }
+		e, err := fs.read_directory_entries(&vol, dc, d_o)
+		if err != .None || len(e) != 0 { testing.fail(t); return }
+		delete(e)
+	}
+
+	// locs[0] no longer fits: slip an entry in and re-read. A miss
+	// rebuilds fresh; a stale empty listing would mean eviction failed.
+	sec0 := fs.Sector(u64(locs[0].cluster) * vol.master.cluster_size + u64(locs[0].offset))
+	sneak := fs.Directory_Entry{flags = {.Allocated, .Exists}}
+	copy(sneak.file_name[:], "EVICT")
+	sneak.file_name[5] = 0
+	buf: [fs.SECTOR_SIZE]u8
+	testing.expect(t, fs.sector_read(&vol, sec0, buf[:]) == .None, "reread")
+	raw := (^[fs.DIR_ENTRIES_PER_SECTOR]fs.Directory_Entry)(raw_data(buf[:]))
+	raw[1] = sneak
+	testing.expect(t, fs.sector_write(&vol, sec0, buf[:]) == .None, "sneak in")
+
+	e, err := fs.read_directory_entries(&vol, locs[0].cluster, locs[0].offset)
+	testing.expect_value(t, err, fs.FS_Error.None)
+	testing.expect(t, len(e) == 1, "evicted dir rebuilds fresh")
+	delete(e)
+
+	for l in locs {
+		derr := fs.deallocate_sectors(&vol, l)
+		testing.expect_value(t, derr, fs.FS_Error.None)
+	}
+}

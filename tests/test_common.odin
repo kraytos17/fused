@@ -25,12 +25,14 @@ open_test_volume :: proc() -> (vol: fs.Volume, ok: bool) {
 		master = master,
 	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
+	fs.dir_cache_init(&vol.dir_cache)
 	return vol, true
 }
 
 // close_test_volume — closes a test Volume (destroys cache, closes fd)
 close_test_volume :: proc(vol: ^fs.Volume) {
 	fs.alloc_cache_destroy(&vol.cache)
+	fs.dir_cache_destroy(&vol.dir_cache)
 	os.close(vol.disk)
 	vol^ = {}
 }

@@ -31,6 +31,7 @@ Volume :: struct {
 	disk:       ^os.File,
 	master:     Master_Record,
 	cache:      Cluster_Bitmap_Cache,
+	dir_cache:  Dir_Entry_Cache,
 	image_size: Byte_Offset,
 	lfn_bump:   LFN_Bump,
 }
@@ -64,6 +65,8 @@ volume_open :: proc(path: string, cache := DEFAULT_CACHE_CONFIG) -> (vol: Volume
 	vol.master = master
 	alloc_cap := cache.alloc_cap if cache.alloc_cap > 0 else DEFAULT_CACHE_CONFIG.alloc_cap
 	alloc_cache_init(&vol.cache, &vol.master, alloc_cap)
+	dir_cap := cache.dir_cap if cache.dir_cap > 0 else DEFAULT_CACHE_CONFIG.dir_cap
+	dir_cache_init(&vol.dir_cache, dir_cap)
 	JOURNAL_BACKEND.recover(&vol)
 	return vol, .None
 }
@@ -71,6 +74,7 @@ volume_open :: proc(path: string, cache := DEFAULT_CACHE_CONFIG) -> (vol: Volume
 // volume_close destroys the alloc cache and closes the disk file.
 volume_close :: proc(vol: ^Volume) {
 	alloc_cache_destroy(&vol.cache)
+	dir_cache_destroy(&vol.dir_cache)
 	os.close(vol.disk)
 	vol^ = {}
 }

@@ -27,7 +27,9 @@ test_cache_init_destroy :: proc(t: ^testing.T) {
 		master = master,
 	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
+	fs.dir_cache_init(&vol.dir_cache)
 	defer fs.alloc_cache_destroy(&vol.cache)
+	defer fs.dir_cache_destroy(&vol.dir_cache)
 
 	testing.expect(t, vol.cache.cache_size > 0, "cache_size > 0")
 	_, _, berr := fs.alloc_cache_ensure(&vol.cache, &vol, 0)
@@ -50,7 +52,9 @@ test_cache_bitmap_matches_disk :: proc(t: ^testing.T) {
 		master = master,
 	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
+	fs.dir_cache_init(&vol.dir_cache)
 	defer fs.alloc_cache_destroy(&vol.cache)
+	defer fs.dir_cache_destroy(&vol.dir_cache)
 
 	for ci in 0 ..< int(master.cluster_map_size) {
 		bm, _, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(ci))
@@ -107,7 +111,9 @@ test_cache_used_matches_disk :: proc(t: ^testing.T) {
 		master = master,
 	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
+	fs.dir_cache_init(&vol.dir_cache)
 	defer fs.alloc_cache_destroy(&vol.cache)
+	defer fs.dir_cache_destroy(&vol.dir_cache)
 
 	for ci in 0 ..< int(master.cluster_map_size) {
 		_, used, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(ci))
@@ -151,7 +157,9 @@ test_cache_invalidate_rebuilds :: proc(t: ^testing.T) {
 		master = master,
 	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
+	fs.dir_cache_init(&vol.dir_cache)
 	defer fs.alloc_cache_destroy(&vol.cache)
+	defer fs.dir_cache_destroy(&vol.dir_cache)
 
 	_, used_before, berr := fs.alloc_cache_ensure(&vol.cache, &vol, 0)
 	testing.expect_value(t, berr, fs.FS_Error.None)
@@ -183,7 +191,9 @@ test_cache_count_free :: proc(t: ^testing.T) {
 		master = master,
 	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
+	fs.dir_cache_init(&vol.dir_cache)
 	defer fs.alloc_cache_destroy(&vol.cache)
+	defer fs.dir_cache_destroy(&vol.dir_cache)
 
 	cached_free := fs.alloc_cache_count_free(&vol)
 	testing.expect(t, cached_free > 0, "free count > 0")
@@ -230,7 +240,9 @@ test_cache_allocate_matches_nil :: proc(t: ^testing.T) {
 		master = master,
 	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
+	fs.dir_cache_init(&vol.dir_cache)
 	defer fs.alloc_cache_destroy(&vol.cache)
+	defer fs.dir_cache_destroy(&vol.dir_cache)
 
 	fc_c, fo_c, err_c := fs.allocate_sectors(&vol, {}, 3, .File_Content)
 	testing.expect_value(t, err_c, fs.FS_Error.None)
@@ -259,7 +271,9 @@ test_cache_hint_advances :: proc(t: ^testing.T) {
 		master = master,
 	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
+	fs.dir_cache_init(&vol.dir_cache)
 	defer fs.alloc_cache_destroy(&vol.cache)
+	defer fs.dir_cache_destroy(&vol.dir_cache)
 
 	hint_before := vol.cache.hint
 	fc, fo, err := fs.allocate_sectors(&vol, {}, 1, .File_Content)
@@ -286,7 +300,9 @@ test_cache_stress_multi_cluster :: proc(t: ^testing.T) {
 		master = master,
 	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
+	fs.dir_cache_init(&vol.dir_cache)
 	defer fs.alloc_cache_destroy(&vol.cache)
+	defer fs.dir_cache_destroy(&vol.dir_cache)
 
 	// Allocate enough to span multiple clusters
 	needed := master.cluster_size * 3 + 2
@@ -344,7 +360,9 @@ test_cache_chain_extension :: proc(t: ^testing.T) {
 		master = master,
 	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
+	fs.dir_cache_init(&vol.dir_cache)
 	defer fs.alloc_cache_destroy(&vol.cache)
+	defer fs.dir_cache_destroy(&vol.dir_cache)
 
 	fc, fo, err := fs.allocate_sectors(&vol, {}, 5, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
@@ -378,7 +396,9 @@ test_cache_many_small_alloc_free :: proc(t: ^testing.T) {
 		master = master,
 	}
 	fs.alloc_cache_init(&vol.cache, &vol.master)
+	fs.dir_cache_init(&vol.dir_cache)
 	defer fs.alloc_cache_destroy(&vol.cache)
+	defer fs.dir_cache_destroy(&vol.dir_cache)
 
 	for i in 0 ..< 30 {
 		fc, fo, err := fs.allocate_sectors(&vol, {}, 1, .File_Content)
