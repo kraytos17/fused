@@ -698,3 +698,47 @@ test_mount_create_past_dir_extend :: proc(t: ^testing.T) {
 		testing.expect_value(t, rc, 0)
 	}
 }
+
+// test_map_key_roundtrip pins that struct map keys hash identically
+// whether built as literals or field-wise (padding stays zero in both
+// constructions). Covers all four key types; a toolchain change in
+// zero-init would flip these from hits to misses.
+@(test)
+test_map_key_roundtrip :: proc(t: ^testing.T) {
+	m1 := make(map[fs.File_Identity]int)
+	defer delete(m1)
+	m1[fs.File_Identity{fs.Cluster(7), fs.Sector_Offset(2), 3}] = 1
+	k1: fs.File_Identity
+	k1.dir_cluster = fs.Cluster(7)
+	k1.dir_offset = fs.Sector_Offset(2)
+	k1.entry_index = 3
+	v1, ok1 := m1[k1]
+	testing.expect(t, ok1 && v1 == 1, "File_Identity roundtrip")
+
+	m2 := make(map[fs.Chain_Location]int)
+	defer delete(m2)
+	m2[fs.Chain_Location{fs.Cluster(7), fs.Sector_Offset(2)}] = 1
+	k2: fs.Chain_Location
+	k2.cluster = fs.Cluster(7)
+	k2.offset = fs.Sector_Offset(2)
+	v2, ok2 := m2[k2]
+	testing.expect(t, ok2 && v2 == 1, "Chain_Location roundtrip")
+
+	m3 := make(map[mounter.Lfn_Cache_Key]int)
+	defer delete(m3)
+	m3[mounter.Lfn_Cache_Key{dir = fs.Chain_Location{fs.Cluster(7), fs.Sector_Offset(0)}, index = 0x20000}] = 1
+	k3: mounter.Lfn_Cache_Key
+	k3.dir = fs.Chain_Location{fs.Cluster(7), fs.Sector_Offset(0)}
+	k3.index = 0x20000
+	v3, ok3 := m3[k3]
+	testing.expect(t, ok3 && v3 == 1, "Lfn_Cache_Key roundtrip")
+
+	m4 := make(map[mounter.Extent_Cache_Key]int)
+	defer delete(m4)
+	m4[mounter.Extent_Cache_Key{cluster = 7, offset = 2}] = 1
+	k4: mounter.Extent_Cache_Key
+	k4.cluster = 7
+	k4.offset = 2
+	v4, ok4 := m4[k4]
+	testing.expect(t, ok4 && v4 == 1, "Extent_Cache_Key roundtrip")
+}
