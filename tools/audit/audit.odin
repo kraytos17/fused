@@ -475,6 +475,28 @@ audit_hygiene_file :: proc(path: string) -> (failed: int) {
 			fmt.printf("FAIL   %s:%d old (&x[0]) cast; use raw_data form\n", path, i + 1)
 			failed += 1
 		}
+		// Private procs must be _-prefixed (structs/enums/vars exempt).
+		// The declaration conventionally follows its attribute directly.
+		if strings.has_prefix(trimmed, "@(private") {
+			for j := i + 1; j < len(lines) && j <= i + 2; j += 1 {
+				decl := strings.trim_space(lines[j])
+				if decl == "" || strings.has_prefix(decl, "//") { continue }
+				space := strings.index(decl, " ")
+				if space > 0 && strings.has_prefix(decl[space:], " :: proc") {
+					name := decl[:space]
+					if !strings.has_prefix(name, "_") {
+						fmt.printf(
+							"FAIL   %s:%d private proc %s without _ prefix\n",
+							path,
+							j + 1,
+							name,
+						)
+						failed += 1
+					}
+				}
+				break
+			}
+		}
 	}
 	return failed
 }
