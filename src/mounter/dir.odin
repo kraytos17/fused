@@ -14,6 +14,7 @@ Find_Slot_Ctx :: struct {
 	dsec:     fs.Sector_Offset,
 	didx:     int,
 	found:    bool,
+	err:      fs.FS_Error,
 }
 
 @(private = "file")
@@ -25,34 +26,32 @@ Check_Name_Ctx :: struct {
 	found:    bool,
 }
 
-// write_entry_back writes a Directory_Entry back to its location on disk
-// (identified by cluster, offset, and entry index).
-write_entry_back :: proc(
+// write_entry_at writes a Directory_Entry back to its location on disk,
+// propagating the underlying error instead of collapsing it to bool.
+write_entry_at :: proc(
 	fsys: ^FS,
+	loc: File_Identity,
 	entry: ^fs.Directory_Entry,
-	cluster: fs.Cluster,
-	offset: fs.Sector_Offset,
-	index: int,
-) -> bool {
-	return fs.write_entry_at_index(&fsys.vol, cluster, offset, index, entry) == .None
+) -> fs.FS_Error {
+	return fs.write_entry_at_index(&fsys.vol, loc.dir_cluster, loc.dir_offset, loc.entry_index, entry)
 }
 
 // find_free_slot_in_extent scans a directory's extent chain for the first free
-// entry slot. Returns ok=false when no free slot exists.
+// entry slot. Returns Entry_Not_Found when no free slot exists; sector and
+// walk errors propagate instead of stopping the walk silently.
 find_free_slot_in_extent :: proc(
 	fsys: ^FS,
 	dir_cluster: fs.Cluster,
 	dir_offset: fs.Sector_Offset,
 ) -> (
-	dcluster: fs.Cluster,
-	dsec: fs.Sector_Offset,
-	didx: int,
-	ok: bool,
+	loc: File_Identity,
+	err: fs.FS_Error,
 ) {
 	depc := dir_entries_per_buf(fsys.vol.master.features)
 	visit := proc(sec: fs.Sector, user: rawptr) -> bool {
 		ctx := (^Find_Slot_Ctx)(user)
 		if fs.sector_read(&ctx.fsys.vol, sec, ctx.scan_buf[:]) != .None {
+			ctx.err = .Sector_Read_Error
 			return false
 		}
 		for i in 0 ..< ctx.depc {
@@ -75,34 +74,42 @@ find_free_slot_in_extent :: proc(
 		depc = depc,
 	}
 
-	fs.walk_chain_sectors(&fsys.vol, dir_cluster, dir_offset, visit, &ctx)
-	if !ctx.found {
-		return {}, 0, 0, false
+	werr := fs.walk_chain_sectors(&fsys.vol, dir_cluster, dir_offset, visit, &ctx)
+	if ctx.err != .None {
+		return {}, ctx.err
 	}
-	return ctx.dcluster, ctx.dsec, ctx.didx, true
+	if werr != .None {
+		return {}, werr
+	}
+	if !ctx.found {
+		return {}, .Entry_Not_Found
+	}
+	return File_Identity{ctx.dcluster, ctx.dsec, ctx.didx}, .None
 }
 
 // find_or_extend_dir finds a free slot in a directory, extending the chain if
-// needed.
+// needed. A full chain extends; any other lookup error propagates (extending
+// over a corrupt chain would mask it).
 find_or_extend_dir :: proc(
 	fsys: ^FS,
 	dir_cluster: fs.Cluster,
 	dir_offset: fs.Sector_Offset,
 ) -> (
-	dcluster: fs.Cluster,
-	dsec: fs.Sector_Offset,
-	didx: int,
-	ok: bool,
+	loc: File_Identity,
+	err: fs.FS_Error,
 ) {
-	dcluster, dsec, didx, ok = find_free_slot_in_extent(fsys, dir_cluster, dir_offset)
-	if ok {
-		return
+	slot, ferr := find_free_slot_in_extent(fsys, dir_cluster, dir_offset)
+	if ferr == .None {
+		return slot, .None
+	}
+	if ferr != .Entry_Not_Found {
+		return {}, ferr
 	}
 
 	current_runs, cr_err := fs.resolve_extents(&fsys.vol, dir_cluster, dir_offset)
 	defer delete(current_runs)
 	if cr_err != .None {
-		return {}, {}, 0, false
+		return {}, cr_err
 	}
 
 	current_count: u64
@@ -118,14 +125,14 @@ find_or_extend_dir :: proc(
 		.Directory,
 	)
 	if ext_err != .None {
-		return {}, {}, 0, false
+		return {}, ext_err
 	}
 
 	fsys.free_sectors -= 1
 	dir_runs, dir_err := fs.resolve_extents(&fsys.vol, dir_cluster, dir_offset)
 	defer delete(dir_runs)
 	if dir_err != .None {
-		return {}, {}, 0, false
+		return {}, dir_err
 	}
 
 	depc := dir_entries_per_buf(fsys.vol.master.features)
@@ -133,21 +140,21 @@ find_or_extend_dir :: proc(
 	last_sec := fs.Sector(u64(last_run.sector) + u64(last_run.count) - 1)
 	ext_buf: [fs.SECTOR_SIZE]u8
 	if fs.sector_read(&fsys.vol, last_sec, ext_buf[:]) != .None {
-		return {}, {}, 0, false
+		return {}, .Sector_Read_Error
 	}
 
 	zero_flags: fs.Dir_Flags
 	for i in 0 ..< depc {
 		if get_dir_entry(ext_buf[:], i, fsys.vol.master.features).flags == zero_flags {
 			dlc := u64(last_sec) / fsys.vol.master.cluster_size
-			dcluster = fs.Cluster(dlc)
-			dsec = fs.Sector_Offset(u64(last_sec) - dlc * fsys.vol.master.cluster_size)
-			didx = i
-			ok = true
-			return
+			return File_Identity{
+				fs.Cluster(dlc),
+				fs.Sector_Offset(u64(last_sec) - dlc * fsys.vol.master.cluster_size),
+				i,
+			}, .None
 		}
 	}
-	return {}, 0, 0, false
+	return {}, .Entry_Not_Found
 }
 
 // check_name_exists checks whether a name already exists in the directory.
@@ -186,15 +193,17 @@ check_name_exists :: proc(
 }
 
 // write_entry_with_lfn writes a directory entry and sets its timestamps,
-// handling LFN allocation for names longer than 16 characters.
-write_entry_with_lfn :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> bool {
+// handling LFN allocation for names longer than the inline file_name field.
+write_entry_with_lfn :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> fs.FS_Error {
 	set_entry_time_to_now(entry)
 	return set_entry_name(fsys, entry, name)
 }
 
 // set_entry_name sets the name in a Directory_Entry, handling LFN allocation
-// and old LFN deallocation. Does NOT modify timestamps.
-set_entry_name :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> bool {
+// and old LFN deallocation. Does NOT modify timestamps. Allocation and
+// deallocation failures propagate as FS_Error instead of collapsing to
+// ENOSPC at call sites.
+set_entry_name :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> fs.FS_Error {
 	if .LFN in entry.flags {
 		ptr := (^fs.LFN_Pointer)(&entry.file_name[0])
 		if ptr.cluster != 0 {
@@ -203,15 +212,15 @@ set_entry_name :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> b
 				fs.Cluster(ptr.cluster),
 				fs.Sector_Offset(ptr.sector),
 			); derr != .None {
-				return false
+				return derr
 			}
 			reinit_free_sectors(fsys)
 		}
 		entry.flags -= {.LFN}
 	}
-	if len(name) > 16 {
-		ptr, pok := fs.lfn_bump_write(&fsys.vol, &fsys.vol.lfn_bump, name)
-		if !pok { return false }
+	if len(name) > len(entry.file_name) {
+		ptr, perr := fs.lfn_bump_write(&fsys.vol, &fsys.vol.lfn_bump, name)
+		if perr != .None { return perr }
 
 		reinit_free_sectors(fsys)
 		(^fs.LFN_Pointer)(&entry.file_name[0])^ = ptr
@@ -220,5 +229,5 @@ set_entry_name :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> b
 		copy(entry.file_name[:], name)
 		mem.zero_slice(entry.file_name[len(name):])
 	}
-	return true
+	return .None
 }

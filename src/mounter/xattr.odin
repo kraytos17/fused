@@ -30,9 +30,9 @@ fused_setxattr :: proc "c" (
 		return fuse3.nix(.E2BIG)
 	}
 
-	entry, entry_cluster, entry_offset, entry_idx, _, _, resolved := resolve_entry(fsys, path, nil)
-	if !resolved {
-		return fuse3.nix(.ENOENT)
+	entry, entry_cluster, entry_offset, entry_idx, _, _, rerr := resolve_entry(fsys, path, nil)
+	if rerr != .None {
+		return fs_error_to_errno(rerr)
 	}
 
 	attrs, load_err := fs.xattr_load(&fsys.vol, &entry)
@@ -83,8 +83,12 @@ fused_setxattr :: proc "c" (
 	}
 
 	reinit_free_sectors(fsys)
-	if !write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx) {
-		return fuse3.nix(.EIO)
+	if werr := write_entry_at(
+		fsys,
+		File_Identity{entry_cluster, entry_offset, entry_idx},
+		&entry,
+	); werr != .None {
+		return fs_error_to_errno(werr)
 	}
 
 	path_cache_invalidate_all(fsys)
@@ -106,9 +110,9 @@ fused_getxattr :: proc "c" (
 	fsys := begin_op()
 	defer end_op(fsys)
 
-	entry, _, _, _, _, _, resolved := resolve_entry(fsys, path, nil)
-	if !resolved {
-		return fuse3.nix(.ENOENT)
+	entry, _, _, _, _, _, rerr := resolve_entry(fsys, path, nil)
+	if rerr != .None {
+		return fs_error_to_errno(rerr)
 	}
 
 	val, found := fs.xattr_get(&fsys.vol, &entry, string(name))
@@ -138,9 +142,9 @@ fused_listxattr :: proc "c" (path: cstring, list: [^]c.char, size: c.size_t) -> 
 	fsys := begin_op()
 	defer end_op(fsys)
 
-	entry, _, _, _, _, _, resolved := resolve_entry(fsys, path, nil)
-	if !resolved {
-		return fuse3.nix(.ENOENT)
+	entry, _, _, _, _, _, rerr := resolve_entry(fsys, path, nil)
+	if rerr != .None {
+		return fs_error_to_errno(rerr)
 	}
 
 	attrs, load_err := fs.xattr_load(&fsys.vol, &entry)
@@ -184,9 +188,9 @@ fused_removexattr :: proc "c" (path: cstring, name: cstring) -> c.int {
 	fsys := begin_op()
 	defer end_op(fsys)
 
-	entry, entry_cluster, entry_offset, entry_idx, _, _, resolved := resolve_entry(fsys, path, nil)
-	if !resolved {
-		return fuse3.nix(.ENOENT)
+	entry, entry_cluster, entry_offset, entry_idx, _, _, rerr := resolve_entry(fsys, path, nil)
+	if rerr != .None {
+		return fs_error_to_errno(rerr)
 	}
 
 	removed, err := fs.xattr_remove(&fsys.vol, &entry, string(name))
@@ -198,8 +202,12 @@ fused_removexattr :: proc "c" (path: cstring, name: cstring) -> c.int {
 	}
 
 	reinit_free_sectors(fsys)
-	if !write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx) {
-		return fuse3.nix(.EIO)
+	if werr := write_entry_at(
+		fsys,
+		File_Identity{entry_cluster, entry_offset, entry_idx},
+		&entry,
+	); werr != .None {
+		return fs_error_to_errno(werr)
 	}
 
 	path_cache_invalidate_all(fsys)

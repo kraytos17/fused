@@ -46,9 +46,9 @@ fused_access :: proc "c" (path: cstring, mask: c.int) -> c.int {
 	fsys := begin_op()
 	defer end_op(fsys)
 
-	entry, _, _, _, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
-	if !ok {
-		return fuse3.nix(.ENOENT)
+	entry, _, _, _, rerr := resolve_path_cached(fsys, string(path), context.temp_allocator)
+	if rerr != .None {
+		return fs_error_to_errno(rerr)
 	}
 
 	m := transmute(posix.Mode_Flags)(mask)
@@ -157,7 +157,7 @@ fused_release :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	// Drop this owner's locks when the fd closes (kernel releases a
 	// process's locks when its last fd to the file closes). Takes the write
 	// lock: the lock tables are shared mutable state.
-	locks_remove_owner(fsys, file_identity_from_fh(fi.fh), fi.lock_owner)
+	locks_remove_owner(fsys, fh_parts(fi.fh), fi.lock_owner)
 	log.debugf("release: %s → ok", path)
 	return 0
 }
@@ -201,17 +201,17 @@ fused_lseek :: proc "c" (
 	fsys := begin_op()
 	defer end_op(fsys)
 	if whence != fuse3.SEEK_DATA && whence != fuse3.SEEK_HOLE {
-		return posix.off_t(-int(fuse3.nix(.ENOSYS)))
+		return posix.off_t(fuse3.nix(.ENOSYS))
 	}
 
-	entry, data_cluster, data_offset, ok := read_entry_from_fh(fsys, fi.fh)
-	if !ok {
-		return posix.off_t(-int(fuse3.nix(.ENOENT)))
+	entry, data_cluster, data_offset, err := read_entry_from_fh(fsys, fi.fh)
+	if err != .None {
+		return posix.off_t(fs_error_to_errno(err))
 	}
 
 	runs, ext_ok := resolve_extents_cached(fsys, data_cluster, data_offset)
 	if !ext_ok {
-		return posix.off_t(-int(fuse3.nix(.ENOENT)))
+		return posix.off_t(fuse3.nix(.ENOENT))
 	}
 
 	pos := u64(off)
@@ -348,9 +348,9 @@ fused_bmap :: proc "c" (path: cstring, blocksize: c.size_t, idx: ^c.uint64_t) ->
 	fsys := begin_op()
 	defer end_op(fsys)
 
-	entry, _, _, _, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
-	if !ok {
-		return fuse3.nix(.ENOENT)
+	entry, _, _, _, rerr := resolve_path_cached(fsys, string(path), context.temp_allocator)
+	if rerr != .None {
+		return fs_error_to_errno(rerr)
 	}
 	if .Directory in entry.flags {
 		return fuse3.nix(.EISDIR)
@@ -404,6 +404,11 @@ fused_poll :: proc "c" (
 	return 0
 }
 
+// FUSE INIT handshake tuning.
+FUSE_TIME_GRAN :: 1 // timestamp granularity, nanoseconds
+FUSE_MAX_BACKGROUND :: 16 // max outstanding background requests
+FUSE_CONGESTION_THRESHOLD :: 12 // background queue congestion mark
+
 // fused_init initialises FUSE, configures connection info, and returns the FS
 // pointer as private_data.
 // UNLOCKED: mount-time handshake, single-threaded; only fills conn fields.
@@ -411,9 +416,9 @@ fused_init :: proc "c" (conn_info: ^fuse3.Conn_Info, cfg: ^fuse3.Config) -> rawp
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
-	conn_info.time_gran = 1
-	conn_info.max_background = 16
-	conn_info.congestion_threshold = 12
+	conn_info.time_gran = FUSE_TIME_GRAN
+	conn_info.max_background = FUSE_MAX_BACKGROUND
+	conn_info.congestion_threshold = FUSE_CONGESTION_THRESHOLD
 	// Advertise remote locking support so the kernel forwards FUSE_LOCK and
 	// FUSE_FLOCK requests (POSIX locks and BSD flock) to us instead of
 	// handling them in-kernel.

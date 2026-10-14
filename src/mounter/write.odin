@@ -24,13 +24,12 @@ fused_write :: proc "c" (
 	write_start := time.now()
 	defer end_op(fsys)
 
-	entry, data_cluster, data_offset, ok := read_entry_from_fh(fsys, fi.fh)
-	if !ok {
-		log.debugf("write: %s → ENOENT", path)
-		return fuse3.nix(.ENOENT)
+	entry, data_cluster, data_offset, rerr := read_entry_from_fh(fsys, fi.fh)
+	if rerr != .None {
+		log.debugf("write: %s → %v", path, rerr)
+		return fs_error_to_errno(rerr)
 	}
 
-	fh := transmute(fs.File_Handle)(fi.fh)
 	total_sectors := (u64(off) + u64(size) + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
 	runs: []fs.Extent_Run
 	cerr: fs.FS_Error
@@ -78,7 +77,7 @@ fused_write :: proc "c" (
 		bytes_written,
 		time.since(write_start),
 	)
-	return write_finish(fsys, &entry, fh, new_size, bytes_written)
+	return write_finish(fsys, &entry, fh_parts(fi.fh), new_size, bytes_written)
 }
 
 // write_finish is the shared epilogue for write operations: updates file size
@@ -86,20 +85,16 @@ fused_write :: proc "c" (
 write_finish :: proc(
 	fsys: ^FS,
 	entry: ^fs.Directory_Entry,
-	fh: fs.File_Handle,
+	loc: File_Identity,
 	new_size: u64,
 	bytes_written: u64,
 ) -> c.int {
 	if new_size != u64(entry.file_size) {
 		set_entry_time_to_now(entry)
 		entry.file_size = new_size
-		write_entry_back(
-			fsys,
-			entry,
-			fs.Cluster(fh.dir_cluster),
-			fs.Sector_Offset(fh.dir_offset),
-			int(fh.entry_index),
-		)
+		if werr := write_entry_at(fsys, loc, entry); werr != .None {
+			return fs_error_to_errno(werr)
+		}
 	}
 
 	path_cache_invalidate_all(fsys)
@@ -121,10 +116,10 @@ fused_write_buf :: proc "c" (
 	write_start := time.now()
 	defer end_op(fsys)
 
-	entry, data_cluster, data_offset, ok := read_entry_from_fh(fsys, fi.fh)
-	if !ok {
-		log.debugf("write_buf: %s → ENOENT", path)
-		return fuse3.nix(.ENOENT)
+	entry, data_cluster, data_offset, rerr := read_entry_from_fh(fsys, fi.fh)
+	if rerr != .None {
+		log.debugf("write_buf: %s → %v", path, rerr)
+		return fs_error_to_errno(rerr)
 	}
 
 	total_size: u64
@@ -134,7 +129,6 @@ fused_write_buf :: proc "c" (
 		total_size += u64(b.size)
 	}
 
-	fh := transmute(fs.File_Handle)(fi.fh)
 	total_sectors := (u64(off) + total_size + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
 	runs: []fs.Extent_Run
 	cerr: fs.FS_Error
@@ -176,7 +170,7 @@ fused_write_buf :: proc "c" (
 		// transfer: persist the partial size + invalidate caches, but report
 		// EIO rather than a silent short count.
 		log.errorf("write_buf: %s → source error after %d bytes", path, bytes_written)
-		_ = write_finish(fsys, &entry, fh, new_size, bytes_written)
+		_ = write_finish(fsys, &entry, fh_parts(fi.fh), new_size, bytes_written)
 		return fuse3.nix(.EIO)
 	}
 
@@ -187,7 +181,7 @@ fused_write_buf :: proc "c" (
 		bytes_written,
 		time.since(write_start),
 	)
-	return write_finish(fsys, &entry, fh, new_size, bytes_written)
+	return write_finish(fsys, &entry, fh_parts(fi.fh), new_size, bytes_written)
 }
 
 // fused_truncate truncates or extends a file to the given size.
@@ -197,11 +191,11 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 	defer end_op(fsys)
 
 	log.debugf("truncate: %s size=%d fi=%v", path, size, fi != nil)
-	entry, entry_cluster, entry_offset, entry_idx, data_cluster, data_offset, resolved :=
+	entry, entry_cluster, entry_offset, entry_idx, data_cluster, data_offset, rerr :=
 		resolve_entry(fsys, path, fi)
-	if !resolved {
-		log.debugf("truncate: %s → ENOENT", path)
-		return fuse3.nix(.ENOENT)
+	if rerr != .None {
+		log.debugf("truncate: %s → %v", path, rerr)
+		return fs_error_to_errno(rerr)
 	}
 	if .Directory in entry.flags {
 		log.debugf("truncate: %s → EISDIR", path)
@@ -240,8 +234,12 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 
 	set_entry_time_to_now(&entry)
 	entry.file_size = u64(size)
-	if !write_entry_back(fsys, &entry, entry_cluster, entry_offset, entry_idx) {
-		return fuse3.nix(.EIO)
+	if werr := write_entry_at(
+		fsys,
+		File_Identity{entry_cluster, entry_offset, entry_idx},
+		&entry,
+	); werr != .None {
+		return fs_error_to_errno(werr)
 	}
 
 	path_cache_invalidate_all(fsys)
@@ -296,9 +294,9 @@ fused_fallocate :: proc "c" (
 		return fuse3.nix(.EOPNOTSUPP)
 	}
 
-	entry, data_cluster, data_offset, ok := read_entry_from_fh(fsys, fi.fh)
-	if !ok {
-		return fuse3.nix(.ENOENT)
+	entry, data_cluster, data_offset, rerr := read_entry_from_fh(fsys, fi.fh)
+	if rerr != .None {
+		return fs_error_to_errno(rerr)
 	}
 	if .Directory in entry.flags {
 		return fuse3.nix(.EISDIR)
@@ -315,9 +313,8 @@ fused_fallocate :: proc "c" (
 		}
 
 		// Update file_size if needed (PUNCH_HOLE implies KEEP_SIZE)
-		dir_cluster, dir_offset, entry_index := fh_parts(fi.fh)
-		if !write_entry_back(fsys, &entry, dir_cluster, dir_offset, entry_index) {
-			return fuse3.nix(.EIO)
+		if werr := write_entry_at(fsys, fh_parts(fi.fh), &entry); werr != .None {
+			return fs_error_to_errno(werr)
 		}
 
 		path_cache_invalidate_all(fsys)
@@ -358,9 +355,8 @@ fused_fallocate :: proc "c" (
 		}
 	}
 
-	dir_cluster, dir_offset, entry_index := fh_parts(fi.fh)
-	if !write_entry_back(fsys, &entry, dir_cluster, dir_offset, entry_index) {
-		return fuse3.nix(.EIO)
+	if werr := write_entry_at(fsys, fh_parts(fi.fh), &entry); werr != .None {
+		return fs_error_to_errno(werr)
 	}
 
 	path_cache_invalidate_all(fsys)
@@ -391,19 +387,19 @@ fused_copy_file_range :: proc "c" (
 	)
 	defer end_op(fsys)
 
-	_, src_cluster, src_offset, src_ok := read_entry_from_fh(fsys, fi_in.fh)
-	if !src_ok {
-		return c.ssize_t(-int(fuse3.nix(.ENOENT)))
+	_, src_cluster, src_offset, src_rerr := read_entry_from_fh(fsys, fi_in.fh)
+	if src_rerr != .None {
+		return c.ssize_t(fs_error_to_errno(src_rerr))
 	}
 
-	dst_entry, dst_cluster, dst_offset, dst_ok := read_entry_from_fh(fsys, fi_out.fh)
-	if !dst_ok {
-		return c.ssize_t(-int(fuse3.nix(.ENOENT)))
+	dst_entry, dst_cluster, dst_offset, dst_err := read_entry_from_fh(fsys, fi_out.fh)
+	if dst_err != .None {
+		return c.ssize_t(fs_error_to_errno(dst_err))
 	}
 
 	src_runs, src_err := resolve_extents_cached(fsys, src_cluster, src_offset)
 	if !src_err {
-		return c.ssize_t(-int(fuse3.nix(.ENOENT)))
+		return c.ssize_t(fuse3.nix(.ENOENT))
 	}
 
 	src_off := u64(off_in)
@@ -420,10 +416,7 @@ fused_copy_file_range :: proc "c" (
 		dst_total_sectors,
 	)
 	if derr != .None {
-		if derr == .No_Space {
-			return c.ssize_t(-int(fuse3.nix(.ENOSPC)))
-		}
-		return c.ssize_t(-int(fuse3.nix(.ENOENT)))
+		return c.ssize_t(fs_error_to_errno(derr))
 	}
 
 	read_sector: [fs.SECTOR_SIZE]u8
@@ -467,9 +460,8 @@ fused_copy_file_range :: proc "c" (
 	if new_size != u64(dst_entry.file_size) {
 		set_entry_time_to_now(&dst_entry)
 		dst_entry.file_size = new_size
-		dir_cluster, dir_offset, entry_index := fh_parts(fi_out.fh)
-		if !write_entry_back(fsys, &dst_entry, dir_cluster, dir_offset, entry_index) {
-			return c.ssize_t(-int(fuse3.nix(.EIO)))
+		if werr := write_entry_at(fsys, fh_parts(fi_out.fh), &dst_entry); werr != .None {
+			return c.ssize_t(fs_error_to_errno(werr))
 		}
 	}
 

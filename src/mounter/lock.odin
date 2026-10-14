@@ -12,7 +12,6 @@ import "base:runtime"
 import "core:c"
 import "core:log"
 import "core:sys/posix"
-import "src:fs"
 import "src:fuse3"
 
 // LOCK_* constants for the BSD flock() op (sys/file.h).
@@ -26,44 +25,33 @@ LOCK_UN :: c.int(8) // unlock
 FUSE_POSIX_LOCKS :: c.uint32_t(1 << 1) // remote POSIX fcntl locks
 FUSE_FLOCK_LOCKS :: c.uint32_t(1 << 10) // remote BSD flock
 
-// File_Identity is a stable per-file key derived from the packed File_Handle.
-// (dir_cluster, dir_offset, entry_index) uniquely identifies a directory entry.
-File_Identity :: struct {
-	dir_cluster: u64,
-	dir_offset:  u16,
-	entry_index: u16,
-}
-
 // Region_Lock is one POSIX (fcntl) lock record.
 Region_Lock :: struct {
 	owner:     u64, // fi.lock_owner
 	pid:       posix.pid_t, // flock.l_pid (for F_GETLK reporting)
 	start:     i64, // byte offset
 	len:       i64, // length in bytes (0 = to EOF)
-	exclusive: bool, // F_WRLCK vs F_RDLCK
+	mode:      Lock_Mode, // .Exclusive = F_WRLCK, .Shared = F_RDLCK
 }
 
 // Flock_State is one BSD flock holder on a file (whole-file).  A file may
 // have many shared holders or a single exclusive holder.
 Flock_State :: struct {
 	owner:     u64, // fi.lock_owner
-	exclusive: bool, // LOCK_EX vs LOCK_SH
+	mode:      Lock_Mode, // .Exclusive = LOCK_EX, .Shared = LOCK_SH
 }
 
-// file_identity_from_fh derives a File_Identity from a packed file handle.
-file_identity_from_fh :: proc(fh: u64) -> File_Identity {
-	dir_cluster, dir_offset, entry_index := fh_parts(fh)
-	return File_Identity{u64(dir_cluster), u16(dir_offset), u16(entry_index)}
+// Lock_Mode is the shared/exclusive distinction shared by POSIX region locks
+// and BSD flock holders (both previously carried it as an `exclusive` bool).
+Lock_Mode :: enum {
+	Shared,
+	Exclusive,
 }
 
-// file_identity_from_entry derives a File_Identity from a resolved directory
-// entry location (parent dir cluster/offset + entry index).
-file_identity_from_entry :: proc(
-	dir_cluster: fs.Cluster,
-	dir_offset: fs.Sector_Offset,
-	entry_index: int,
-) -> File_Identity {
-	return File_Identity{u64(dir_cluster), u16(dir_offset), u16(entry_index)}
+// lock_mode_from_type maps a POSIX flock type to a Lock_Mode. UNLCK never
+// reaches here (callers filter it first); treat it as Shared defensively.
+lock_mode_from_type :: proc(t: posix.Lock_Type) -> Lock_Mode {
+	return .Exclusive if t == posix.Lock_Type.WRLCK else .Shared
 }
 
 // locks_remove_identity drops all lock state for an identity.
@@ -115,7 +103,7 @@ locks_remove_owner :: proc(fsys: ^FS, id: File_Identity, owner: u64) {
 
 // locks_remove_file drops all lock state for an entry (used on unlink/rmdir).
 locks_remove_file :: proc(fsys: ^FS, fh: u64) {
-	locks_remove_identity(fsys, file_identity_from_fh(fh))
+	locks_remove_identity(fsys, fh_parts(fh))
 }
 
 // lock_range_overlaps reports whether two ranges [a_start, a_end) and
@@ -164,11 +152,11 @@ lock_mutate :: proc(fsys: ^FS, id: File_Identity, owner: u64, fl: ^posix.flock) 
 	// Conflict check.  A write (exclusive) request conflicts with any
 	// overlapping lock from another owner (shared or exclusive); a read
 	// (shared) request conflicts only with another owner's exclusive lock.
-	requesting_exclusive := fl.l_type == posix.Lock_Type.WRLCK
+	req_mode := lock_mode_from_type(fl.l_type)
 	for r in recs {
 		if r.owner == owner { continue }
 		if lock_range_overlaps(r.start, r.len, start, length) &&
-		   (requesting_exclusive || r.exclusive) {
+		   (req_mode == .Exclusive || r.mode == .Exclusive) {
 			delete(recs)
 			return fuse3.nix(.EAGAIN)
 		}
@@ -181,7 +169,7 @@ lock_mutate :: proc(fsys: ^FS, id: File_Identity, owner: u64, fl: ^posix.flock) 
 			r.start = start
 			r.len = length
 			r.pid = fl.l_pid
-			r.exclusive = fl.l_type == posix.Lock_Type.WRLCK
+			r.mode = lock_mode_from_type(fl.l_type)
 			replaced = true
 			break
 		}
@@ -194,7 +182,7 @@ lock_mutate :: proc(fsys: ^FS, id: File_Identity, owner: u64, fl: ^posix.flock) 
 				pid = fl.l_pid,
 				start = start,
 				len = length,
-				exclusive = fl.l_type == posix.Lock_Type.WRLCK,
+				mode = lock_mode_from_type(fl.l_type),
 			},
 		)
 	}
@@ -220,7 +208,7 @@ fused_lock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, cmd: c.int, lock: r
 	}
 
 	fl := (^posix.flock)(lock)
-	id := file_identity_from_fh(fi.fh)
+	id := fh_parts(fi.fh)
 	owner := fi.lock_owner
 	#partial switch posix.FCNTL_Cmd(cmd) {
 	case posix.FCNTL_Cmd.GETLK:
@@ -228,7 +216,7 @@ fused_lock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, cmd: c.int, lock: r
 		if recs, ok := fsys.locks[id]; ok {
 			for &r in recs {
 				if r.owner == owner { continue }
-				if r.exclusive &&
+				if r.mode == .Exclusive &&
 				   lock_range_overlaps(r.start, r.len, i64(fl.l_start), i64(fl.l_len)) {
 					fl.l_type = posix.Lock_Type.WRLCK
 					fl.l_pid = r.pid
@@ -258,21 +246,24 @@ fused_flock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, op: c.int) -> c.in
 	fsys := begin_op()
 	defer end_op(fsys)
 
-	id := file_identity_from_fh(fi.fh)
+	id := fh_parts(fi.fh)
 	owner := fi.lock_owner
 	if op & LOCK_UN != 0 {
 		locks_remove_owner(fsys, id, owner)
 		return 0
 	}
 
-	exclusive := op & LOCK_EX != 0
+	mode := Lock_Mode.Shared
+	if op & LOCK_EX != 0 {
+		mode = .Exclusive
+	}
 	// Snapshot current holders.
 	old, has_old := fsys.flock_locks[id]
 	holders := make([dynamic]Flock_State, 0, 4)
 	if has_old {
 		append(&holders, ..old[:])
 	}
-	if exclusive {
+	if mode == .Exclusive {
 		// LOCK_EX: conflicts with any other holder (SH or EX).
 		for h in holders {
 			if h.owner != owner {
@@ -285,18 +276,18 @@ fused_flock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, op: c.int) -> c.in
 		found := false
 		for &h in holders {
 			if h.owner == owner {
-				h.exclusive = true
+				h.mode = .Exclusive
 				found = true
 				break
 			}
 		}
 		if !found {
-			append(&holders, Flock_State{owner = owner, exclusive = true})
+			append(&holders, Flock_State{owner = owner, mode = .Exclusive})
 		}
 	} else {
 		// LOCK_SH: conflicts with another owner's exclusive lock.
 		for h in holders {
-			if h.owner != owner && h.exclusive {
+			if h.owner != owner && h.mode == .Exclusive {
 				delete(holders)
 				return fuse3.nix(.EAGAIN)
 			}
@@ -306,13 +297,13 @@ fused_flock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, op: c.int) -> c.in
 		found := false
 		for &h in holders {
 			if h.owner == owner {
-				h.exclusive = false
+				h.mode = .Shared
 				found = true
 				break
 			}
 		}
 		if !found {
-			append(&holders, Flock_State{owner = owner, exclusive = false})
+			append(&holders, Flock_State{owner = owner, mode = .Shared})
 		}
 	}
 
@@ -321,6 +312,6 @@ fused_flock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, op: c.int) -> c.in
 		delete(old)
 	}
 
-	log.debugf("flock: %s owner=%d %s", path, owner, "EX" if exclusive else "SH")
+	log.debugf("flock: %s owner=%d %s", path, owner, "EX" if mode == .Exclusive else "SH")
 	return 0
 }

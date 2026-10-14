@@ -32,6 +32,8 @@ Mount_Options :: struct {
 	// fuse_args is the opaque FUSE passthrough (options + mountpoint),
 	// NOT including image_path. Borrowed: the caller owns it.
 	fuse_args: []string,
+	// cache sizes the three in-memory caches; zero entries select defaults.
+	cache: fs.Cache_Config,
 }
 
 run :: proc(opts: Mount_Options) -> bool {
@@ -74,7 +76,7 @@ run :: proc(opts: Mount_Options) -> bool {
 	}
 
 	image_path := opts.image_path
-	vol, vol_err := fs.volume_open(image_path)
+	vol, vol_err := fs.volume_open(image_path, opts.cache)
 	if vol_err != .None {
 		log.errorf("failed to open image: %v", vol_err)
 		free(fsys)
@@ -84,7 +86,7 @@ run :: proc(opts: Mount_Options) -> bool {
 	defer fs.volume_close(&vol)
 	fsys.vol = vol
 	fsys.disk_raw_fd = c.int(os.fd(vol.disk))
-	init_fs_state(fsys)
+	init_fs_state(fsys, context.allocator, opts.cache)
 
 	log.debugf("opened %s → raw_fd=%d", image_path, fsys.disk_raw_fd)
 	log.infof(

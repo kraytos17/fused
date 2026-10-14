@@ -17,6 +17,7 @@ Prepare_Slot_Result :: enum {
 	Parent_Not_Found,
 	Name_Exists,
 	Dir_Full,
+	Io_Error, // parent resolution hit I/O trouble (not a missing parent)
 }
 
 // prepare_parent_slot resolves a path's parent directory and finds a free
@@ -33,9 +34,12 @@ prepare_parent_slot :: proc(
 	name: string,
 ) {
 	parent, base_name := os.split_path(path)
-	parent_entry, _, _, _, pok := resolve_path_cached(fsys, parent, context.temp_allocator)
-	if !pok {
+	parent_entry, _, _, _, perr := resolve_path_cached(fsys, parent, context.temp_allocator)
+	if perr == .Entry_Not_Found {
 		return .Parent_Not_Found, {}, 0, 0, ""
+	}
+	if perr != .None {
+		return .Io_Error, {}, 0, 0, ""
 	}
 
 	dir_cluster := fs.Cluster(parent_entry.stored_cluster)
@@ -44,11 +48,14 @@ prepare_parent_slot :: proc(
 		return .Name_Exists, {}, 0, 0, ""
 	}
 
-	slot_c, slot_o, slot_i, slot_ok := find_or_extend_dir(fsys, dir_cluster, dir_offset)
-	if !slot_ok {
+	slot, slot_err := find_or_extend_dir(fsys, dir_cluster, dir_offset)
+	if slot_err == .Entry_Not_Found {
 		return .Dir_Full, {}, 0, 0, ""
 	}
-	return .Ok, slot_c, slot_o, slot_i, base_name
+	if slot_err != .None {
+		return .Io_Error, {}, 0, 0, ""
+	}
+	return .Ok, slot.dir_cluster, slot.dir_offset, slot.entry_index, base_name
 }
 
 // fused_create creates a new file (FUSE create callback).
@@ -68,6 +75,9 @@ fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 	case .Dir_Full:
 		log.debugf("create: %s → ENOSPC (dir full)", path)
 		return fuse3.nix(.ENOSPC)
+	case .Io_Error:
+		log.debugf("create: %s → EIO", path)
+		return fuse3.nix(.EIO)
 	case .Ok:
 	}
 
@@ -81,8 +91,8 @@ fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 	new_entry.flags = flags
 	new_entry.uid = u32(ctx.uid)
 	new_entry.gid = u32(ctx.gid)
-	if !write_entry_with_lfn(fsys, &new_entry, name) {
-		return fuse3.nix(.ENOSPC)
+	if werr := write_entry_with_lfn(fsys, &new_entry, name); werr != .None {
+		return fs_error_to_errno(werr)
 	}
 	if fs.write_directory_entry_at(&fsys.vol, dcluster, dsec, didx, &new_entry) != .None {
 		return fuse3.nix(.EIO)
@@ -113,6 +123,8 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 		return fuse3.nix(.EEXIST)
 	case .Dir_Full:
 		return fuse3.nix(.ENOSPC)
+	case .Io_Error:
+		return fuse3.nix(.EIO)
 	case .Ok:
 	}
 
@@ -143,7 +155,7 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 
 	set_entry_time_to_now(&new_entry)
 	copy(new_entry.file_name[:], name)
-	if len(name) < 16 {
+	if len(name) < len(new_entry.file_name) {
 		new_entry.file_name[len(name)] = 0
 	}
 	if fs.write_directory_entry_at(&fsys.vol, dcluster, dsec, didx, &new_entry) != .None {
@@ -170,6 +182,8 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 		return fuse3.nix(.EEXIST)
 	case .Dir_Full:
 		return fuse3.nix(.ENOSPC)
+	case .Io_Error:
+		return fuse3.nix(.EIO)
 	case .Ok:
 	}
 
@@ -204,8 +218,8 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 	new_entry.gid = u32(ctx2.gid)
 
 	set_entry_time_to_now(&new_entry)
-	if !write_entry_with_lfn(fsys, &new_entry, name) {
-		return fuse3.nix(.ENOSPC)
+	if werr := write_entry_with_lfn(fsys, &new_entry, name); werr != .None {
+		return fs_error_to_errno(werr)
 	}
 	if fs.write_directory_entry_at(&fsys.vol, dcluster, dsec, didx, &new_entry) != .None {
 		return fuse3.nix(.EIO)
@@ -223,9 +237,7 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 remove_directory_entry :: proc(
 	fsys: ^FS,
 	entry: ^fs.Directory_Entry,
-	cluster: fs.Cluster,
-	offset: fs.Sector_Offset,
-	idx: int,
+	loc: File_Identity,
 ) -> fs.FS_Error {
 	if entry.stored_cluster != 0 {
 		if derr := fs.deallocate_sectors(
@@ -240,10 +252,10 @@ remove_directory_entry :: proc(
 		return xerr
 	}
 
-	locks_remove_identity(fsys, file_identity_from_entry(cluster, offset, idx))
+	locks_remove_identity(fsys, loc)
 	entry.flags = {}
-	if !write_entry_back(fsys, entry, cluster, offset, idx) {
-		return .Sector_Write_Error
+	if werr := write_entry_at(fsys, loc, entry); werr != .None {
+		return werr
 	}
 
 	reinit_free_sectors(fsys)
@@ -256,14 +268,14 @@ fused_unlink :: proc "c" (path: cstring) -> c.int {
 	fsys := begin_op()
 	defer end_op(fsys)
 
-	entry, cluster, offset, idx, ok := resolve_path_cached(
+	entry, cluster, offset, idx, rerr := resolve_path_cached(
 		fsys,
 		string(path),
 		context.temp_allocator,
 	)
-	if !ok {
-		log.debugf("unlink: %s → ENOENT", path)
-		return fuse3.nix(.ENOENT)
+	if rerr != .None {
+		log.debugf("unlink: %s → %v", path, rerr)
+		return fs_error_to_errno(rerr)
 	}
 	if .Directory in entry.flags {
 		log.debugf("unlink: %s → EISDIR", path)
@@ -271,7 +283,7 @@ fused_unlink :: proc "c" (path: cstring) -> c.int {
 	}
 
 	log.debugf("unlink: %s xattr_cluster=%d", path, entry.xattr_cluster)
-	if err := remove_directory_entry(fsys, &entry, cluster, offset, idx); err != .None {
+	if err := remove_directory_entry(fsys, &entry, File_Identity{cluster, offset, idx}); err != .None {
 		return fs_error_to_errno(err)
 	}
 
@@ -286,13 +298,13 @@ fused_rmdir :: proc "c" (path: cstring) -> c.int {
 	fsys := begin_op()
 	defer end_op(fsys)
 
-	entry, cluster, offset, idx, ok := resolve_path_cached(
+	entry, cluster, offset, idx, rerr := resolve_path_cached(
 		fsys,
 		string(path),
 		context.temp_allocator,
 	)
-	if !ok {
-		return fuse3.nix(.ENOENT)
+	if rerr != .None {
+		return fs_error_to_errno(rerr)
 	}
 	if .Directory not_in entry.flags {
 		log.debugf("rmdir: %s → ENOTDIR", path)
@@ -313,7 +325,7 @@ fused_rmdir :: proc "c" (path: cstring) -> c.int {
 			return fuse3.nix(.ENOTEMPTY)
 		}
 	}
-	if err := remove_directory_entry(fsys, &entry, cluster, offset, idx); err != .None {
+	if err := remove_directory_entry(fsys, &entry, File_Identity{cluster, offset, idx}); err != .None {
 		return fs_error_to_errno(err)
 	}
 
@@ -337,42 +349,44 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 		return fuse3.nix(.ENOSYS)
 	}
 
-	entry, old_cluster, old_offset, old_idx, ok := resolve_path_cached(
+	entry, old_cluster, old_offset, old_idx, rerr := resolve_path_cached(
 		fsys,
 		string(oldpath),
 		context.temp_allocator,
 	)
-	if !ok {
-		log.debugf("rename: %s → ENOENT", oldpath)
-		return fuse3.nix(.ENOENT)
+	if rerr != .None {
+		log.debugf("rename: %s → %v", oldpath, rerr)
+		return fs_error_to_errno(rerr)
 	}
 
 	new_parent_path, new_name := os.split_path(string(newpath))
-	new_parent_entry, _, _, _, np_ok := resolve_path_cached(
+	new_parent_entry, _, _, _, np_err := resolve_path_cached(
 		fsys,
 		new_parent_path,
 		context.temp_allocator,
 	)
-	if !np_ok {
-		log.debugf("rename: %s → parent ENOENT", newpath)
-		return fuse3.nix(.ENOENT)
+	if np_err != .None {
+		log.debugf("rename: %s → parent %v", newpath, np_err)
+		return fs_error_to_errno(np_err)
 	}
 
 	new_parent_c := fs.Cluster(new_parent_entry.stored_cluster)
 	new_parent_o := fs.Sector_Offset(new_parent_entry.sector_index)
 	if old_cluster == new_parent_c && old_offset == new_parent_o {
-		if dst_entry, _, _, dst_idx, dst_ok := resolve_path_cached(
+		dst_entry, _, _, dst_idx, dst_err := resolve_path_cached(
 			fsys,
 			string(newpath),
 			context.temp_allocator,
-		); dst_ok {
+		)
+		if dst_err != .None && dst_err != .Entry_Not_Found {
+			return fs_error_to_errno(dst_err)
+		}
+		if dst_err == .None {
 			if .Directory not_in dst_entry.flags {
 				if err := remove_directory_entry(
 					fsys,
 					&dst_entry,
-					new_parent_c,
-					new_parent_o,
-					dst_idx,
+					File_Identity{new_parent_c, new_parent_o, dst_idx},
 				); err != .None {
 					return fs_error_to_errno(err)
 				}
@@ -381,11 +395,15 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 				return fuse3.nix(.EISDIR)
 			}
 		}
-		if !set_entry_name(fsys, &entry, new_name) {
-			return fuse3.nix(.ENOSPC)
+		if nerr := set_entry_name(fsys, &entry, new_name); nerr != .None {
+			return fs_error_to_errno(nerr)
 		}
-		if !write_entry_back(fsys, &entry, old_cluster, old_offset, old_idx) {
-			return fuse3.nix(.EIO)
+		if werr := write_entry_at(
+			fsys,
+			File_Identity{old_cluster, old_offset, old_idx},
+			&entry,
+		); werr != .None {
+			return fs_error_to_errno(werr)
 		}
 
 		path_cache_invalidate_all(fsys)
@@ -395,13 +413,16 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	if .Directory in entry.flags {
 		check_path := new_parent_path
 		for check_path != "/" {
-			check_entry, _, _, _, check_ok := resolve_path_cached(
+			check_entry, _, _, _, check_err := resolve_path_cached(
 				fsys,
 				check_path,
 				context.temp_allocator,
 			)
-			if !check_ok {
+			if check_err == .Entry_Not_Found {
 				break
+			}
+			if check_err != .None {
+				return fs_error_to_errno(check_err)
 			}
 			if fs.Cluster(check_entry.stored_cluster) == old_cluster &&
 			   fs.Sector_Offset(check_entry.sector_index) == old_offset {
@@ -415,19 +436,21 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	}
 
 	dst_idx := -1
-	if dst_entry, _, _, dst_idx_resolved, dst_ok := resolve_path_cached(
+	dst_entry, _, _, dst_idx_resolved, dst_err := resolve_path_cached(
 		fsys,
 		string(newpath),
 		context.temp_allocator,
-	); dst_ok {
+	)
+	if dst_err != .None && dst_err != .Entry_Not_Found {
+		return fs_error_to_errno(dst_err)
+	}
+	if dst_err == .None {
 		dst_idx = dst_idx_resolved
 		if .Directory not_in dst_entry.flags {
 			if err := remove_directory_entry(
 				fsys,
 				&dst_entry,
-				new_parent_c,
-				new_parent_o,
-				dst_idx,
+				File_Identity{new_parent_c, new_parent_o, dst_idx},
 			); err != .None {
 				return fs_error_to_errno(err)
 			}
@@ -437,16 +460,20 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 		}
 	}
 
-	dst_cluster, dst_sec, dst_slot_idx, slot_ok := find_or_extend_dir(
+	dst_slot, slot_err := find_or_extend_dir(
 		fsys,
 		new_parent_c,
 		new_parent_o,
 	)
-	if !slot_ok {
+	if slot_err == .Entry_Not_Found {
 		return fuse3.nix(.ENOSPC)
 	}
-	if !set_entry_name(fsys, &entry, new_name) {
-		return fuse3.nix(.ENOSPC)
+	if slot_err != .None {
+		return fs_error_to_errno(slot_err)
+	}
+	dst_cluster, dst_sec, dst_slot_idx := dst_slot.dir_cluster, dst_slot.dir_offset, dst_slot.entry_index
+	if nerr := set_entry_name(fsys, &entry, new_name); nerr != .None {
+		return fs_error_to_errno(nerr)
 	}
 	if fs.write_directory_entry_at(&fsys.vol, dst_cluster, dst_sec, dst_slot_idx, &entry) !=
 	   .None {
@@ -454,8 +481,12 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	}
 
 	entry.flags = {}
-	if !write_entry_back(fsys, &entry, old_cluster, old_offset, old_idx) {
-		return fuse3.nix(.EIO)
+	if werr := write_entry_at(
+		fsys,
+		File_Identity{old_cluster, old_offset, old_idx},
+		&entry,
+	); werr != .None {
+		return fs_error_to_errno(werr)
 	}
 
 	path_cache_invalidate_all(fsys)

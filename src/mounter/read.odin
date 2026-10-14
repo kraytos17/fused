@@ -36,10 +36,10 @@ fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Inf
 	fsys := begin_op()
 	defer end_op(fsys)
 
-	entry, _, _, _, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
-	if !ok {
-		log.debugf("getattr: %s → ENOENT", path)
-		return fuse3.nix(.ENOENT)
+	entry, _, _, _, rerr := resolve_path_cached(fsys, string(path), context.temp_allocator)
+	if rerr != .None {
+		log.debugf("getattr: %s → %v", path, rerr)
+		return fs_error_to_errno(rerr)
 	}
 
 	stbuf^ = {}
@@ -127,10 +127,15 @@ fused_readdir :: proc "c" (
 	// lfn_lookup_shared, so concurrent writers are never blocked by fill_dir.
 	sync.rw_mutex_lock(&fsys.mu)
 	depc := dir_entries_per_buf(fsys.vol.master.features)
-	entry, _, _, _, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
-	if !ok || .Directory not_in entry.flags {
+	entry, _, _, _, rerr := resolve_path_cached(fsys, string(path), context.temp_allocator)
+	if rerr != .None {
 		sync.rw_mutex_unlock(&fsys.mu)
-		log.debugf("readdir: %s → ENOENT/not-dir", path)
+		log.debugf("readdir: %s → %v", path, rerr)
+		return fs_error_to_errno(rerr)
+	}
+	if .Directory not_in entry.flags {
+		sync.rw_mutex_unlock(&fsys.mu)
+		log.debugf("readdir: %s → not-dir", path)
 		return fuse3.nix(.ENOENT)
 	}
 
@@ -220,14 +225,14 @@ fused_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	fsys := begin_op()
 	defer end_op(fsys)
 
-	entry, parent_cluster, parent_offset, entry_idx, ok := resolve_path_cached(
+	entry, parent_cluster, parent_offset, entry_idx, rerr := resolve_path_cached(
 		fsys,
 		string(path),
 		context.temp_allocator,
 	)
-	if !ok {
-		log.debugf("open: %s → ENOENT", path)
-		return fuse3.nix(.ENOENT)
+	if rerr != .None {
+		log.debugf("open: %s → %v", path, rerr)
+		return fs_error_to_errno(rerr)
 	}
 	if .Directory in entry.flags {
 		log.debugf("open: %s → EISDIR", path)
@@ -266,9 +271,9 @@ fused_read :: proc "c" (
 	defer end_read_op(fsys)
 
 	read_start := time.now()
-	_, data_cluster, data_offset, ok := read_entry_from_fh(fsys, fi.fh)
-	if !ok {
-		return fuse3.nix(.ENOENT)
+	_, data_cluster, data_offset, rerr := read_entry_from_fh(fsys, fi.fh)
+	if rerr != .None {
+		return fs_error_to_errno(rerr)
 	}
 
 	runs, ext_ok := resolve_extents_shared(fsys, data_cluster, data_offset)
@@ -317,9 +322,9 @@ fused_read_buf :: proc "c" (
 	defer end_read_op(fsys)
 
 	read_start := time.now()
-	_, data_cluster, data_offset, ok := read_entry_from_fh(fsys, fi.fh)
-	if !ok {
-		return fuse3.nix(.ENOENT)
+	_, data_cluster, data_offset, rerr := read_entry_from_fh(fsys, fi.fh)
+	if rerr != .None {
+		return fs_error_to_errno(rerr)
 	}
 
 	runs, ext_ok := resolve_extents_shared(fsys, data_cluster, data_offset)
@@ -380,9 +385,9 @@ fused_readlink :: proc "c" (path: cstring, buf: [^]c.char, size: c.size_t) -> c.
 	fsys := begin_op()
 	defer end_op(fsys)
 
-	entry, _, _, _, ok := resolve_path_cached(fsys, string(path), context.temp_allocator)
-	if !ok {
-		return fuse3.nix(.ENOENT)
+	entry, _, _, _, rerr := resolve_path_cached(fsys, string(path), context.temp_allocator)
+	if rerr != .None {
+		return fs_error_to_errno(rerr)
 	}
 	if .Link not_in entry.flags {
 		return fuse3.nix(.EINVAL)
