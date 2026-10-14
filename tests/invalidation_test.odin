@@ -18,8 +18,8 @@ test_invalidate_via_write_cme :: proc(t: ^testing.T) {
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
-	master, mok := fs.read_master_record(fd)
-	testing.expect(t, mok, "read_master_record")
+	master, merr := fs.read_master_record(fd)
+	testing.expect_value(t, merr, fs.FS_Error.None)
 
 	vol := fs.Volume {
 		disk   = fd,
@@ -80,8 +80,8 @@ test_invalidate_via_write_ce_table :: proc(t: ^testing.T) {
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
-	master, mok := fs.read_master_record(fd)
-	testing.expect(t, mok, "read_master_record")
+	master, merr := fs.read_master_record(fd)
+	testing.expect_value(t, merr, fs.FS_Error.None)
 
 	vol := fs.Volume {
 		disk   = fd,
@@ -150,8 +150,8 @@ test_invalidate_via_write_ce_at :: proc(t: ^testing.T) {
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
-	master, mok := fs.read_master_record(fd)
-	testing.expect(t, mok, "read_master_record")
+	master, merr := fs.read_master_record(fd)
+	testing.expect_value(t, merr, fs.FS_Error.None)
 
 	vol := fs.Volume {
 		disk   = fd,
@@ -215,8 +215,8 @@ test_invalidate_via_write_always_invalidates :: proc(t: ^testing.T) {
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
-	master, mok := fs.read_master_record(fd)
-	testing.expect(t, mok, "read_master_record")
+	master, merr := fs.read_master_record(fd)
+	testing.expect_value(t, merr, fs.FS_Error.None)
 
 	vol := fs.Volume {
 		disk   = fd,
@@ -276,8 +276,8 @@ test_invalidation_full_cycle :: proc(t: ^testing.T) {
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
-	master, mok := fs.read_master_record(fd)
-	testing.expect(t, mok, "read_master_record")
+	master, merr := fs.read_master_record(fd)
+	testing.expect_value(t, merr, fs.FS_Error.None)
 
 	vol := fs.Volume {
 		disk   = fd,
@@ -348,8 +348,8 @@ test_invalidation_chain_extension :: proc(t: ^testing.T) {
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
-	master, mok := fs.read_master_record(fd)
-	testing.expect(t, mok, "read_master_record")
+	master, merr := fs.read_master_record(fd)
+	testing.expect_value(t, merr, fs.FS_Error.None)
 
 	vol := fs.Volume {
 		disk   = fd,

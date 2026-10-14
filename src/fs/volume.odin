@@ -46,8 +46,8 @@ volume_open :: proc(path: string, cache := DEFAULT_CACHE_CONFIG) -> (vol: Volume
 	}
 
 	vol.disk = fd
-	master, ok := read_master_record(fd)
-	if !ok {
+	master, merr := read_master_record(fd)
+	if merr != .None {
 		os.close(fd)
 		return {}, .Corrupt_Master_Record
 	}

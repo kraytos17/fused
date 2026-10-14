@@ -14,8 +14,8 @@ open_test_volume :: proc() -> (vol: fs.Volume, ok: bool) {
 	fd, fd_ok := open_test_image()
 	if !fd_ok { return {}, false }
 
-	master, mok := fs.read_master_record(fd)
-	if !mok {
+	master, merr := fs.read_master_record(fd)
+	if merr != .None {
 		os.close(fd)
 		return {}, false
 	}
@@ -45,9 +45,9 @@ open_test_image :: proc() -> (^os.File, bool) {
 		if !src_stale {
 			cached_fd, cached_err := os.open(TEST_IMG_DST, {.Read})
 			if cached_err == nil {
-				cached_master, cached_ok := fs.read_master_record(cached_fd)
+				cached_master, cached_merr := fs.read_master_record(cached_fd)
 				os.close(cached_fd)
-				src_stale = !cached_ok || cached_master.rev_max < fs.SUPPORTED_REV_MIN
+				src_stale = cached_merr != .None || cached_master.rev_max < fs.SUPPORTED_REV_MIN
 			}
 		}
 	}

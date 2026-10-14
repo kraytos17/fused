@@ -37,14 +37,16 @@ sector_for :: proc(cluster: Cluster, offset: Sector_Offset, cluster_size: u64) -
 	return Sector(u64(cluster) * cluster_size + u64(offset))
 }
 
-// read_master_record reads and returns the Master_Record from sector 0
-read_master_record :: proc(disk: ^os.File) -> (master: Master_Record, ok: bool) {
+// read_master_record reads and returns the Master_Record from sector 0.
+// A short read reports .Sector_Read_Error (no validation here — see
+// validate_master); callers needing validity checks layer them on top.
+read_master_record :: proc(disk: ^os.File) -> (master: Master_Record, err: FS_Error) {
 	buf: [SECTOR_SIZE]u8
-	n, err := os.read_at(disk, buf[:], 0)
-	if err != nil || n != SECTOR_SIZE {
-		return {}, false
+	n, read_err := os.read_at(disk, buf[:], 0)
+	if read_err != nil || n != SECTOR_SIZE {
+		return {}, .Sector_Read_Error
 	}
 
 	master = (^Master_Record)(raw_data(buf[:]))^
-	return master, true
+	return master, .None
 }

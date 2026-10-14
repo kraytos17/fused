@@ -237,8 +237,8 @@ test_sector_write_bulk :: proc(t: ^testing.T) {
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
-	master, ok := fs.read_master_record(fd)
-	testing.expect(t, ok, "read_master_record")
+	master, merr := fs.read_master_record(fd)
+	testing.expect_value(t, merr, fs.FS_Error.None)
 
 	vol := fs.Volume {
 		disk   = fd,
@@ -291,8 +291,8 @@ test_deallocate_sectors_edge_cases :: proc(t: ^testing.T) {
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
-	master, mok := fs.read_master_record(fd)
-	testing.expect(t, mok, "read_master_record")
+	master, merr := fs.read_master_record(fd)
+	testing.expect_value(t, merr, fs.FS_Error.None)
 
 	vol := fs.Volume {
 		disk   = fd,

@@ -19,8 +19,8 @@ test_cache_init_destroy :: proc(t: ^testing.T) {
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
-	master, mok := fs.read_master_record(fd)
-	testing.expect(t, mok, "read_master_record")
+	master, merr := fs.read_master_record(fd)
+	testing.expect_value(t, merr, fs.FS_Error.None)
 
 	vol := fs.Volume {
 		disk   = fd,
@@ -42,8 +42,8 @@ test_cache_bitmap_matches_disk :: proc(t: ^testing.T) {
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
-	master, mok := fs.read_master_record(fd)
-	testing.expect(t, mok, "read_master_record")
+	master, merr := fs.read_master_record(fd)
+	testing.expect_value(t, merr, fs.FS_Error.None)
 
 	vol := fs.Volume {
 		disk   = fd,
@@ -99,8 +99,8 @@ test_cache_used_matches_disk :: proc(t: ^testing.T) {
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
-	master, mok := fs.read_master_record(fd)
-	testing.expect(t, mok, "read_master_record")
+	master, merr := fs.read_master_record(fd)
+	testing.expect_value(t, merr, fs.FS_Error.None)
 
 	vol := fs.Volume {
 		disk   = fd,
@@ -143,8 +143,8 @@ test_cache_invalidate_rebuilds :: proc(t: ^testing.T) {
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
-	master, mok := fs.read_master_record(fd)
-	testing.expect(t, mok, "read_master_record")
+	master, merr := fs.read_master_record(fd)
+	testing.expect_value(t, merr, fs.FS_Error.None)
 
 	vol := fs.Volume {
 		disk   = fd,
@@ -175,8 +175,8 @@ test_cache_count_free :: proc(t: ^testing.T) {
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
-	master, mok := fs.read_master_record(fd)
-	testing.expect(t, mok, "read_master_record")
+	master, merr := fs.read_master_record(fd)
+	testing.expect_value(t, merr, fs.FS_Error.None)
 
 	vol := fs.Volume {
 		disk   = fd,
@@ -221,8 +221,8 @@ test_cache_allocate_matches_nil :: proc(t: ^testing.T) {
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
-	master, mok := fs.read_master_record(fd)
-	testing.expect(t, mok, "read_master_record")
+	master, merr := fs.read_master_record(fd)
+	testing.expect_value(t, merr, fs.FS_Error.None)
 
 	// Allocate with cache
 	vol := fs.Volume {
@@ -251,8 +251,8 @@ test_cache_hint_advances :: proc(t: ^testing.T) {
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
-	master, mok := fs.read_master_record(fd)
-	testing.expect(t, mok, "read_master_record")
+	master, merr := fs.read_master_record(fd)
+	testing.expect_value(t, merr, fs.FS_Error.None)
 
 	vol := fs.Volume {
 		disk   = fd,
@@ -278,8 +278,8 @@ test_cache_stress_multi_cluster :: proc(t: ^testing.T) {
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
-	master, mok := fs.read_master_record(fd)
-	testing.expect(t, mok, "read_master_record")
+	master, merr := fs.read_master_record(fd)
+	testing.expect_value(t, merr, fs.FS_Error.None)
 
 	vol := fs.Volume {
 		disk   = fd,
@@ -336,8 +336,8 @@ test_cache_chain_extension :: proc(t: ^testing.T) {
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
-	master, mok := fs.read_master_record(fd)
-	testing.expect(t, mok, "read_master_record")
+	master, merr := fs.read_master_record(fd)
+	testing.expect_value(t, merr, fs.FS_Error.None)
 
 	vol := fs.Volume {
 		disk   = fd,
@@ -370,8 +370,8 @@ test_cache_many_small_alloc_free :: proc(t: ^testing.T) {
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
 
-	master, mok := fs.read_master_record(fd)
-	testing.expect(t, mok, "read_master_record")
+	master, merr := fs.read_master_record(fd)
+	testing.expect_value(t, merr, fs.FS_Error.None)
 
 	vol := fs.Volume {
 		disk   = fd,
