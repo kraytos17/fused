@@ -320,8 +320,11 @@ zero_file_range :: proc(
 ) -> fs.FS_Error {
 	if byte_range_len(r) == 0 { return .None }
 
-	runs, ext_err := fs.resolve_extents(&fsys.vol, loc)
-	defer delete(runs)
+	// Cached resolve: both callers hold the write lock, so the borrowed
+	// slice stays valid for the call — nothing below invalidates the
+	// extent cache (write_range_to_runs only does sector I/O). No delete:
+	// the slice is cache-owned.
+	runs, ext_err := resolve_extents_cached(fsys, loc)
 	if ext_err != .None { return ext_err }
 
 	zero_src := Zero_Source {
@@ -335,7 +338,7 @@ zero_file_range :: proc(
 		remaining = _zero_remaining,
 	}
 
-	written := write_range_to_runs(fsys, runs[:], r.start, &bytes_src)
+	written := write_range_to_runs(fsys, runs, r.start, &bytes_src)
 	if written != byte_range_len(r) {
 		return .Sector_Write_Error
 	}
