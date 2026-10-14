@@ -71,7 +71,10 @@ _cache_bitmap :: #force_inline proc(cache: ^Cluster_Bitmap_Cache) -> bit_array.B
 	return ba
 }
 
-// alloc_cache_ensure returns the bitmap for a cluster (from cache or builds it)
+// alloc_cache_ensure returns the bitmap for a cluster (from cache or builds it).
+// Out-of-range clusters report .Cluster_Not_Found; build I/O failures
+// propagate instead of caching an empty (all-free) bitmap, which would
+// double-allocate live sectors. Callers treat any error as "skip cluster".
 alloc_cache_ensure :: proc(
 	cache: ^Cluster_Bitmap_Cache,
 	vol: ^Volume,
@@ -79,39 +82,50 @@ alloc_cache_ensure :: proc(
 ) -> (
 	bitmap: bit_array.Bit_Array,
 	used: u16,
-	ok: bool,
+	err: FS_Error,
 ) {
 	if u64(cluster) >= vol.master.cluster_map_size {
-		return {}, 0, false
+		return {}, 0, .Cluster_Not_Found
 	}
 	if entry, hit := lru.get(&cache.lru, cluster); hit {
-		return entry.bitmap, entry.used, true
+		return entry.bitmap, entry.used, .None
 	}
 
-	_alloc_cache_build(cache, vol, Cluster(cluster))
+	if berr := _alloc_cache_build(cache, vol, Cluster(cluster)); berr != .None {
+		return {}, 0, berr
+	}
 	entry, hit := lru.get(&cache.lru, cluster)
 	if !hit {
-		return {}, 0, false
+		// Unreachable: a successful build always inserts. Defensive.
+		return {}, 0, .No_Space
 	}
-	return entry.bitmap, entry.used, true
+	return entry.bitmap, entry.used, .None
 }
 
 @(private = "file")
 // _alloc_cache_build builds a bitmap by scanning the CE table on disk
-_alloc_cache_build :: proc(cache: ^Cluster_Bitmap_Cache, vol: ^Volume, cluster: Cluster) {
+_alloc_cache_build :: proc(
+	cache: ^Cluster_Bitmap_Cache,
+	vol: ^Volume,
+	cluster: Cluster,
+) -> FS_Error {
 	bitmap := _cache_bitmap(cache)
 	cme, cme_err := read_cluster_map_entry(vol, cluster)
 	if cme_err != .None {
-		if err := lru.set(&cache.lru, u64(cluster), Alloc_Cache_Entry{bitmap, 0}); err != nil {
-			bit_array.destroy(&bitmap)
-		}
-		return
+		bit_array.destroy(&bitmap)
+		return cme_err
 	}
 
 	// Indices come from disk: guard the range explicitly and keep unsafe_set
 	// (checked set would grow the bitmap via resize_if_needed instead of
 	// failing). Out-of-range bits can only hide free space, never expose
-	// allocated sectors, so skipping is fail-closed.
+	// allocated sectors, so skipping is fail-closed. The table's own sector
+	// is overhead and counts as used, as before. A cluster without an
+	// allocated table holds no other allocations, so the empty bitmap is
+	// accurate (preserves historical ensure semantics for fresh and
+	// reserved clusters). A present-but-unreadable table is a genuine I/O
+	// failure and propagates — it must never masquerade as all-free, which
+	// would double-allocate live sectors.
 	skipped := 0
 	if int(cme.sector_index) < cache.cache_size {
 		bit_array.unsafe_set(&bitmap, int(cme.sector_index))
@@ -120,22 +134,22 @@ _alloc_cache_build :: proc(cache: ^Cluster_Bitmap_Cache, vol: ^Volume, cluster: 
 	}
 
 	used: u16 = 0
-	table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-	if read_cluster_entry_table(vol, cluster, &table) != .None {
-		if err := lru.set(&cache.lru, u64(cluster), Alloc_Cache_Entry{bitmap, used}); err != nil {
+	if .Allocated in cme.flags {
+		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
+		if terr := read_cluster_entry_table(vol, cluster, &table); terr != .None {
 			bit_array.destroy(&bitmap)
+			return terr
 		}
-		return
-	}
-	for &e in table {
-		if .Allocated in e.state {
-			for off in 0 ..< e.allocation_size {
-				s := int(e.sector_start) + int(off)
-				if s < cache.cache_size {
-					bit_array.unsafe_set(&bitmap, s)
-					used += 1
-				} else {
-					skipped += 1
+		for &e in table {
+			if .Allocated in e.state {
+				for off in 0 ..< e.allocation_size {
+					s := int(e.sector_start) + int(off)
+					if s < cache.cache_size {
+						bit_array.unsafe_set(&bitmap, s)
+						used += 1
+					} else {
+						skipped += 1
+					}
 				}
 			}
 		}
@@ -147,17 +161,21 @@ _alloc_cache_build :: proc(cache: ^Cluster_Bitmap_Cache, vol: ^Volume, cluster: 
 			skipped,
 		)
 	}
+	// Node allocation failure surfaces as .No_Space (memory); the bitmap is
+	// destroyed so no half-inserted entry lingers.
 	if err := lru.set(&cache.lru, u64(cluster), Alloc_Cache_Entry{bitmap, used}); err != nil {
 		bit_array.destroy(&bitmap)
+		return .No_Space
 	}
+	return .None
 }
 
 // alloc_cache_count_free counts free sectors across all clusters
 alloc_cache_count_free :: proc(vol: ^Volume) -> u64 {
 	free: u64 = 0
 	for ci in 0 ..< int(vol.master.cluster_map_size) {
-		bm, _, bok := alloc_cache_ensure(&vol.cache, vol, u64(ci))
-		if !bok { continue }
+		bm, _, berr := alloc_cache_ensure(&vol.cache, vol, u64(ci))
+		if berr != .None { continue }
 		it := bit_array.make_iterator(&bm)
 		for set, _ in bit_array.iterate_by_all(&it) {
 			if !set {

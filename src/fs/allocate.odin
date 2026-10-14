@@ -185,8 +185,8 @@ allocate_sectors :: proc(
 			}
 		}
 
-		bitmap, used, var_ok := alloc_cache_ensure(&vol.cache, vol, cluster_idx)
-		if !var_ok {
+		bitmap, used, var_err := alloc_cache_ensure(&vol.cache, vol, cluster_idx)
+		if var_err != .None {
 			continue
 		}
 

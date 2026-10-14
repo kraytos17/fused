@@ -30,8 +30,8 @@ test_invalidate_via_write_cme :: proc(t: ^testing.T) {
 
 	// Pick the root cluster (allocated)
 	test_cluster := fs.Cluster(master.root_cluster)
-	_, _, bok := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
-	testing.expect(t, bok, "ensure cluster 1 before write")
+	_, _, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
+	testing.expect_value(t, berr, fs.FS_Error.None)
 
 	cme, cme_err := fs.read_cluster_map_entry(&vol, test_cluster)
 	testing.expectf(t, cme_err == .None, "read CME")
@@ -42,8 +42,8 @@ test_invalidate_via_write_cme :: proc(t: ^testing.T) {
 	}
 
 	// The cache entry should have been invalidated — re-ensure should rebuild
-	_, used_after, bok2 := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
-	testing.expect(t, bok2, "ensure after write_cme")
+	_, used_after, berr2 := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
+	testing.expect_value(t, berr2, fs.FS_Error.None)
 
 	// Verify the rebuilt used count matches disk
 	table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
@@ -91,8 +91,8 @@ test_invalidate_via_write_ce_table :: proc(t: ^testing.T) {
 	defer fs.alloc_cache_destroy(&vol.cache)
 
 	test_cluster := fs.Cluster(master.root_cluster)
-	_, _, bok := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
-	testing.expect(t, bok, "ensure before write")
+	_, _, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
+	testing.expect_value(t, berr, fs.FS_Error.None)
 
 	// Read the CE table, write it back unchanged via the helper
 	table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
@@ -112,8 +112,8 @@ test_invalidate_via_write_ce_table :: proc(t: ^testing.T) {
 	}
 
 	// Cache should have been invalidated — verify by re-ensuring
-	_, used_after, bok2 := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
-	testing.expect(t, bok2, "ensure after write_ce_table")
+	_, used_after, berr2 := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
+	testing.expect_value(t, berr2, fs.FS_Error.None)
 
 	table_after: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
 	if fs.read_cluster_entry_table(&vol, test_cluster, &table_after) != .None {
@@ -161,8 +161,8 @@ test_invalidate_via_write_ce_at :: proc(t: ^testing.T) {
 	defer fs.alloc_cache_destroy(&vol.cache)
 
 	test_cluster := fs.Cluster(master.root_cluster)
-	_, _, bok := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
-	testing.expect(t, bok, "ensure before write")
+	_, _, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
+	testing.expect_value(t, berr, fs.FS_Error.None)
 
 	// Read the CE table, find the first allocated entry, write it back
 	table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
@@ -184,8 +184,8 @@ test_invalidate_via_write_ce_at :: proc(t: ^testing.T) {
 	}
 
 	// Cache invalidated — rebuild and verify
-	_, used_after, bok2 := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
-	testing.expect(t, bok2, "ensure after write_ce_at")
+	_, used_after, berr2 := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
+	testing.expect_value(t, berr2, fs.FS_Error.None)
 
 	table_after: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
 	if fs.read_cluster_entry_table(&vol, test_cluster, &table_after) != .None {
@@ -226,8 +226,8 @@ test_invalidate_via_write_always_invalidates :: proc(t: ^testing.T) {
 	defer fs.alloc_cache_destroy(&vol.cache)
 
 	test_cluster := fs.Cluster(master.root_cluster)
-	_, used_before, bok := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
-	testing.expect(t, bok, "ensure before write")
+	_, used_before, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
+	testing.expect_value(t, berr, fs.FS_Error.None)
 
 	// Write CME — should invalidate cache automatically
 	cme, cme_err := fs.read_cluster_map_entry(&vol, test_cluster)
@@ -235,8 +235,8 @@ test_invalidate_via_write_always_invalidates :: proc(t: ^testing.T) {
 	testing.expectf(t, fs.write_cluster_map_entry(&vol, test_cluster, &cme) == .None, "write CME")
 
 	// Cache should have been invalidated — re-ensure should return fresh data
-	_, used_after, bok2 := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
-	testing.expect(t, bok2, "ensure after CME write")
+	_, used_after, berr2 := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
+	testing.expect_value(t, berr2, fs.FS_Error.None)
 	testing.expectf(
 		t,
 		used_after == used_before,
@@ -257,8 +257,8 @@ test_invalidate_via_write_always_invalidates :: proc(t: ^testing.T) {
 		fs.write_cluster_entry_table(&vol, test_cluster, &table) == .None,
 		"write CE table",
 	)
-	_, used_after2, bok3 := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
-	testing.expect(t, bok3, "ensure after CE table write")
+	_, used_after2, berr3 := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
+	testing.expect_value(t, berr3, fs.FS_Error.None)
 	testing.expectf(
 		t,
 		used_after2 == used_before,
@@ -291,8 +291,8 @@ test_invalidation_full_cycle :: proc(t: ^testing.T) {
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
 	// Verify cache is consistent for the allocated cluster
-	_, used, bok := fs.alloc_cache_ensure(&vol.cache, &vol, u64(fc))
-	testing.expect(t, bok, "ensure after alloc")
+	_, used, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(fc))
+	testing.expect_value(t, berr, fs.FS_Error.None)
 	table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
 	if fs.read_cluster_entry_table(&vol, fc, &table) != .None {
 		testing.fail(t)
@@ -318,8 +318,8 @@ test_invalidation_full_cycle :: proc(t: ^testing.T) {
 	testing.expect_value(t, derr, fs.FS_Error.None)
 
 	// Verify cache is consistent after dealloc
-	_, used2, bok2 := fs.alloc_cache_ensure(&vol.cache, &vol, u64(fc))
-	testing.expect(t, bok2, "ensure after dealloc")
+	_, used2, berr2 := fs.alloc_cache_ensure(&vol.cache, &vol, u64(fc))
+	testing.expect_value(t, berr2, fs.FS_Error.None)
 	if fs.read_cluster_entry_table(&vol, fc, &table) != .None {
 		testing.fail(t)
 		return
@@ -382,8 +382,8 @@ test_invalidation_chain_extension :: proc(t: ^testing.T) {
 	ci_b := u64(fc) + 1
 	ci_vals := []u64{ci_a, ci_b}
 	for _, ci in ci_vals {
-		_, used, bok := fs.alloc_cache_ensure(&vol.cache, &vol, u64(ci))
-		if !bok { continue }
+		_, used, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(ci))
+		if berr != .None { continue }
 
 		table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
 		if fs.read_cluster_entry_table(&vol, fs.Cluster(ci), &table) != .None { continue }

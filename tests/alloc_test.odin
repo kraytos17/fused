@@ -202,8 +202,8 @@ test_alloc_cache_stress :: proc(t: ^testing.T) {
 
 	baseline_used: u16 = 0
 	{
-		_, used, ok := fs.alloc_cache_ensure(&vol.cache, &vol, 1)
-		if ok { baseline_used = used }
+		_, used, oerr := fs.alloc_cache_ensure(&vol.cache, &vol, 1)
+		if oerr == .None { baseline_used = used }
 	}
 
 	ITERATIONS :: 100

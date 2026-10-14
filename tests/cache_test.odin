@@ -30,8 +30,8 @@ test_cache_init_destroy :: proc(t: ^testing.T) {
 	defer fs.alloc_cache_destroy(&vol.cache)
 
 	testing.expect(t, vol.cache.cache_size > 0, "cache_size > 0")
-	_, _, bok := fs.alloc_cache_ensure(&vol.cache, &vol, 0)
-	testing.expect(t, bok, "ensure cluster 0 after init")
+	_, _, berr := fs.alloc_cache_ensure(&vol.cache, &vol, 0)
+	testing.expect_value(t, berr, fs.FS_Error.None)
 }
 
 // Verify that the bitmap built by alloc_cache_ensure matches a direct
@@ -53,8 +53,8 @@ test_cache_bitmap_matches_disk :: proc(t: ^testing.T) {
 	defer fs.alloc_cache_destroy(&vol.cache)
 
 	for ci in 0 ..< int(master.cluster_map_size) {
-		bm, _, bok := fs.alloc_cache_ensure(&vol.cache, &vol, u64(ci))
-		if !bok { continue }
+		bm, _, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(ci))
+		if berr != .None { continue }
 
 		table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
 		if fs.read_cluster_entry_table(&vol, fs.Cluster(ci), &table) != .None { continue }
@@ -110,8 +110,8 @@ test_cache_used_matches_disk :: proc(t: ^testing.T) {
 	defer fs.alloc_cache_destroy(&vol.cache)
 
 	for ci in 0 ..< int(master.cluster_map_size) {
-		_, used, bok := fs.alloc_cache_ensure(&vol.cache, &vol, u64(ci))
-		if !bok { continue }
+		_, used, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(ci))
+		if berr != .None { continue }
 
 		expected_used: u16 = 0
 		table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
@@ -153,12 +153,12 @@ test_cache_invalidate_rebuilds :: proc(t: ^testing.T) {
 	fs.alloc_cache_init(&vol.cache, &vol.master)
 	defer fs.alloc_cache_destroy(&vol.cache)
 
-	_, used_before, bok := fs.alloc_cache_ensure(&vol.cache, &vol, 0)
-	testing.expect(t, bok, "ensure cluster 0")
+	_, used_before, berr := fs.alloc_cache_ensure(&vol.cache, &vol, 0)
+	testing.expect_value(t, berr, fs.FS_Error.None)
 	fs.alloc_cache_invalidate(&vol.cache, 0)
 
-	_, used_after, bok2 := fs.alloc_cache_ensure(&vol.cache, &vol, 0)
-	testing.expect(t, bok2, "re-ensure cluster 0")
+	_, used_after, berr2 := fs.alloc_cache_ensure(&vol.cache, &vol, 0)
+	testing.expect_value(t, berr2, fs.FS_Error.None)
 	testing.expectf(
 		t,
 		used_after == used_before,
@@ -304,8 +304,8 @@ test_cache_stress_multi_cluster :: proc(t: ^testing.T) {
 
 	// Verify cache is still consistent after deallocation
 	for ci in 0 ..< int(master.cluster_map_size) {
-		_, used, bok := fs.alloc_cache_ensure(&vol.cache, &vol, u64(ci))
-		if !bok { continue }
+		_, used, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(ci))
+		if berr != .None { continue }
 
 		expected_used: u16 = 0
 		table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
@@ -395,8 +395,8 @@ test_cache_many_small_alloc_free :: proc(t: ^testing.T) {
 		if derr != .None { return }
 
 		// After each cycle, verify cache used count matches disk for the affected cluster
-		_, used, bok := fs.alloc_cache_ensure(&vol.cache, &vol, u64(fc))
-		if !bok { continue }
+		_, used, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(fc))
+		if berr != .None { continue }
 		table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
 		if fs.read_cluster_entry_table(&vol, fc, &table) != .None { continue }
 		expected_used: u16 = 0
