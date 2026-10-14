@@ -125,7 +125,7 @@ fused_write :: proc "c" (
 write_finish :: proc(
 	fsys: ^FS,
 	entry: ^fs.Directory_Entry,
-	loc: File_Identity,
+	loc: fs.File_Identity,
 	new_size: u64,
 	bytes_written: u64,
 ) -> c.int {
@@ -291,7 +291,7 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 
 	set_entry_time_to_now(&entry)
 	entry.file_size = usize
-	if werr := write_entry_at(fsys, File_Identity{entry_cluster, entry_offset, entry_idx}, &entry);
+	if werr := write_entry_at(fsys, fs.File_Identity{entry_cluster, entry_offset, entry_idx}, &entry);
 	   werr != .None {
 		return fs_error_to_errno(werr)
 	}

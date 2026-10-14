@@ -85,7 +85,7 @@ fused_setxattr :: proc "c" (
 	}
 
 	reinit_free_sectors(fsys)
-	if werr := write_entry_at(fsys, File_Identity{entry_cluster, entry_offset, entry_idx}, &entry);
+	if werr := write_entry_at(fsys, fs.File_Identity{entry_cluster, entry_offset, entry_idx}, &entry);
 	   werr != .None {
 		return fs_error_to_errno(werr)
 	}
@@ -201,7 +201,7 @@ fused_removexattr :: proc "c" (path: cstring, name: cstring) -> c.int {
 	}
 
 	reinit_free_sectors(fsys)
-	if werr := write_entry_at(fsys, File_Identity{entry_cluster, entry_offset, entry_idx}, &entry);
+	if werr := write_entry_at(fsys, fs.File_Identity{entry_cluster, entry_offset, entry_idx}, &entry);
 	   werr != .None {
 		return fs_error_to_errno(werr)
 	}

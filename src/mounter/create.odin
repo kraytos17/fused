@@ -232,7 +232,7 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 remove_directory_entry :: proc(
 	fsys: ^FS,
 	entry: ^fs.Directory_Entry,
-	loc: File_Identity,
+	loc: fs.File_Identity,
 ) -> fs.FS_Error {
 	if entry.stored_cluster != 0 {
 		if derr := fs.deallocate_sectors(
@@ -278,7 +278,7 @@ fused_unlink :: proc "c" (path: cstring) -> c.int {
 	}
 
 	log.debugf("unlink: %s xattr_cluster=%d", path, entry.xattr_cluster)
-	if err := remove_directory_entry(fsys, &entry, File_Identity{cluster, offset, idx});
+	if err := remove_directory_entry(fsys, &entry, fs.File_Identity{cluster, offset, idx});
 	   err != .None {
 		return fs_error_to_errno(err)
 	}
@@ -321,7 +321,7 @@ fused_rmdir :: proc "c" (path: cstring) -> c.int {
 			return fuse3.nix(.ENOTEMPTY)
 		}
 	}
-	if err := remove_directory_entry(fsys, &entry, File_Identity{cluster, offset, idx});
+	if err := remove_directory_entry(fsys, &entry, fs.File_Identity{cluster, offset, idx});
 	   err != .None {
 		return fs_error_to_errno(err)
 	}
@@ -385,7 +385,7 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 				if err := remove_directory_entry(
 					fsys,
 					&dst_entry,
-					File_Identity{new_parent_c, new_parent_o, dst_idx},
+					fs.File_Identity{new_parent_c, new_parent_o, dst_idx},
 				); err != .None {
 					return fs_error_to_errno(err)
 				}
@@ -397,7 +397,7 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 		if nerr := set_entry_name(fsys, &entry, new_name); nerr != .None {
 			return fs_error_to_errno(nerr)
 		}
-		if werr := write_entry_at(fsys, File_Identity{old_cluster, old_offset, old_idx}, &entry);
+		if werr := write_entry_at(fsys, fs.File_Identity{old_cluster, old_offset, old_idx}, &entry);
 		   werr != .None {
 			return fs_error_to_errno(werr)
 		}
@@ -446,7 +446,7 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 			if err := remove_directory_entry(
 				fsys,
 				&dst_entry,
-				File_Identity{new_parent_c, new_parent_o, dst_idx},
+				fs.File_Identity{new_parent_c, new_parent_o, dst_idx},
 			); err != .None {
 				return fs_error_to_errno(err)
 			}
@@ -475,7 +475,7 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	}
 
 	entry.flags = {}
-	if werr := write_entry_at(fsys, File_Identity{old_cluster, old_offset, old_idx}, &entry);
+	if werr := write_entry_at(fsys, fs.File_Identity{old_cluster, old_offset, old_idx}, &entry);
 	   werr != .None {
 		return fs_error_to_errno(werr)
 	}

@@ -12,6 +12,18 @@ Journal_Seq :: distinct u64 // journal transaction sequence number
 // Byte_Offset distinct type for byte positions/sizes
 Byte_Offset :: distinct u64 // byte position or size in the image
 
+// File_Identity names a directory entry by its parent location: the
+// directory cluster, the sector offset within it, and the entry index.
+// Unlike the structs above it is NOT packed: it is in-memory only (map
+// keys, file handles), never serialized. It is the shared vocabulary for
+// every "which entry" triple (fh_parts returns it; entry_at_index and
+// write_entry_at take it).
+File_Identity :: struct {
+	dir_cluster: Cluster,
+	dir_offset:  Sector_Offset,
+	entry_index: int,
+}
+
 SECTOR_SIZE :: 512
 CLUSTER_ENTRIES_PER_SECTOR :: 32
 CLUSTER_MAP_ENTRIES_PER_SECTOR :: 64

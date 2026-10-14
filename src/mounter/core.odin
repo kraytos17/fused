@@ -64,9 +64,9 @@ FS :: struct {
 	// free_sectors caches the volume's free sector count so statfs is O(1).
 	free_sectors: u64,
 	// locks holds POSIX fcntl region locks per file (in-memory, advisory).
-	locks:        map[File_Identity][dynamic]Region_Lock,
+	locks:        map[fs.File_Identity][dynamic]Region_Lock,
 	// flock_locks holds BSD flock holders per file (in-memory, advisory).
-	flock_locks:  map[File_Identity][dynamic]Flock_State,
+	flock_locks:  map[fs.File_Identity][dynamic]Flock_State,
 }
 
 // Extent_Cache_Key identifies a resolved extent chain by its start cluster and
@@ -227,23 +227,12 @@ _set_time_fields_now :: proc(year: ^u16, dt: ^fs.Packed_Date_Time) {
 	}
 }
 
-// File_Identity names a directory entry by its parent location: the
-// directory cluster, the sector offset within it, and the entry index.
-// It is the map key for lock tables and the shared vocabulary for every
-// "which entry" triple in the mounter (fh_parts returns it; write_entry_at
-// and remove_directory_entry take it).
-File_Identity :: struct {
-	dir_cluster: fs.Cluster,
-	dir_offset:  fs.Sector_Offset,
-	entry_index: int,
-}
-
 // fh_parts unpacks a packed file handle into the identity of the directory
 // entry it refers to.
 @(require_results)
-fh_parts :: proc "contextless" (fh: u64) -> (id: File_Identity) {
+fh_parts :: proc "contextless" (fh: u64) -> (id: fs.File_Identity) {
 	f := transmute(fs.File_Handle)(fh) // TRANSMUTE: u64 unpack into bit_field File_Handle
-	return File_Identity {
+	return fs.File_Identity {
 		fs.Cluster(f.dir_cluster),
 		fs.Sector_Offset(f.dir_offset),
 		int(f.entry_index),
@@ -272,7 +261,7 @@ mutate_entry_at :: proc(
 	if !mutate(&entry, user) {
 		return 0
 	}
-	if werr := write_entry_at(fsys, File_Identity{entry_cluster, entry_offset, entry_idx}, &entry);
+	if werr := write_entry_at(fsys, fs.File_Identity{entry_cluster, entry_offset, entry_idx}, &entry);
 	   werr != .None {
 		return fs_error_to_errno(werr)
 	}
@@ -297,7 +286,7 @@ read_entry_from_fh :: proc(
 	fs.FS_Error,
 ) {
 	id := fh_parts(fh)
-	e, err := fs.read_entry_at_index(&fsys.vol, id.dir_cluster, id.dir_offset, id.entry_index)
+	e, err := fs.read_entry_at_index(&fsys.vol, id)
 	if err != .None {
 		return {}, 0, 0, err
 	}
@@ -527,8 +516,8 @@ init_fs_state :: proc(
 
 	fsys.extents = make(map[Extent_Cache_Key][]fs.Extent_Run, allocator)
 	fsys.free_sectors = fs.alloc_cache_count_free(&fsys.vol)
-	fsys.locks = make(map[File_Identity][dynamic]Region_Lock, allocator)
-	fsys.flock_locks = make(map[File_Identity][dynamic]Flock_State, allocator)
+	fsys.locks = make(map[fs.File_Identity][dynamic]Region_Lock, allocator)
+	fsys.flock_locks = make(map[fs.File_Identity][dynamic]Flock_State, allocator)
 }
 
 // destroy_fs_for_test tears down an FS: drops the extent/path/LFN caches

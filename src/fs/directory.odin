@@ -202,14 +202,12 @@ entry_sector_for_index :: proc(
 // index. Returns .Entry_Not_Found when the slot is not marked .Exists.
 read_entry_at_index :: proc(
 	vol: ^Volume,
-	cluster: Cluster,
-	offset: Sector_Offset,
-	index: int,
+	id: File_Identity,
 ) -> (
 	entry: Directory_Entry,
 	err: FS_Error,
 ) {
-	sec, within, rerr := entry_sector_for_index(vol, cluster, offset, index)
+	sec, within, rerr := entry_sector_for_index(vol, id.dir_cluster, id.dir_offset, id.entry_index)
 	if rerr != .None {
 		return {}, rerr
 	}
@@ -232,12 +230,10 @@ read_entry_at_index :: proc(
 // index.
 write_entry_at_index :: proc(
 	vol: ^Volume,
-	cluster: Cluster,
-	offset: Sector_Offset,
-	index: int,
+	id: File_Identity,
 	entry: ^Directory_Entry,
 ) -> FS_Error {
-	sec, within, err := entry_sector_for_index(vol, cluster, offset, index)
+	sec, within, err := entry_sector_for_index(vol, id.dir_cluster, id.dir_offset, id.entry_index)
 	if err != .None {
 		return err
 	}

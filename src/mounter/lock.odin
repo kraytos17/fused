@@ -12,6 +12,7 @@ import "base:runtime"
 import "core:c"
 import "core:log"
 import "core:sys/posix"
+import "src:fs"
 import "src:fuse3"
 
 // LOCK_* constants for the BSD flock() op (sys/file.h).
@@ -84,7 +85,7 @@ lock_mode_from_type :: proc(t: posix.Lock_Type) -> Lock_Mode {
 }
 
 // locks_remove_identity drops all lock state for an identity.
-locks_remove_identity :: proc(fsys: ^FS, id: File_Identity) {
+locks_remove_identity :: proc(fsys: ^FS, id: fs.File_Identity) {
 	if recs, ok := fsys.locks[id]; ok {
 		delete(recs)
 		delete_key(&fsys.locks, id)
@@ -118,7 +119,7 @@ _retain_owner_mismatch :: proc(
 
 // locks_remove_owner drops one owner's locks for an identity (used on
 // release — the kernel releases a process's locks when its last fd closes).
-locks_remove_owner :: proc(fsys: ^FS, id: File_Identity, owner: u64) {
+locks_remove_owner :: proc(fsys: ^FS, id: fs.File_Identity, owner: u64) {
 	if old, has := fsys.locks[id]; has {
 		recs := _retain_owner_mismatch(old, owner, fsys.allocator)
 		delete(old)
@@ -156,7 +157,7 @@ lock_range_overlaps :: proc(a_start, a_len, b_start, b_len: i64) -> bool {
 
 // lock_mutate applies a F_SETLK/F_SETLKW request to the file's region-lock
 // list, swapping a fresh list into the map and freeing the old one.
-lock_mutate :: proc(fsys: ^FS, id: File_Identity, owner: u64, fl: ^posix.flock) -> c.int {
+lock_mutate :: proc(fsys: ^FS, id: fs.File_Identity, owner: u64, fl: ^posix.flock) -> c.int {
 	start := i64(fl.l_start)
 	length := i64(fl.l_len)
 	old, has_old := fsys.locks[id]
