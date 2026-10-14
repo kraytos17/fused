@@ -239,6 +239,19 @@ fh_parts :: proc "contextless" (fh: u64) -> (id: fs.File_Identity) {
 	}
 }
 
+// Mutate_Request bundles the inputs to mutate_entry_at: the target path,
+// the FUSE file info, the caller-provided mutation with its user context,
+// and whether caches invalidate wholesale. Callers spell every field
+// (there are no struct defaults); invalidate_all=true preserves the old
+// default at the chmod/chown sites.
+Mutate_Request :: struct {
+	path:           cstring,
+	fi:             ^fuse3.File_Info,
+	mutate:         proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool,
+	user:           rawptr,
+	invalidate_all: bool,
+}
+
 // mutate_entry_at is the shared read-modify-write wrapper for metadata-only
 // FUSE callbacks that update a single directory entry (chmod, chown,
 // utimens, and xattr entry writes). It resolves the entry, calls mutate
@@ -246,29 +259,22 @@ fh_parts :: proc "contextless" (fh: u64) -> (id: fs.File_Identity) {
 // caches. mutate returning false skips the write without error. When
 // invalidate_all is false only the single path is removed (used by utimens,
 // where the directory structure hasn't changed).
-mutate_entry_at :: proc(
-	fsys: ^FS,
-	path: cstring,
-	fi: ^fuse3.File_Info,
-	mutate: proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool,
-	user: rawptr = nil,
-	invalidate_all := true,
-) -> c.int {
-	entry, entry_cluster, entry_offset, entry_idx, _, _, rerr := resolve_entry(fsys, path, fi)
+mutate_entry_at :: proc(fsys: ^FS, req: Mutate_Request) -> c.int {
+	entry, entry_cluster, entry_offset, entry_idx, _, _, rerr := resolve_entry(fsys, req.path, req.fi)
 	if rerr != .None {
 		return fs_error_to_errno(rerr)
 	}
-	if !mutate(&entry, user) {
+	if !req.mutate(&entry, req.user) {
 		return 0
 	}
 	if werr := write_entry_at(fsys, fs.File_Identity{entry_cluster, entry_offset, entry_idx}, &entry);
 	   werr != .None {
 		return fs_error_to_errno(werr)
 	}
-	if invalidate_all {
+	if req.invalidate_all {
 		path_cache_invalidate_all(fsys)
 	} else {
-		lru.remove(&fsys.path_cache, string(path))
+		lru.remove(&fsys.path_cache, string(req.path))
 	}
 	return 0
 }

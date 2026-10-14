@@ -15,7 +15,7 @@ fused_utimens :: proc "c" (path: cstring, tv: [^]posix.timespec, fi: ^fuse3.File
 	context = runtime.default_context()
 	fsys := begin_op()
 	defer end_op(fsys)
-	return mutate_entry_at(fsys, path, fi, proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool {
+	return mutate_entry_at(fsys, Mutate_Request{path, fi, proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool {
 			tv := ([^]posix.timespec)(user)
 			if tv == nil {
 				set_entry_time_to_now(entry)
@@ -37,7 +37,7 @@ fused_utimens :: proc "c" (path: cstring, tv: [^]posix.timespec, fi: ^fuse3.File
 				}
 			}
 			return true
-		}, rawptr(tv), false)
+		}, rawptr(tv), false})
 }
 
 // fused_access checks file access permissions.
@@ -83,7 +83,7 @@ fused_chmod :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Info
 		mode = mode,
 	}
 
-	rc := mutate_entry_at(fsys, path, fi, proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool {
+	rc := mutate_entry_at(fsys, Mutate_Request{path, fi, proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool {
 			m := (^Chmod_Ctx)(user).mode
 			mr := posix.mode_t{.IRUSR, .IRGRP, .IROTH} & m
 			has_read := mr != {}
@@ -96,7 +96,7 @@ fused_chmod :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Info
 			if has_write { entry.flags -= {.No_Write, .Read_Only} } else { entry.flags += {.No_Write, .Read_Only} }
 			if has_exec { entry.flags -= {.No_Execute} } else { entry.flags += {.No_Execute} }
 			return true
-		}, &ctx)
+		}, &ctx, true})
 	if rc == 0 {
 		log.debugf("chmod: %s → mode=%v", path, mode)
 	}
@@ -124,14 +124,14 @@ fused_chown :: proc "c" (
 		gid = gid,
 	}
 
-	rc := mutate_entry_at(fsys, path, fi, proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool {
+	rc := mutate_entry_at(fsys, Mutate_Request{path, fi, proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool {
 			c := (^Chown_Ctx)(user)
 			uid_t_max :: posix.uid_t(0xFFFFFFFF)
 			gid_t_max :: posix.gid_t(0xFFFFFFFF)
 			if c.uid != uid_t_max { entry.uid = u32(c.uid) }
 			if c.gid != gid_t_max { entry.gid = u32(c.gid) }
 			return true
-		}, &ctx)
+		}, &ctx, true})
 	if rc == 0 {
 		log.debugf("chown: %s → uid=%d gid=%d", path, uid, gid)
 	}
