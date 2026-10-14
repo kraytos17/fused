@@ -56,7 +56,7 @@ FS :: struct {
 	path_cache:   lru.Cache(string, Path_Cache_Value),
 	// lfn_cache is an LRU cache mapping (cluster,offset,index) to long
 	// file names.
-	lfn_cache:    lru.Cache(u64, string),
+	lfn_cache:    lru.Cache(Lfn_Cache_Key, string),
 	// extents caches resolved extent chains keyed by (data_cluster, offset).
 	// Cached slices are owned by the cache; invalidated on any metadata
 	// mutation (write/truncate/fallocate/unlink/xattr).
@@ -74,6 +74,17 @@ FS :: struct {
 Extent_Cache_Key :: struct {
 	cluster: u64,
 	offset:  u16,
+}
+
+// Lfn_Cache_Key identifies a cached long filename by its entry's chain
+// start (cluster, offset) and chain-relative entry index. It is a struct,
+// not a packed integer: packing would collide once the entry index exceeds
+// the offset field (directories can hold more than 2^16 entries — there is
+// no directory-size cap), handing back the wrong name on lookup.
+Lfn_Cache_Key :: struct {
+	cluster: fs.Cluster,
+	offset:  fs.Sector_Offset,
+	index:   int,
 }
 
 // get_fs retrieves the FS pointer from the FUSE context's private_data.
@@ -322,7 +333,7 @@ path_cache_on_remove :: proc(key: string, val: Path_Cache_Value, user_data: rawp
 
 // lfn_cache_on_remove is the LRU eviction callback for the LFN cache.
 // Same allocator discipline as path_cache_on_remove.
-lfn_cache_on_remove :: proc(key: u64, val: string, user_data: rawptr) {
+lfn_cache_on_remove :: proc(key: Lfn_Cache_Key, val: string, user_data: rawptr) {
 	fsys := (^FS)(user_data)
 	if fsys != nil {
 		delete(val, fsys.allocator)
@@ -331,15 +342,16 @@ lfn_cache_on_remove :: proc(key: u64, val: string, user_data: rawptr) {
 	}
 }
 
-// lfn_cache_key builds a 64-bit key from a cluster, offset, and entry index
-// for the LFN cache.
+// lfn_cache_key builds the cache key for an entry's long filename from its
+// chain start and chain-relative entry index. See Lfn_Cache_Key for why the
+// key is a struct rather than a packed integer.
 @(require_results)
 lfn_cache_key :: #force_inline proc(
 	cluster: fs.Cluster,
 	offset: fs.Sector_Offset,
 	index: int,
-) -> u64 {
-	return (u64(cluster) << 32) | (u64(offset) << 16) | u64(index)
+) -> Lfn_Cache_Key {
+	return {cluster, offset, index}
 }
 
 // lfn_lookup_shared resolves a long filename through the LFN cache without
@@ -353,7 +365,7 @@ lfn_cache_key :: #force_inline proc(
 // after the read lock is released.
 lfn_lookup_shared :: proc(
 	fsys: ^FS,
-	key: u64,
+	key: Lfn_Cache_Key,
 	vol: ^fs.Volume,
 	entry: ^fs.Directory_Entry,
 ) -> (

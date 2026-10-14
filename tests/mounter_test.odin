@@ -637,3 +637,17 @@ test_mount_negative_offsets_are_einval :: proc(t: ^testing.T) {
 	rc = mounter.fused_write("/negfile", raw_data(data), c.size_t(len(data)), 0, &fi)
 	testing.expect_value(t, rc, c.int(len(data)))
 }
+
+// test_lfn_cache_key_distinct pins the Lfn_Cache_Key injectivity that the
+// old u64 packing lacked: (cluster, offset 0, index 0x20000) and (cluster,
+// offset 2, index 0) packed to the same word, so past 2^16 entries in one
+// directory the cache could hand back another entry's long name. Struct
+// keys make that collision unrepresentable; identical triples still match.
+@(test)
+test_lfn_cache_key_distinct :: proc(t: ^testing.T) {
+	a := mounter.Lfn_Cache_Key{cluster = 7, offset = 0, index = 0x20000}
+	b := mounter.Lfn_Cache_Key{cluster = 7, offset = 2, index = 0}
+	testing.expect(t, a != b, "historically-colliding triples must differ")
+	c := mounter.Lfn_Cache_Key{cluster = 7, offset = 2, index = 0}
+	testing.expect(t, b == c, "identical triples must match")
+}
