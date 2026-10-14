@@ -286,6 +286,22 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 	return 0
 }
 
+// Byte_Range is a half-open [start, end) span in file-offset space. It
+// groups the offset pairs threaded through the write path so the half-open
+// convention is stated once instead of re-derived per call. (Lock ranges
+// stay separate: they are i64 with a 0-means-EOF sentinel, a different
+// domain that conversions would only obscure.)
+Byte_Range :: struct {
+	start: u64,
+	end:   u64,
+}
+
+// byte_range_len returns the span length (0 for empty or inverted ranges).
+byte_range_len :: proc(r: Byte_Range) -> u64 {
+	if r.end <= r.start { return 0 }
+	return r.end - r.start
+}
+
 // zero_file_range zeros a byte range within a file by reading partial sectors
 // and writing full zeroed sectors where possible. Extent-resolution errors
 // propagate; a short write reports .Sector_Write_Error.
@@ -294,10 +310,9 @@ zero_file_range :: proc(
 	entry: ^fs.Directory_Entry,
 	data_cluster: fs.Cluster,
 	data_offset: fs.Sector_Offset,
-	start: u64,
-	end: u64,
+	r: Byte_Range,
 ) -> fs.FS_Error {
-	if start >= end { return .None }
+	if byte_range_len(r) == 0 { return .None }
 
 	runs, ext_err := fs.resolve_extents(&fsys.vol, data_cluster, data_offset)
 	defer delete(runs)
@@ -305,7 +320,7 @@ zero_file_range :: proc(
 
 	zero_src := Zero_Source {
 		fsys      = fsys,
-		remaining = end - start,
+		remaining = byte_range_len(r),
 	}
 	bytes_src := Buf_Source {
 		user      = &zero_src,
@@ -314,8 +329,8 @@ zero_file_range :: proc(
 		remaining = _zero_remaining,
 	}
 
-	written := write_range_to_runs(fsys, runs[:], start, &bytes_src)
-	if written != end - start {
+	written := write_range_to_runs(fsys, runs[:], r.start, &bytes_src)
+	if written != byte_range_len(r) {
 		return .Sector_Write_Error
 	}
 	return .None
@@ -354,7 +369,7 @@ fused_fallocate :: proc "c" (
 		return fuse3.nix(.EOVERFLOW)
 	}
 	if .Punch_Hole in fmode {
-		zerr := zero_file_range(fsys, &entry, data_cluster, data_offset, alloc_start, alloc_end)
+		zerr := zero_file_range(fsys, &entry, data_cluster, data_offset, Byte_Range{alloc_start, alloc_end})
 		if zerr != .None {
 			return fs_error_to_errno(zerr)
 		}
@@ -391,7 +406,7 @@ fused_fallocate :: proc "c" (
 		zero_start := u64(entry.file_size)
 		zero_end := max(alloc_end, zero_start)
 		if zero_end > zero_start {
-			zerr := zero_file_range(fsys, &entry, data_cluster, data_offset, zero_start, zero_end)
+			zerr := zero_file_range(fsys, &entry, data_cluster, data_offset, Byte_Range{zero_start, zero_end})
 			if zerr != .None {
 				return fs_error_to_errno(zerr)
 			}

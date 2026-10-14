@@ -6,24 +6,32 @@ import "core:mem"
 import "src:fs"
 
 @(private = "file")
-Find_Slot_Ctx :: struct {
+// Dir_Scan_Ctx is the shared state for single-sector directory scan
+// visitors: the FS, entries-per-sector, and the scratch sector buffer.
+// Per-scan result fields (found slots, names, errors) stay on the specific
+// context. (Readdir_Ctx keeps its own copy: it carries filler/output state
+// and lives a different visitor lifecycle.)
+Dir_Scan_Ctx :: struct {
 	fsys:     ^FS,
 	depc:     int,
 	scan_buf: [fs.SECTOR_SIZE]u8,
-	dcluster: fs.Cluster,
-	dsec:     fs.Sector_Offset,
-	didx:     int,
-	found:    bool,
-	err:      fs.FS_Error,
+}
+
+@(private = "file")
+Find_Slot_Ctx :: struct {
+	using scan: Dir_Scan_Ctx,
+	dcluster:   fs.Cluster,
+	dsec:       fs.Sector_Offset,
+	didx:       int,
+	found:      bool,
+	err:        fs.FS_Error,
 }
 
 @(private = "file")
 Check_Name_Ctx :: struct {
-	fsys:     ^FS,
-	depc:     int,
-	scan_buf: [fs.SECTOR_SIZE]u8,
-	name:     string,
-	found:    bool,
+	using scan: Dir_Scan_Ctx,
+	name:       string,
+	found:      bool,
 }
 
 // write_entry_at writes a Directory_Entry back to its location on disk,
