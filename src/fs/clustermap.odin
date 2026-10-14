@@ -279,20 +279,29 @@ Chain_Step :: enum {
 }
 
 // Chain_Walk bundles a chain cursor with its corruption guard so every
-// chain walk terminates after at most cluster_map_size+1 links. Start one
-// with _chain_walk_start, then call _chain_next until the step is .At_End
-// (or .Corrupted, which the caller handles).
+// chain walk terminates after at most cluster_map_size+1 links. It also
+// holds the current cluster's entry table: consecutive links usually live
+// in the same table, and re-reading its sector per link would cost two
+// sector reads (map entry + table) for every step. The table is walk-
+// scoped — re-read on cluster change, dies with the walk — so there is no
+// cross-operation staleness to invalidate; freshness within the walk is
+// guaranteed because nothing mutates tables mid-walk under the caller.
+// Start one with _chain_walk_start, then call _chain_next until the step
+// is .At_End (or .Corrupted, which the caller handles).
 @(private)
 Chain_Walk :: struct {
-	cursor: Chain_Cursor,
-	guard:  int,
-	limit:  int,
+	cursor:        Chain_Cursor,
+	guard:         int,
+	limit:         int,
+	table:         [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry,
+	table_cluster: Cluster,
+	table_valid:   bool,
 }
 
 // _chain_walk_start opens a guarded walk over the chain at (cluster, offset).
 @(private)
 _chain_walk_start :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset) -> Chain_Walk {
-	return {Chain_Cursor{cluster, offset}, 0, int(vol.master.cluster_map_size) + 1}
+	return {Chain_Cursor{cluster, offset}, 0, int(vol.master.cluster_map_size) + 1, {}, {}, false}
 }
 
 // _chain_next advances the walk one link, bumping the guard. The Corrupted
@@ -307,7 +316,7 @@ _chain_next :: proc(
 	entry_cluster: Cluster,
 	step: Chain_Step,
 ) {
-	ce, entry_cluster, step = _chain_step(vol, &walk.cursor, walk.guard, walk.limit)
+	ce, entry_cluster, step = _chain_step(vol, walk)
 	walk.guard += 1
 	return
 }
@@ -317,35 +326,51 @@ _chain_next :: proc(
 // next_cluster / next_sector_index pointers. Returns the current cluster
 // entry, the cluster it was found in, and a Chain_Step status. Returns
 // Corrupted if the guard limit is reached or the entry is invalid.
+//
+// The walk holds the current cluster's entry table across steps, so only
+// a cluster change costs table I/O; the lookup predicate is identical to
+// find_cluster_entry's (offset match + Allocated), including treating a
+// missing entry or a zero allocation_size as Corrupted.
 @(private)
 _chain_step :: proc(
 	vol: ^Volume,
-	cursor: ^Chain_Cursor,
-	guard: int,
-	max_guards: int,
+	walk: ^Chain_Walk,
 ) -> (
 	ce: Cluster_Entry,
 	entry_cluster: Cluster,
 	step: Chain_Step,
 ) {
-	if guard >= max_guards {
+	if walk.guard >= walk.limit {
 		return {}, {}, .Corrupted
 	}
 
-	found_ce, found_err := find_cluster_entry(vol, cursor.cluster, cursor.offset)
-	if found_err != .None || found_ce.allocation_size == 0 {
+	if !walk.table_valid || walk.table_cluster != walk.cursor.cluster {
+		if read_cluster_entry_table(vol, walk.cursor.cluster, &walk.table) != .None {
+			return {}, {}, .Corrupted
+		}
+		walk.table_cluster = walk.cursor.cluster
+		walk.table_valid = true
+	}
+	found := false
+	for e in walk.table {
+		if e.sector_start == u16(walk.cursor.offset) && .Allocated in e.state {
+			ce = e
+			found = true
+			break
+		}
+	}
+	if !found || ce.allocation_size == 0 {
 		return {}, {}, .Corrupted
 	}
 
-	ce = found_ce
-	entry_cluster = cursor.cluster
+	entry_cluster = walk.cursor.cluster
 	if ce.next_cluster == 0 {
 		step = .At_End
 		return
 	}
 
-	cursor.cluster = Cluster(ce.next_cluster)
-	cursor.offset = Sector_Offset(ce.next_sector_index)
+	walk.cursor.cluster = Cluster(ce.next_cluster)
+	walk.cursor.offset = Sector_Offset(ce.next_sector_index)
 	step = .Advance
 	return
 }
