@@ -31,7 +31,7 @@ test_xattr_roundtrip :: proc(t: ^testing.T) {
 	testing.expect_value(t, entry.xattr_cluster != 0, true)
 	testing.expect(
 		t,
-		fs.write_directory_entry_at(&vol, res.cluster, res.offset, res.entry_index, &entry) ==
+		fs.write_directory_entry_at(&vol, fs.File_Identity{res.cluster, res.offset, res.entry_index}, &entry) ==
 		.None,
 		"persist entry",
 	)
@@ -70,7 +70,7 @@ test_xattr_roundtrip :: proc(t: ^testing.T) {
 	testing.expect_value(t, rerr, fs.FS_Error.None)
 	testing.expect(
 		t,
-		fs.write_directory_entry_at(&vol, res.cluster, res.offset, res.entry_index, &entry3) ==
+		fs.write_directory_entry_at(&vol, fs.File_Identity{res.cluster, res.offset, res.entry_index}, &entry3) ==
 		.None,
 		"persist after remove",
 	)
@@ -111,7 +111,7 @@ test_xattr_large_value :: proc(t: ^testing.T) {
 	testing.expect_value(t, serr, fs.FS_Error.None)
 	testing.expect(
 		t,
-		fs.write_directory_entry_at(&vol, res.cluster, res.offset, res.entry_index, &entry) ==
+		fs.write_directory_entry_at(&vol, fs.File_Identity{res.cluster, res.offset, res.entry_index}, &entry) ==
 		.None,
 		"persist entry",
 	)
@@ -131,7 +131,7 @@ test_xattr_large_value :: proc(t: ^testing.T) {
 	testing.expect_value(t, cerr, fs.FS_Error.None)
 	testing.expect(
 		t,
-		fs.write_directory_entry_at(&vol, res.cluster, res.offset, res.entry_index, &entry) ==
+		fs.write_directory_entry_at(&vol, fs.File_Identity{res.cluster, res.offset, res.entry_index}, &entry) ==
 		.None,
 		"persist clear",
 	)

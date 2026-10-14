@@ -147,20 +147,18 @@ resolve_lfn :: proc(
 // write_directory_entry_at writes a single Directory_Entry back to disk.
 write_directory_entry_at :: proc(
 	vol: ^Volume,
-	cluster: Cluster,
-	sector_offset: Sector_Offset,
-	entry_index: int,
+	id: File_Identity,
 	entry: ^Directory_Entry,
 ) -> FS_Error {
 	buf: [SECTOR_SIZE]u8
-	table_sector := sector_for(cluster, sector_offset, vol.master.cluster_size)
+	table_sector := sector_for(id.dir_cluster, id.dir_offset, vol.master.cluster_size)
 	if err := sector_read(vol, table_sector, buf[:]); err != .None {
 		return err
 	}
 
 	features := vol.master.features
 	des := int(dir_entry_size(features))
-	dst := (^Directory_Entry)(mem.ptr_offset(&buf[0], entry_index * des))
+	dst := (^Directory_Entry)(mem.ptr_offset(&buf[0], id.entry_index * des))
 	dst^ = entry^
 	return sector_write(vol, table_sector, buf[:])
 }

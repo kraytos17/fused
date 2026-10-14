@@ -43,7 +43,7 @@ test_dir_many_entries_across_extents :: proc(t: ^testing.T) {
 		}
 		copy(e.file_name[:], name)
 		e.file_name[min(15, len(name))] = 0
-		fs.write_directory_entry_at(vol, dc, fs.Sector_Offset(ce.sector_start), didx, &e)
+		fs.write_directory_entry_at(vol, fs.File_Identity{dc, fs.Sector_Offset(ce.sector_start), didx}, &e)
 	}
 
 	// Write entries to fill the first sector (9 entries, rev 5 format)
@@ -104,7 +104,7 @@ test_dir_many_entries_across_extents :: proc(t: ^testing.T) {
 	copy(e_extra.file_name[:], "EXTRA")
 	e_extra.file_name[5] = 0
 	new_sector_offset := fs.Sector_Offset(u64(last_sec) - u64(dc) * vol.master.cluster_size)
-	fs.write_directory_entry_at(&vol, dc, new_sector_offset, 2, &e_extra)
+	fs.write_directory_entry_at(&vol, fs.File_Identity{dc, new_sector_offset, 2}, &e_extra)
 
 	// Verify "EXTRA"
 	verify_buf: [fs.SECTOR_SIZE]u8
@@ -169,7 +169,7 @@ test_dir_reuse_slot_in_extended_sector :: proc(t: ^testing.T) {
 	}
 	for i in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
 		copy(e.file_name[:], fmt.tprintf("F%d", i))
-		fs.write_directory_entry_at(&vol, dc, fs.Sector_Offset(ce.sector_start), i, &e)
+		fs.write_directory_entry_at(&vol, fs.File_Identity{dc, fs.Sector_Offset(ce.sector_start), i}, &e)
 	}
 
 	// Extend
@@ -190,9 +190,7 @@ test_dir_reuse_slot_in_extended_sector :: proc(t: ^testing.T) {
 	// Write one entry in the new sector, then free it
 	fs.write_directory_entry_at(
 		&vol,
-		dc,
-		fs.Sector_Offset(u64(last_sec) - u64(dc) * vol.master.cluster_size),
-		0,
+		fs.File_Identity{dc, fs.Sector_Offset(u64(last_sec) - u64(dc) * vol.master.cluster_size), 0},
 		&e,
 	)
 	buf: [fs.SECTOR_SIZE]u8
@@ -255,7 +253,7 @@ test_dir_rename_to_extended_target :: proc(t: ^testing.T) {
 	}
 	copy(fe.file_name[:], "MOVEME")
 	fe.file_name[6] = 0
-	fs.write_directory_entry_at(&vol, src_c, fs.Sector_Offset(src_ce.sector_start), 0, &fe)
+	fs.write_directory_entry_at(&vol, fs.File_Identity{src_c, fs.Sector_Offset(src_ce.sector_start), 0}, &fe)
 
 	// Create dst dir and fill its first sector
 	dst_c, dst_o, derr2 := fs.allocate_sectors(&vol, 0, 0, 1, .Directory)
@@ -274,7 +272,7 @@ test_dir_rename_to_extended_target :: proc(t: ^testing.T) {
 		nm := fmt.tprintf("D%d", i)
 		copy(dst_e.file_name[:], nm)
 		dst_e.file_name[min(15, len(nm))] = 0
-		fs.write_directory_entry_at(&vol, dst_c, fs.Sector_Offset(dst_ce.sector_start), i, &dst_e)
+		fs.write_directory_entry_at(&vol, fs.File_Identity{dst_c, fs.Sector_Offset(dst_ce.sector_start), i}, &dst_e)
 	}
 
 	// Extend dst dir
@@ -304,9 +302,7 @@ test_dir_rename_to_extended_target :: proc(t: ^testing.T) {
 					// Found free slot in dst — write the moved entry here
 					fs.write_directory_entry_at(
 						&vol,
-						dst_c,
-						fs.Sector_Offset(u64(s) - u64(dst_c) * vol.master.cluster_size),
-						j,
+						fs.File_Identity{dst_c, fs.Sector_Offset(u64(s) - u64(dst_c) * vol.master.cluster_size), j},
 						&fe,
 					)
 					found_free = true

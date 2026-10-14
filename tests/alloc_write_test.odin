@@ -141,9 +141,7 @@ test_directory_entry_persistence :: proc(t: ^testing.T) {
 
 	fs.write_directory_entry_at(
 		&vol,
-		root_cluster,
-		fs.Sector_Offset(dir_sector),
-		free_idx,
+		fs.File_Identity{root_cluster, fs.Sector_Offset(dir_sector), free_idx},
 		&new_entry,
 	)
 	entries[free_idx] = new_entry
@@ -161,7 +159,7 @@ test_directory_entry_persistence :: proc(t: ^testing.T) {
 	testing.expect(t, name == "HELLO", "entry name matches")
 
 	re.flags -= {.Exists, .Allocated}
-	fs.write_directory_entry_at(&vol, root_cluster, fs.Sector_Offset(dir_sector), free_idx, &re)
+	fs.write_directory_entry_at(&vol, fs.File_Identity{root_cluster, fs.Sector_Offset(dir_sector), free_idx}, &re)
 	derr := fs.deallocate_sectors(&vol, fc, fo)
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }

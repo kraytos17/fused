@@ -110,7 +110,7 @@ test_directory_growth :: proc(t: ^testing.T) {
 			}
 		}
 		if didx < 0 { testing.fail(t); return }
-		fs.write_directory_entry_at(&vol, root_cluster, dsec, didx, &ne)
+		fs.write_directory_entry_at(&vol, fs.File_Identity{root_cluster, dsec, didx}, &ne)
 	}
 
 	dirs, dirs_err := fs.read_directory_entries(
@@ -162,7 +162,7 @@ test_directory_growth :: proc(t: ^testing.T) {
 							u64(sec) - u64(root_cluster) * vol.master.cluster_size,
 						)
 						raw[j].flags -= {.Exists, .Allocated}
-						fs.write_directory_entry_at(&vol, root_cluster, dsec, j, &raw[j])
+						fs.write_directory_entry_at(&vol, fs.File_Identity{root_cluster, dsec, j}, &raw[j])
 					}
 				}
 			}
@@ -212,9 +212,7 @@ test_entry_timestamp :: proc(t: ^testing.T) {
 	copy(test_entry.file_name[:], "TEST")
 	fs.write_directory_entry_at(
 		&vol,
-		dir_cluster,
-		fs.Sector_Offset(dir_sector),
-		free_idx,
+		fs.File_Identity{dir_cluster, fs.Sector_Offset(dir_sector), free_idx},
 		&test_entry,
 	)
 
@@ -231,7 +229,7 @@ test_entry_timestamp :: proc(t: ^testing.T) {
 	testing.expect(t, name == "TEST", "timestamp entry name")
 
 	re.flags -= {.Exists, .Allocated}
-	fs.write_directory_entry_at(&vol, dir_cluster, fs.Sector_Offset(dir_sector), free_idx, &re)
+	fs.write_directory_entry_at(&vol, fs.File_Identity{dir_cluster, fs.Sector_Offset(dir_sector), free_idx}, &re)
 }
 
 @(test)
@@ -275,14 +273,14 @@ test_dir_entry_create_delete_recreate :: proc(t: ^testing.T) {
 		},
 	}
 	copy(e.file_name[:], "CYCLE")
-	fs.write_directory_entry_at(&vol, root_cluster, fs.Sector_Offset(dir_sector), free_idx, &e)
+	fs.write_directory_entry_at(&vol, fs.File_Identity{root_cluster, fs.Sector_Offset(dir_sector), free_idx}, &e)
 
 	fs.sector_read(&vol, table_sec, buf[:])
 	re := raw[free_idx]
 	testing.expect(t, .Exists in re.flags, "exists after create")
 
 	re.flags -= {.Exists, .Allocated}
-	fs.write_directory_entry_at(&vol, root_cluster, fs.Sector_Offset(dir_sector), free_idx, &re)
+	fs.write_directory_entry_at(&vol, fs.File_Identity{root_cluster, fs.Sector_Offset(dir_sector), free_idx}, &re)
 
 	fs.sector_read(&vol, table_sec, buf[:])
 	testing.expect(t, .Exists not_in raw[free_idx].flags, "free after delete")
@@ -300,7 +298,7 @@ test_dir_entry_create_delete_recreate :: proc(t: ^testing.T) {
 		},
 	}
 	copy(e2.file_name[:], "CYCLE")
-	fs.write_directory_entry_at(&vol, root_cluster, fs.Sector_Offset(dir_sector), free_idx, &e2)
+	fs.write_directory_entry_at(&vol, fs.File_Identity{root_cluster, fs.Sector_Offset(dir_sector), free_idx}, &e2)
 
 	fs.sector_read(&vol, table_sec, buf[:])
 	testing.expect(t, .Exists in raw[free_idx].flags, "exists after recreate")
@@ -309,9 +307,7 @@ test_dir_entry_create_delete_recreate :: proc(t: ^testing.T) {
 	raw[free_idx].flags -= {.Exists, .Allocated}
 	fs.write_directory_entry_at(
 		&vol,
-		root_cluster,
-		fs.Sector_Offset(dir_sector),
-		free_idx,
+		fs.File_Identity{root_cluster, fs.Sector_Offset(dir_sector), free_idx},
 		&raw[free_idx],
 	)
 }
@@ -352,7 +348,7 @@ test_rename_overwrite_simulation :: proc(t: ^testing.T) {
 		sector_index   = u16(ao),
 	}
 	copy(ea.file_name[:], "SRC_A")
-	fs.write_directory_entry_at(&vol, root_c, fs.Sector_Offset(ce.sector_start), ia, &ea)
+	fs.write_directory_entry_at(&vol, fs.File_Identity{root_c, fs.Sector_Offset(ce.sector_start), ia}, &ea)
 
 	eb := fs.Directory_Entry {
 		flags          = fs.Dir_Flags{.Allocated, .Exists},
@@ -360,11 +356,11 @@ test_rename_overwrite_simulation :: proc(t: ^testing.T) {
 		sector_index   = u16(bo),
 	}
 	copy(eb.file_name[:], "DST_B")
-	fs.write_directory_entry_at(&vol, root_c, fs.Sector_Offset(ce.sector_start), ib, &eb)
+	fs.write_directory_entry_at(&vol, fs.File_Identity{root_c, fs.Sector_Offset(ce.sector_start), ib}, &eb)
 
 	fs.deallocate_sectors(&vol, bc, bo)
 	eb.flags -= {.Exists, .Allocated}
-	fs.write_directory_entry_at(&vol, root_c, fs.Sector_Offset(ce.sector_start), ib, &eb)
+	fs.write_directory_entry_at(&vol, fs.File_Identity{root_c, fs.Sector_Offset(ce.sector_start), ib}, &eb)
 
 	ea = {
 		flags          = fs.Dir_Flags{.Allocated, .Exists},
@@ -372,7 +368,7 @@ test_rename_overwrite_simulation :: proc(t: ^testing.T) {
 		sector_index   = u16(ao),
 	}
 	copy(ea.file_name[:], "DST_NEW")
-	fs.write_directory_entry_at(&vol, root_c, fs.Sector_Offset(ce.sector_start), ia, &ea)
+	fs.write_directory_entry_at(&vol, fs.File_Identity{root_c, fs.Sector_Offset(ce.sector_start), ia}, &ea)
 
 	fs.sector_read(&vol, sec, buf[:])
 	testing.expect(t, .Exists in raw[ia].flags, "renamed exists")
@@ -382,7 +378,7 @@ test_rename_overwrite_simulation :: proc(t: ^testing.T) {
 	testing.expect(t, raw[ib].flags == zf, "old slot zero")
 
 	raw[ia].flags -= {.Exists, .Allocated}
-	fs.write_directory_entry_at(&vol, root_c, fs.Sector_Offset(ce.sector_start), ia, &raw[ia])
+	fs.write_directory_entry_at(&vol, fs.File_Identity{root_c, fs.Sector_Offset(ce.sector_start), ia}, &raw[ia])
 	fs.deallocate_sectors(&vol, ac, ao)
 }
 
@@ -423,7 +419,7 @@ test_cross_dir_rename_simulation :: proc(t: ^testing.T) {
 		sector_index   = u16(ao),
 	}
 	copy(ea.file_name[:], "dirA")
-	fs.write_directory_entry_at(&vol, root_c, fs.Sector_Offset(rce.sector_start), root_idx_a, &ea)
+	fs.write_directory_entry_at(&vol, fs.File_Identity{root_c, fs.Sector_Offset(rce.sector_start), root_idx_a}, &ea)
 
 	// Create dirB
 	bc, bo, derr_b := fs.allocate_sectors(&vol, 0, 0, 1, .Directory)
@@ -437,7 +433,7 @@ test_cross_dir_rename_simulation :: proc(t: ^testing.T) {
 		sector_index   = u16(bo),
 	}
 	copy(eb.file_name[:], "dirB")
-	fs.write_directory_entry_at(&vol, root_c, fs.Sector_Offset(rce.sector_start), root_idx_b, &eb)
+	fs.write_directory_entry_at(&vol, fs.File_Identity{root_c, fs.Sector_Offset(rce.sector_start), root_idx_b}, &eb)
 
 	// Create a file in dirA
 	ace, ace_err := fs.find_cluster_entry(&vol, ac, ao)
@@ -461,7 +457,7 @@ test_cross_dir_rename_simulation :: proc(t: ^testing.T) {
 		sector_index   = u16(fo),
 	}
 	copy(fe.file_name[:], "FILE")
-	fs.write_directory_entry_at(&vol, ac, fs.Sector_Offset(ace.sector_start), aidx, &fe)
+	fs.write_directory_entry_at(&vol, fs.File_Identity{ac, fs.Sector_Offset(ace.sector_start), aidx}, &fe)
 
 	// Find free slot in dirB
 	bce, bce_err := fs.find_cluster_entry(&vol, bc, bo)
@@ -477,9 +473,9 @@ test_cross_dir_rename_simulation :: proc(t: ^testing.T) {
 	testing.expect(t, bidx >= 0, "slot in dirB")
 
 	// Copy entry to dirB, clear from dirA
-	fs.write_directory_entry_at(&vol, bc, fs.Sector_Offset(bce.sector_start), bidx, &fe)
+	fs.write_directory_entry_at(&vol, fs.File_Identity{bc, fs.Sector_Offset(bce.sector_start), bidx}, &fe)
 	araw[aidx].flags -= {.Exists, .Allocated}
-	fs.write_directory_entry_at(&vol, ac, fs.Sector_Offset(ace.sector_start), aidx, &araw[aidx])
+	fs.write_directory_entry_at(&vol, fs.File_Identity{ac, fs.Sector_Offset(ace.sector_start), aidx}, &araw[aidx])
 
 	// Verify FILE exists in dirB and not in dirA
 	fs.sector_read(&vol, bsec, bbuf[:])
@@ -491,22 +487,18 @@ test_cross_dir_rename_simulation :: proc(t: ^testing.T) {
 
 	// Cleanup
 	braw[bidx].flags -= {.Exists, .Allocated}
-	fs.write_directory_entry_at(&vol, bc, fs.Sector_Offset(bce.sector_start), bidx, &braw[bidx])
+	fs.write_directory_entry_at(&vol, fs.File_Identity{bc, fs.Sector_Offset(bce.sector_start), bidx}, &braw[bidx])
 	fs.deallocate_sectors(&vol, fc, fo)
 	rraw[root_idx_a].flags -= {.Exists, .Allocated}
 	fs.write_directory_entry_at(
 		&vol,
-		root_c,
-		fs.Sector_Offset(rce.sector_start),
-		root_idx_a,
+		fs.File_Identity{root_c, fs.Sector_Offset(rce.sector_start), root_idx_a},
 		&rraw[root_idx_a],
 	)
 	rraw[root_idx_b].flags -= {.Exists, .Allocated}
 	fs.write_directory_entry_at(
 		&vol,
-		root_c,
-		fs.Sector_Offset(rce.sector_start),
-		root_idx_b,
+		fs.File_Identity{root_c, fs.Sector_Offset(rce.sector_start), root_idx_b},
 		&rraw[root_idx_b],
 	)
 	fs.deallocate_sectors(&vol, ac, ao)
@@ -545,7 +537,7 @@ test_atime_fields :: proc(t: ^testing.T) {
 	}
 
 	copy(e.file_name[:], "ATIME")
-	fs.write_directory_entry_at(&vol, dc, fs.Sector_Offset(ce.sector_start), 0, &e)
+	fs.write_directory_entry_at(&vol, fs.File_Identity{dc, fs.Sector_Offset(ce.sector_start), 0}, &e)
 
 	// Read back and verify both mtime and atime
 	buf: [fs.SECTOR_SIZE]u8
@@ -573,7 +565,7 @@ test_atime_fields :: proc(t: ^testing.T) {
 	testing.expect(t, name == "ATIME", "name")
 
 	re.flags -= {.Exists, .Allocated}
-	fs.write_directory_entry_at(&vol, dc, fs.Sector_Offset(ce.sector_start), 0, &re)
+	fs.write_directory_entry_at(&vol, fs.File_Identity{dc, fs.Sector_Offset(ce.sector_start), 0}, &re)
 }
 
 @(test)
@@ -599,9 +591,7 @@ test_rename_same_dir_via_primitives :: proc(t: ^testing.T) {
 		t,
 		fs.write_directory_entry_at(
 			&vol,
-			fs.Cluster(vol.master.root_cluster),
-			fs.Sector_Offset(rce.sector_start),
-			0,
+			fs.File_Identity{fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(rce.sector_start), 0},
 			&entry,
 		) ==
 		.None,
@@ -614,9 +604,7 @@ test_rename_same_dir_via_primitives :: proc(t: ^testing.T) {
 		t,
 		fs.write_directory_entry_at(
 			&vol,
-			fs.Cluster(vol.master.root_cluster),
-			fs.Sector_Offset(rce.sector_start),
-			1,
+			fs.File_Identity{fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(rce.sector_start), 1},
 			&entry,
 		) ==
 		.None,
@@ -673,9 +661,7 @@ test_symlink_create_and_read :: proc(t: ^testing.T) {
 		t,
 		fs.write_directory_entry_at(
 			&vol,
-			fs.Cluster(vol.master.root_cluster),
-			fs.Sector_Offset(rce.sector_start),
-			0,
+			fs.File_Identity{fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(rce.sector_start), 0},
 			&entry,
 		) ==
 		.None,
@@ -751,9 +737,7 @@ test_chmod_persistence :: proc(t: ^testing.T) {
 			t,
 			fs.write_directory_entry_at(
 				&vol,
-				fs.Cluster(vol.master.root_cluster),
-				fs.Sector_Offset(rce.sector_start),
-				0,
+				fs.File_Identity{fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(rce.sector_start), 0},
 				d,
 			) ==
 			.None,
@@ -778,9 +762,7 @@ test_chmod_persistence :: proc(t: ^testing.T) {
 			t,
 			fs.write_directory_entry_at(
 				&vol,
-				fs.Cluster(vol.master.root_cluster),
-				fs.Sector_Offset(rce.sector_start),
-				0,
+				fs.File_Identity{fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(rce.sector_start), 0},
 				d,
 			) ==
 			.None,
@@ -804,9 +786,7 @@ test_chmod_persistence :: proc(t: ^testing.T) {
 			t,
 			fs.write_directory_entry_at(
 				&vol,
-				fs.Cluster(vol.master.root_cluster),
-				fs.Sector_Offset(rce.sector_start),
-				0,
+				fs.File_Identity{fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(rce.sector_start), 0},
 				d,
 			) ==
 			.None,
