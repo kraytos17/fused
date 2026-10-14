@@ -34,7 +34,7 @@ HARNESS       := PYTHONPATH=$(TEST_DIR) bash $(TEST_DIR)/run_in_namespace.sh
 .PHONY: all build format imgdump check-tool \
         create-image mount unmount \
         test pytest check audit vet ci doctor \
-        smoke smoke-rw smoke-mt smoke-errors bench \
+        smoke smoke-rw smoke-mt smoke-errors smoke-crash bench \
         clean help
 
 all:
@@ -117,6 +117,11 @@ smoke-mt: build create-image
 
 smoke-errors: build create-image
 	@$(HARNESS) 60 uv run pytest tests/test_errors.py \
+		-v --tb=short \
+		--fused=build/fused --image=fused.img --mount=$(MOUNTPOINT) --logs=$(LOGS_DIR)
+
+smoke-crash: build create-image
+	@$(HARNESS) 120 uv run pytest tests/test_crash.py \
 		-v --tb=short \
 		--fused=build/fused --image=fused.img --mount=$(MOUNTPOINT) --logs=$(LOGS_DIR)
 

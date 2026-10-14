@@ -13,6 +13,7 @@ def pytest_addoption(parser):
     parser.addoption("--logs", default="logs", help="Logs output directory")
     parser.addoption("--disker", default="build/format", help="Path to the format tool binary")
     parser.addoption("--imgdump", default="build/imgdump", help="Path to the imgdump tool binary")
+    parser.addoption("--check", default="build/check", help="Path to the fsck-like check binary")
 
 
 @pytest.fixture
@@ -43,6 +44,11 @@ def disker_bin(request: pytest.FixtureRequest) -> str:
 @pytest.fixture
 def imgdump_bin(request: pytest.FixtureRequest) -> str:
     return request.config.getoption("--imgdump")
+
+
+@pytest.fixture
+def check_bin(request: pytest.FixtureRequest) -> str:
+    return request.config.getoption("--check")
 
 
 @pytest.fixture
