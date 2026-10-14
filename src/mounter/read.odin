@@ -140,15 +140,24 @@ fused_readdir :: proc "c" (
 		return fs_error_to_errno(serr)
 	}
 	defer delete(snapshot)
-	if rc := fuse3.fill_dir(filler, buf, ".", nil); rc != 0 {
-		return rc
+	// FUSE resume cookies: "." is 1, ".." is 2, entries are 3+position.
+	// The kernel re-requests with off set to the last consumed cookie when
+	// a listing overflows its buffer; items with cookie <= off are skipped.
+	if off <= 0 {
+		if rc := fuse3.fill_dir(filler, buf, ".", nil, 1); rc != 0 {
+			return rc
+		}
 	}
-	if rc := fuse3.fill_dir(filler, buf, "..", nil); rc != 0 {
-		return rc
+	if off <= 1 {
+		if rc := fuse3.fill_dir(filler, buf, "..", nil, 2); rc != 0 {
+			return rc
+		}
 	}
 
 	e := 0
-	for w in snapshot {
+	for w, pos in snapshot {
+		cookie := posix.off_t(pos + 3)
+		if cookie <= off { continue }
 		ent := w.entry
 		name := fs.entry_short_name(&ent)
 		if .LFN in ent.flags {
@@ -166,7 +175,7 @@ fused_readdir :: proc "c" (
 
 			sync.rw_mutex_shared_unlock(&fsys.mu)
 			if l_ok {
-				if rc := fuse3.fill_dir(filler, buf, lfn_cstr, nil); rc != 0 {
+				if rc := fuse3.fill_dir(filler, buf, lfn_cstr, nil, cookie); rc != 0 {
 					return rc
 				}
 			}
@@ -176,7 +185,7 @@ fused_readdir :: proc "c" (
 		}
 
 		name_cstr := strings.clone_to_cstring(name, context.temp_allocator) or_continue
-		if rc := fuse3.fill_dir(filler, buf, name_cstr, nil); rc != 0 {
+		if rc := fuse3.fill_dir(filler, buf, name_cstr, nil, cookie); rc != 0 {
 			return rc
 		}
 		e += 1

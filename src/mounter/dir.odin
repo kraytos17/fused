@@ -140,27 +140,24 @@ find_or_extend_dir :: proc(
 		return {}, dir_err
 	}
 
-	depc := dir_entries_per_buf(fsys.vol.master.features)
 	last_run := dir_runs[len(dir_runs) - 1]
 	last_sec := fs.Sector(u64(last_run.sector) + u64(last_run.count) - 1)
-	ext_buf: [fs.SECTOR_SIZE]u8
-	if fs.sector_read(&fsys.vol, last_sec, ext_buf[:]) != .None {
-		return {}, .Sector_Read_Error
+	// The added sector may sit on a reused cluster carrying stale bytes; a
+	// stale slot with garbage .Exists bits would surface as a phantom entry
+	// and steal a real slot (mkdir zeroes its first sector the same way).
+	// Zero it: the sector is owned by this directory and holds no live
+	// data. Slot 0 is then free by construction.
+	zero: [fs.SECTOR_SIZE]u8
+	if fs.sector_write(&fsys.vol, last_sec, zero[:]) != .None {
+		return {}, .Sector_Write_Error
 	}
-
-	zero_flags: fs.Dir_Flags
-	for i in 0 ..< depc {
-		if get_dir_entry(ext_buf[:], i, fsys.vol.master.features).flags == zero_flags {
-			dlc := u64(last_sec) / fsys.vol.master.cluster_size
-			return fs.File_Identity {
-					fs.Cluster(dlc),
-					fs.Sector_Offset(u64(last_sec) - dlc * fsys.vol.master.cluster_size),
-					i,
-				},
-				.None
-		}
-	}
-	return {}, .Entry_Not_Found
+	dlc := u64(last_sec) / fsys.vol.master.cluster_size
+	return fs.File_Identity {
+			fs.Cluster(dlc),
+			fs.Sector_Offset(u64(last_sec) - dlc * fsys.vol.master.cluster_size),
+			0,
+		},
+		.None
 }
 
 // check_name_exists checks whether a name already exists in the directory.

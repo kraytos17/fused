@@ -9,6 +9,7 @@
 package tests
 
 import "core:c"
+import "core:container/bit_array"
 import "core:mem"
 import "core:strings"
 import "core:sys/posix"
@@ -741,4 +742,181 @@ test_map_key_roundtrip :: proc(t: ^testing.T) {
 	k4.offset = 2
 	v4, ok4 := m4[k4]
 	testing.expect(t, ok4 && v4 == 1, "Extent_Cache_Key roundtrip")
+}
+
+// readdir_names collects one listing and reports whether name is present.
+readdir_has :: proc(t: ^testing.T, path: cstring, off: posix.off_t, name: string) -> bool {
+	collector: Dir_Collector
+	rc := mounter.fused_readdir(path, &collector, collect_filler, off, nil, 0)
+	testing.expect_value(t, rc, 0)
+	list := strings.split(string(collector.buf[:collector.len]), "\x00")
+	defer delete(list)
+	for e in list {
+		if e == name { return true }
+	}
+	return false
+}
+
+// readdir_count collects one listing and returns the non-empty name count.
+readdir_count :: proc(t: ^testing.T, path: cstring, off: posix.off_t) -> int {
+	collector: Dir_Collector
+	rc := mounter.fused_readdir(path, &collector, collect_filler, off, nil, 0)
+	testing.expect_value(t, rc, 0)
+	list := strings.split(string(collector.buf[:collector.len]), "\x00")
+	defer delete(list)
+	n := 0
+	for e in list {
+		if len(e) > 0 { n += 1 }
+	}
+	return n
+}
+
+// test_mount_readdir_resume — FUSE resume cookies: off=0 lists all; off=k
+// skips every item with cookie <= k (.=1, ..=2, entries 3+position), so a
+// resume concatenates exactly with its skipped prefix. Without cookies the
+// kernel re-requests from "." forever on directories that overflow its
+// getdents buffer.
+@(test)
+test_mount_readdir_resume :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	ok := setup_mounter(t, &fsys)
+	if !ok { return }
+	defer teardown_mounter(&fsys)
+
+	fi: fuse3.File_Info
+	rc := mounter.fused_mkdir("/rdir", posix.mode_t{.IRUSR, .IWUSR, .IXUSR})
+	testing.expect_value(t, rc, 0)
+
+	path_buf: [32]u8
+	copy(path_buf[:], "/rdir/F")
+	for i in 0 ..< 10 {
+		path_buf[7] = u8('0' + (i / 10))
+		path_buf[8] = u8('0' + (i % 10))
+		path_buf[9] = 0
+		rc = mounter.fused_create(cstring(raw_data(path_buf[:])), posix.mode_t{.IRUSR, .IWUSR}, &fi)
+		testing.expect_value(t, rc, 0)
+	}
+
+	testing.expect(t, readdir_count(t, "/rdir", 0) == 12, "full listing")
+	testing.expect(t, readdir_has(t, "/rdir", 0, "."), "dot at 0")
+	testing.expect(t, readdir_has(t, "/rdir", 5, "F03"), "resume at F03")
+	testing.expect(t, !readdir_has(t, "/rdir", 5, "F02"), "F02 skipped")
+	testing.expect(t, !readdir_has(t, "/rdir", 5, "."), "dot skipped")
+	testing.expect(t, !readdir_has(t, "/rdir", 1, "."), "dot skipped at 1")
+	testing.expect(t, readdir_has(t, "/rdir", 1, ".."), "dotdot at 1")
+	testing.expect(t, readdir_count(t, "/rdir", 5) == 7, "seven remain")
+	testing.expect(t, readdir_count(t, "/rdir", 12) == 0, "nothing past end")
+	testing.expect(t, readdir_count(t, "/rdir", 100) == 0, "nothing far past end")
+}
+
+// test_dir_extend_zeroes_new_sectors — stale-sector regression test.
+// Neither allocate nor free zeroes data sectors, so a reused cluster keeps
+// its old bytes; a stale slot with garbage .Exists bits would surface as a
+// phantom entry and steal a real slot. mkdir zeroes its first sector and
+// find_or_extend_dir zeroes each added sector — this test proves both by
+// poisoning every free data sector first, so whatever the allocator takes
+// is guaranteed stale. (Reserved clusters are skipped by range; allocated
+// chains are skipped by their bitmap bits.)
+@(test)
+test_dir_extend_zeroes_new_sector :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	ok := setup_mounter(t, &fsys)
+	if !ok { return }
+	defer teardown_mounter(&fsys)
+	vol := &fsys.vol
+
+	// Best-effort pre-clean, mirroring cleanup_root: a previous failed run
+	// may have left /pdir behind.
+	for i in 0 ..< 9 {
+		path_buf: [32]u8
+		copy(path_buf[:], "/pdir/F0")
+		path_buf[8] = u8('0' + i)
+		path_buf[9] = 0
+		mounter.fused_unlink(cstring(raw_data(path_buf[:])))
+	}
+	mounter.fused_rmdir("/pdir")
+
+	// Poison every free data sector with garbage Exists entries; collect
+	// them for zero-back at the end. No allocation happens here, so the
+	// free-space accounting and bitmaps stay consistent.
+	poisoned := make([dynamic]fs.Sector)
+	defer delete(poisoned)
+	for ci in 0 ..< int(vol.master.cluster_map_size) {
+		if u64(ci) < vol.master.root_cluster { continue }
+		bm, _, berr := fs.alloc_cache_ensure(&vol.cache, vol, u64(ci))
+		if berr != .None { continue }
+		it := bit_array.make_iterator(&bm)
+		for is_set, bit in bit_array.iterate_by_all(&it) {
+			if is_set { continue }
+			sec := fs.Sector(u64(ci) * vol.master.cluster_size + u64(bit))
+			buf: [fs.SECTOR_SIZE]u8
+			raw := (^[(fs.DIR_ENTRIES_PER_SECTOR)]fs.Directory_Entry)(raw_data(buf[:]))
+			for i in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
+				raw[i].flags = fs.Dir_Flags{.Allocated, .Exists}
+				copy(raw[i].file_name[:], "POISON!")
+				raw[i].file_name[7] = 0
+			}
+			testing.expect(t, fs.sector_write(vol, sec, buf[:]) == .None, "poison write")
+			append(&poisoned, sec)
+		}
+	}
+	testing.expect(t, len(poisoned) > 0, "poisoned some sectors")
+
+	// mkdir takes a poisoned cluster: the fresh dir must read empty.
+	fi: fuse3.File_Info
+	rc := mounter.fused_mkdir("/pdir", posix.mode_t{.IRUSR, .IWUSR, .IXUSR})
+	testing.expect_value(t, rc, 0)
+	testing.expect(t, readdir_count(t, "/pdir", 0) == 2, "fresh dir is empty")
+
+	// Fill the first sector, then extend into another poisoned cluster.
+	path_buf: [32]u8
+	copy(path_buf[:], "/pdir/F")
+	for i in 0 ..< 8 {
+		path_buf[7] = u8('0' + (i / 10))
+		path_buf[8] = u8('0' + (i % 10))
+		path_buf[9] = 0
+		rc = mounter.fused_create(cstring(raw_data(path_buf[:])), posix.mode_t{.IRUSR, .IWUSR}, &fi)
+		testing.expect_value(t, rc, 0)
+	}
+	path_buf[7] = '0'
+	path_buf[8] = '8'
+	path_buf[9] = 0
+	rc = mounter.fused_create(cstring(raw_data(path_buf[:])), posix.mode_t{.IRUSR, .IWUSR}, &fi)
+	testing.expect_value(t, rc, 0)
+	st: fuse3.Stat
+	rc = mounter.fused_getattr(cstring(raw_data(path_buf[:])), &st, nil)
+	testing.expect_value(t, rc, 0)
+
+	// Exact order: dots, F00..F08, nothing else. No phantoms, no gaps.
+	want := [11]string{".", "..", "F00", "F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08"}
+	collector: Dir_Collector
+	rc = mounter.fused_readdir("/pdir", &collector, collect_filler, 0, nil, 0)
+	testing.expect_value(t, rc, 0)
+	list := strings.split(string(collector.buf[:collector.len]), "\x00")
+	defer delete(list)
+	got := make([dynamic]string)
+	defer delete(got)
+	for e in list {
+		if len(e) > 0 { append(&got, e) }
+	}
+	testing.expect(t, len(got) == len(want), "exact entry count")
+	for i in 0 ..< min(len(got), len(want)) {
+		testing.expectf(t, got[i] == want[i], "pos %d: want %q got %q", i, want[i], got[i])
+	}
+
+	// Remove the test dir, then zero back every poisoned sector so later
+	// tests inherit no stale state from this one.
+	for i in 0 ..< 9 {
+		path_buf[7] = u8('0' + (i / 10))
+		path_buf[8] = u8('0' + (i % 10))
+		path_buf[9] = 0
+		rc = mounter.fused_unlink(cstring(raw_data(path_buf[:])))
+		testing.expect_value(t, rc, 0)
+	}
+	rc = mounter.fused_rmdir("/pdir")
+	testing.expect_value(t, rc, 0)
+	zero: [fs.SECTOR_SIZE]u8
+	for sec in poisoned {
+		testing.expect(t, fs.sector_write(vol, sec, zero[:]) == .None, "zero-back")
+	}
 }
