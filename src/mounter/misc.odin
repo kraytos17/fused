@@ -207,6 +207,11 @@ fused_lseek :: proc "c" (
 		return posix.off_t(fuse3.nix(.ENOSYS))
 	}
 
+	pos, pok := checked_offset(off)
+	if !pok {
+		return posix.off_t(fuse3.nix(.EINVAL))
+	}
+
 	entry, data_cluster, data_offset, err := read_entry_from_fh(fsys, fi.fh)
 	if err != .None {
 		return posix.off_t(fs_error_to_errno(err))
@@ -217,7 +222,6 @@ fused_lseek :: proc "c" (
 		return posix.off_t(fuse3.nix(.ENOENT))
 	}
 
-	pos := u64(off)
 	file_size := u64(entry.file_size)
 	if len(runs) == 0 {
 		if seek_how == .Data {

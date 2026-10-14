@@ -242,7 +242,9 @@ fd to the disk fd for the write side.
 
 - **Bitmap cache** (`src/fs/alloc_cache.odin`): LRU cache (1024 entries) backed by
   `core:container/lru`. Eliminates redundant cluster-entry table reads. ~19 KB
-  at default cluster size regardless of filesystem size.
+  at default cluster size regardless of filesystem size. Clusters without an
+  allocated table (fresh, reserved) resolve to empty bitmaps and are *not*
+  counted as free by `statfs`; only genuine I/O failures propagate as errors.
 
 ### Mounter helpers (`src/mounter/`)
 

@@ -266,6 +266,11 @@ fused_read :: proc "c" (
 	defer end_read_op(fsys)
 
 	read_start := time.now()
+	uoff, ook := checked_offset(off)
+	if !ook {
+		return fuse3.nix(.EINVAL)
+	}
+
 	_, data_cluster, data_offset, rerr := read_entry_from_fh(fsys, fi.fh)
 	if rerr != .None {
 		return fs_error_to_errno(rerr)
@@ -289,7 +294,7 @@ fused_read :: proc "c" (
 		remaining = _mem_read_remaining,
 	}
 
-	bytes_read := read_range_from_runs(fsys, runs, u64(off), &sink)
+	bytes_read := read_range_from_runs(fsys, runs, uoff, &sink)
 	log.debugf(
 		"read: %s off=%d size=%d → %d bytes (%v)",
 		path,
@@ -317,6 +322,11 @@ fused_read_buf :: proc "c" (
 	defer end_read_op(fsys)
 
 	read_start := time.now()
+	uoff, ook := checked_offset(off)
+	if !ook {
+		return fuse3.nix(.EINVAL)
+	}
+
 	_, data_cluster, data_offset, rerr := read_entry_from_fh(fsys, fi.fh)
 	if rerr != .None {
 		return fs_error_to_errno(rerr)
@@ -329,7 +339,7 @@ fused_read_buf :: proc "c" (
 
 	slices, total_provided := collect_read_slices(
 		runs,
-		u64(off),
+		uoff,
 		u64(size),
 		context.temp_allocator,
 	)

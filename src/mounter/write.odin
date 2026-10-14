@@ -53,13 +53,19 @@ fused_write :: proc "c" (
 	write_start := time.now()
 	defer end_op(fsys)
 
+	// ABI inputs validate before any fs work (kernel-parity order).
+	uoff, ook := checked_offset(off)
+	if !ook {
+		return fuse3.nix(.EINVAL)
+	}
+
 	entry, data_cluster, data_offset, rerr := read_entry_from_fh(fsys, fi.fh)
 	if rerr != .None {
 		log.debugf("write: %s → %v", path, rerr)
 		return fs_error_to_errno(rerr)
 	}
 
-	total_sectors, sok := _span_sectors(u64(off), u64(size))
+	total_sectors, sok := _span_sectors(uoff, u64(size))
 	if !sok {
 		return fuse3.nix(.EOVERFLOW)
 	}
@@ -86,7 +92,7 @@ fused_write :: proc "c" (
 	// Metadata allocation is made durable by the journal's own sync
 	// (journal_commit); no extra fsync needed here.
 	log.debugf("write: %s → enter write loop (runs=%d)", path, len(runs))
-	write_off := u64(off)
+	write_off := uoff
 	end, _ := _checked_add(write_off, u64(size)) // cannot wrap: span checked above
 	new_size := max(u64(entry.file_size), end)
 	mem_src := Mem_Source {
@@ -150,6 +156,11 @@ fused_write_buf :: proc "c" (
 	write_start := time.now()
 	defer end_op(fsys)
 
+	uoff, ook := checked_offset(off)
+	if !ook {
+		return fuse3.nix(.EINVAL)
+	}
+
 	entry, data_cluster, data_offset, rerr := read_entry_from_fh(fsys, fi.fh)
 	if rerr != .None {
 		log.debugf("write_buf: %s → %v", path, rerr)
@@ -167,7 +178,7 @@ fused_write_buf :: proc "c" (
 		}
 	}
 
-	total_sectors, sok := _span_sectors(u64(off), total_size)
+	total_sectors, sok := _span_sectors(uoff, total_size)
 	if !size_ok || !sok {
 		return fuse3.nix(.EOVERFLOW)
 	}
@@ -192,7 +203,7 @@ fused_write_buf :: proc "c" (
 	}
 
 	log.debugf("write_buf: %s → enter write loop (runs=%d, bufs=%d)", path, len(runs), buf.count)
-	write_off := u64(off)
+	write_off := uoff
 	bufvec_src := Bufvec_Source {
 		fsys  = fsys,
 		bufs  = bufs,
@@ -233,6 +244,10 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 	defer end_op(fsys)
 
 	log.debugf("truncate: %s size=%d fi=%v", path, size, fi != nil)
+	usize, sok := checked_offset(size)
+	if !sok {
+		return fuse3.nix(.EINVAL)
+	}
 	entry, entry_cluster, entry_offset, entry_idx, data_cluster, data_offset, rerr :=
 		resolve_entry(fsys, path, fi)
 	if rerr != .None {
@@ -244,7 +259,7 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 		return fuse3.nix(.EISDIR)
 	}
 
-	new_sectors := (u64(size) + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
+	new_sectors := (usize + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
 	runs: []fs.Extent_Run
 	cerr: fs.FS_Error
 	data_cluster, data_offset, runs, _, cerr = ensure_chain_covers(
@@ -275,7 +290,7 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 	}
 
 	set_entry_time_to_now(&entry)
-	entry.file_size = u64(size)
+	entry.file_size = usize
 	if werr := write_entry_at(fsys, File_Identity{entry_cluster, entry_offset, entry_idx}, &entry);
 	   werr != .None {
 		return fs_error_to_errno(werr)
@@ -354,6 +369,13 @@ fused_fallocate :: proc "c" (
 		return fuse3.nix(.EOPNOTSUPP)
 	}
 
+	// ABI inputs validate before any fs work (kernel-parity order).
+	alloc_start, sok1 := checked_offset(off)
+	alloc_len, sok2 := checked_offset(length)
+	if !sok1 || !sok2 {
+		return fuse3.nix(.EINVAL)
+	}
+
 	entry, data_cluster, data_offset, rerr := read_entry_from_fh(fsys, fi.fh)
 	if rerr != .None {
 		return fs_error_to_errno(rerr)
@@ -362,8 +384,6 @@ fused_fallocate :: proc "c" (
 		return fuse3.nix(.EISDIR)
 	}
 
-	alloc_start := u64(off)
-	alloc_len := u64(length)
 	alloc_end, aok := _checked_add(alloc_start, alloc_len)
 	if !aok {
 		return fuse3.nix(.EOVERFLOW)
@@ -451,6 +471,12 @@ fused_copy_file_range :: proc "c" (
 	)
 	defer end_op(fsys)
 
+	src_off, sok1 := checked_offset(off_in)
+	dst_off, sok2 := checked_offset(off_out)
+	if !sok1 || !sok2 {
+		return c.ssize_t(fuse3.nix(.EINVAL))
+	}
+
 	_, src_cluster, src_offset, src_rerr := read_entry_from_fh(fsys, fi_in.fh)
 	if src_rerr != .None {
 		return c.ssize_t(fs_error_to_errno(src_rerr))
@@ -466,8 +492,6 @@ fused_copy_file_range :: proc "c" (
 		return c.ssize_t(fuse3.nix(.ENOENT))
 	}
 
-	src_off := u64(off_in)
-	dst_off := u64(off_out)
 	dst_total_sectors, sok := _span_sectors(dst_off, u64(size))
 	if !sok {
 		return c.ssize_t(fuse3.nix(.EOVERFLOW))

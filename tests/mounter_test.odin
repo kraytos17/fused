@@ -599,3 +599,41 @@ test_mount_write_span_overflow_is_eoverflow :: proc(t: ^testing.T) {
 	rc = mounter.fused_write("/ovfile", raw_data(data), c.size_t(len(data)), 0, &fi)
 	testing.expect_value(t, rc, c.int(len(data)))
 }
+
+// test_mount_negative_offsets_are_einval — negative offsets/sizes wrap on
+// u64 conversion, so the boundary rejects them with EINVAL before any
+// arithmetic (defense-in-depth; the kernel never delivers them).
+@(test)
+test_mount_negative_offsets_are_einval :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	ok := setup_mounter(t, &fsys)
+	if !ok { return }
+	defer teardown_mounter(&fsys)
+	cleanup_root(&fsys, []string{"negfile"})
+	defer cleanup_root(&fsys, []string{"negfile"})
+
+	fi: fuse3.File_Info
+	rc := mounter.fused_create("/negfile", posix.mode_t{.IRUSR, .IWUSR}, &fi)
+	testing.expect_value(t, rc, 0)
+
+	data := "negative-guard\n"
+	rc = mounter.fused_write("/negfile", raw_data(data), c.size_t(len(data)), -1, &fi)
+	expect_errno(t, rc, .EINVAL)
+
+	buf := make([]u8, 64)
+	defer delete(buf)
+	rc = mounter.fused_read("/negfile", raw_data(buf), c.size_t(len(data)), -1, &fi)
+	expect_errno(t, rc, .EINVAL)
+
+	rc = mounter.fused_truncate("/negfile", -1, nil)
+	expect_errno(t, rc, .EINVAL)
+
+	rc = mounter.fused_fallocate("/negfile", 0, -1, 512, &fi)
+	expect_errno(t, rc, .EINVAL)
+	rc = mounter.fused_fallocate("/negfile", 0, 0, -1, &fi)
+	expect_errno(t, rc, .EINVAL)
+
+	// Sanity: the handle still works after rejected calls.
+	rc = mounter.fused_write("/negfile", raw_data(data), c.size_t(len(data)), 0, &fi)
+	testing.expect_value(t, rc, c.int(len(data)))
+}

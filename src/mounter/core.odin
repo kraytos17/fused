@@ -121,6 +121,17 @@ end_read_op :: proc(fsys: ^FS) {
 	sync.rw_mutex_shared_unlock(&fsys.mu)
 }
 
+// checked_offset converts a FUSE byte offset, rejecting negatives that
+// would wrap on u64 conversion. Kernel syscalls never deliver negatives
+// (rejected in VFS), so this is defense-in-depth at the trust boundary,
+// matching the overflow guards on off+size spans.
+checked_offset :: proc(off: posix.off_t) -> (uoff: u64, ok: bool) {
+	if off < 0 {
+		return 0, false
+	}
+	return u64(off), true
+}
+
 // fs_error_to_errno translates an FS_Error to a POSIX errno value.
 // Unknown errors fall through to EIO (the `case:` default is deliberate —
 // a new FS_Error value is a mapping decision, not a compile error; keep it

@@ -82,3 +82,75 @@ test_backend_abort :: proc(t: ^testing.T) {
 	testing.expect(t, backend2.commit(&vol, &h2), "commit 2")
 	testing.expect_value(t, fs.journal_seq_get(&vol.master), fs.Journal_Seq(u64(seq0) + 1))
 }
+
+// test_recover_replays_committed_txn verifies crash recovery end to end: a
+// committed-but-unapplied journal entry is applied by journal_recover. The
+// scratch slot is restored afterwards so the shared test image is
+// undisturbed (the ring keeps the committed slot, which later recovers
+// would only re-apply idempotently — and no test calls recover).
+@(test)
+test_recover_replays_committed_txn :: proc(t: ^testing.T) {
+	vol, vol_ok := open_test_volume()
+	if !vol_ok { testing.fail(t); return }
+	defer close_test_volume(&vol)
+
+	// Find a readable table with a zero-state slot to scribble.
+	found := false
+	empty: fs.Cluster_Entry_State
+	s_c: fs.Cluster
+	s_j := 0
+	saved: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
+	for ci in 1 ..< int(vol.master.cluster_map_size) {
+		table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
+		if fs.read_cluster_entry_table(&vol, fs.Cluster(ci), &table) != .None { continue }
+		for j in 0 ..< len(table) {
+			if table[j].state == empty {
+				s_c, s_j, saved, found = fs.Cluster(ci), j, table, true
+				break
+			}
+		}
+		if found { break }
+	}
+	if !found {
+		testing.fail(t)
+		return
+	}
+
+	// Commit (but do not apply) a recognizable entry at the scratch slot.
+	crafted := fs.Cluster_Entry {
+		state           = {.Allocated},
+		allocation_size = 1,
+		sector_start    = 0,
+	}
+	backend := fs.JOURNAL_BACKEND
+	h: fs.Journal_Txn_Handle
+	testing.expect(t, backend.begin(&vol, &h), "begin")
+	testing.expect(
+		t,
+		backend.add(&vol, &h, fs.journal_entry_from_cluster_entry(crafted, u64(s_c), u8(s_j))),
+		"add",
+	)
+	testing.expect(t, backend.commit(&vol, &h), "commit")
+
+	// Pre-condition: the entry is not yet on disk.
+	pre: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
+	testing.expect_value(t, fs.read_cluster_entry_table(&vol, s_c, &pre), fs.FS_Error.None)
+	testing.expect(t, pre[s_j].state == empty, "slot untouched before recover")
+
+	fs.journal_recover(&vol)
+
+	after: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
+	testing.expect_value(t, fs.read_cluster_entry_table(&vol, s_c, &after), fs.FS_Error.None)
+	testing.expect(t, after[s_j].state == crafted.state, "replayed state")
+	testing.expect_value(t, after[s_j].allocation_size, crafted.allocation_size)
+
+	// Restore the scratch slot; the test image must be undisturbed.
+	testing.expect_value(
+		t,
+		fs.write_cluster_entry_table(&vol, s_c, &saved),
+		fs.FS_Error.None,
+	)
+	check: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
+	testing.expect_value(t, fs.read_cluster_entry_table(&vol, s_c, &check), fs.FS_Error.None)
+	testing.expect(t, check[s_j].state == empty, "slot restored")
+}

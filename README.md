@@ -178,7 +178,7 @@ logrotate, or pipe-based rotation:
 | `test` | Odin unit tests |
 | `pytest` | Python integration tests |
 | `check` | Struct-size cross-check (Odin compile-time `#assert`s) |
-| `audit` | Verify every `proc "c"` callback uses `begin_op` |
+| `audit` | Callback locking, src hygiene, cast discipline (`--strict` gates; unknown flags rejected) |
 | `smoke` | Basic FUSE smoke test in an isolated namespace (pytest) |
 | `smoke-rw` | Read-write FUSE test (pytest) |
 | `smoke-mt` | Multi-threaded stress test |

@@ -185,7 +185,13 @@ _replay_slot :: proc(vol: ^Volume, s: Slot_Entry) -> (replayed: int, completed: 
 				next_sector_index = je.next_sector_index,
 			}
 
-			_ = write_cluster_entry_table(vol, Cluster(je.cluster), &table)
+			// A failed table write aborts the slot like a torn record
+			// sector: the watermark does not advance, so a later recover
+			// retries instead of skipping a half-applied transaction.
+			if werr := write_cluster_entry_table(vol, Cluster(je.cluster), &table); werr != .None {
+				log.warnf("journal: can't write table for cluster %d — aborting replay", je.cluster)
+				return replayed, false
+			}
 			replayed += 1
 		}
 	}
