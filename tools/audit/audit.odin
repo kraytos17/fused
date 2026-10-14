@@ -166,6 +166,17 @@ is_begin_op :: proc(s: ^ast.Stmt) -> bool {
 				return i.name == "begin_op"
 			}
 		}
+	case ^ast.Value_Decl:
+		// := parses as Value_Decl, not Assign_Stmt (verified by probe:
+		// the Assign_Stmt-only shape above never fired). fsys := begin_op().
+		if len(a.values) != 1 { return false }
+		#partial switch c in a.values[0].derived_expr {
+		case ^ast.Call_Expr:
+			#partial switch i in c.expr.derived_expr {
+			case ^ast.Ident:
+				return i.name == "begin_op"
+			}
+		}
 	}
 	return false
 }
