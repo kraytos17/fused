@@ -127,7 +127,7 @@ def run(
     def write_measure():
         n = 0
         with open(path, "wb") as fh:
-            for off in range(0, size, chunk):
+            for _ in range(0, size, chunk):
                 fh.write(b"x" * chunk)
                 n += 1
         return n
