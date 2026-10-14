@@ -8,6 +8,10 @@
 //   (b) no os.exit() outside cmd/ and tools/ (binaries own process exit).
 //   (c) no panic() in src/ (must not unwind through C callbacks).
 //   (d) no (&x[0]) reinterpret casts in src/ (use the raw_data form).
+//   (e) no auto_cast in src/ (prototyping-only); cast() only on pointers,
+//       values use the T(v) form.
+//   (f) every transmute in src/ carries a same-line // TRANSMUTE: marker
+//       citing the invariant that makes it sound (see DESIGN.md).
 package main
 
 import "base:runtime"
@@ -444,10 +448,36 @@ run_locking_audit :: proc() {
 	if total_f > 0 { os.exit(1) }
 }
 
-// Hygiene audit (rules b/c/d): line scans over src/{fs,fuse3,mounter}.
+// Hygiene audit (rules b/c/d/e/f): line scans over src/{fs,fuse3,mounter}.
 // Full-line `//` comments are skipped; the matchers are deliberately narrow
 // (see has_old_cast) to avoid false positives in legitimate code.
 HAS_OLD_CAST_ANCHOR :: ")("
+
+// has_value_cast reports cast() applied to a non-pointer type. Pointer
+// casts (cast(^T)) are the one legitimate cast() form; value conversions
+// must use T(v). The match requires a non-identifier left boundary so
+// words like broadcast( never match.
+has_value_cast :: proc(line: string) -> bool {
+	from := 0
+	for {
+		idx := strings.index(line[from:], "cast(")
+		if idx < 0 { return false }
+		pos := from + idx
+		if pos > 0 {
+			c := line[pos-1]
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+				from = pos + len("cast(")
+				continue
+			}
+		}
+		after := pos + len("cast(")
+		if after < len(line) && line[after] == '^' {
+			from = after + 1
+			continue
+		}
+		return true
+	}
+}
 
 has_old_cast :: proc(line: string) -> bool {
 	// Old reinterpret shape: (^T)(&buf[0]) with a bare buffer ident.
@@ -478,6 +508,22 @@ audit_hygiene_file :: proc(path: string) -> (failed: int) {
 		}
 		if has_old_cast(lines[i]) {
 			fmt.printf("FAIL   %s:%d old (&x[0]) cast; use raw_data form\n", path, i + 1)
+			failed += 1
+		}
+		// auto_cast is banned tree-wide (prototyping-only per the language docs).
+		if strings.contains(lines[i], "auto_cast") {
+			fmt.printf("FAIL   %s:%d auto_cast is banned; use explicit T(v)\n", path, i + 1)
+			failed += 1
+		}
+		// Value casts must use the T(v) form; cast() is for pointer casts.
+		if has_value_cast(lines[i]) {
+			fmt.printf("FAIL   %s:%d cast() on non-pointer; use the T(v) form\n", path, i + 1)
+			failed += 1
+		}
+		// Every transmute cites its invariant in a same-line marker.
+		if strings.contains(lines[i], "transmute(") &&
+		   !strings.contains(lines[i], "// TRANSMUTE:") {
+			fmt.printf("FAIL   %s:%d transmute without // TRANSMUTE: invariant marker\n", path, i + 1)
 			failed += 1
 		}
 		// Private procs must be _-prefixed (structs/enums/vars exempt).

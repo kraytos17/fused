@@ -55,7 +55,7 @@ fused_setxattr :: proc "c" (
 		}
 	}
 	// Parse the ABI word once; downstream switches on set membership.
-	xflags := transmute(fuse3.Xattr_Flags)(flags)
+	xflags := transmute(fuse3.Xattr_Flags)(flags) // TRANSMUTE: c.int ABI word bit-view as flag set
 	if .Create in xflags && exists {
 		return fuse3.nix(.EEXIST)
 	}

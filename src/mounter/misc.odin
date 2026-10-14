@@ -51,7 +51,7 @@ fused_access :: proc "c" (path: cstring, mask: c.int) -> c.int {
 		return fs_error_to_errno(rerr)
 	}
 
-	m := transmute(posix.Mode_Flags)(mask)
+	m := transmute(posix.Mode_Flags)(mask) // TRANSMUTE: c.int ABI word bit-view as flag set
 	if (posix.Mode_Flag_Bits.R_OK in m) && .No_Read in entry.flags {
 		return fuse3.nix(.EACCES)
 	}

@@ -239,7 +239,7 @@ fused_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 		return fuse3.nix(.EISDIR)
 	}
 
-	open_flags := transmute(posix.O_Flags)(fi.flags)
+	open_flags := transmute(posix.O_Flags)(fi.flags) // TRANSMUTE: ABI word bit-view as flag set
 	wants_write := .WRONLY in open_flags || .RDWR in open_flags
 	if wants_write && (.No_Write in entry.flags || .Read_Only in entry.flags) {
 		return fuse3.nix(.EACCES)
@@ -248,7 +248,7 @@ fused_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 		return fuse3.nix(.EACCES)
 	}
 
-	fi.fh = transmute(u64)fs.make_file_handle(parent_cluster, parent_offset, entry_idx)
+	fi.fh = transmute(u64)fs.make_file_handle(parent_cluster, parent_offset, entry_idx) // TRANSMUTE: bit_field File_Handle pack into u64 fh
 	log.debugf("open: %s → ok", path)
 	return 0
 }

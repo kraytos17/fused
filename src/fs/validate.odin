@@ -18,7 +18,7 @@ validate_master :: proc(master: ^Master_Record, image_size: Byte_Offset) -> FS_E
 	// NOTE: the comparison is done on the u64 representation, not the
 	// bit_set: `~` on a bit_set only covers live enum values, so a deleted
 	// variant's bit would be invisible to a bit_set-level check.
-	unknown := transmute(u64)master.features & ~transmute(u64)ALL_SUPPORTED_FEATURES
+	unknown := transmute(u64)master.features & ~transmute(u64)ALL_SUPPORTED_FEATURES // TRANSMUTE: retired-bit-visible compare
 	if unknown != 0 {
 		return .Feature_Not_Supported
 	}

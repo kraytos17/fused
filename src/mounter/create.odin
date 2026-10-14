@@ -98,7 +98,7 @@ fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 		return fuse3.nix(.EIO)
 	}
 
-	fi.fh = transmute(u64)fs.make_file_handle(dcluster, dsec, didx)
+	fi.fh = transmute(u64)fs.make_file_handle(dcluster, dsec, didx) // TRANSMUTE: bit_field File_Handle pack into u64 fh
 	path_cache_invalidate_all(fsys)
 	log.debugf("create: %s → ok", path)
 	return 0
@@ -197,7 +197,7 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 		}
 
 		buf: [fs.SECTOR_SIZE]u8
-		copy(buf[:], transmute([]u8)(target_str))
+		copy(buf[:], transmute([]u8)(target_str)) // TRANSMUTE: string->bytes alias, no copy
 		if fs.sector_write(&fsys.vol, runs[0].sector, buf[:]) != .None {
 			return fuse3.nix(.EIO)
 		}
@@ -338,7 +338,7 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	defer end_op(fsys)
 
 	// Parse the ABI word once; downstream switches on set membership.
-	rflags := transmute(fuse3.Rename_Flags)(flags)
+	rflags := transmute(fuse3.Rename_Flags)(flags) // TRANSMUTE: c.uint ABI word bit-view as flag set
 	if .No_Replace in rflags {
 		log.debugf("rename: RENAME_NOREPLACE not supported")
 		return fuse3.nix(.ENOSYS)

@@ -129,7 +129,7 @@ lfn_bump_write :: proc(
 	buf: [SECTOR_SIZE]u8
 	if sector_read(vol, s.sector, buf[:]) != .None { return {}, .Sector_Read_Error }
 
-	copy(buf[s.next_byte:], transmute([]u8)name)
+	copy(buf[s.next_byte:], transmute([]u8)name) // TRANSMUTE: string->bytes alias, no copy
 	if sector_write(vol, s.sector, buf[:]) != .None { return {}, .Sector_Write_Error }
 
 	ptr = {

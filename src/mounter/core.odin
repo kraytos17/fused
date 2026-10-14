@@ -231,7 +231,7 @@ File_Identity :: struct {
 // entry it refers to.
 @(require_results)
 fh_parts :: proc "contextless" (fh: u64) -> (id: File_Identity) {
-	f := transmute(fs.File_Handle)(fh)
+	f := transmute(fs.File_Handle)(fh) // TRANSMUTE: u64 unpack into bit_field File_Handle
 	return File_Identity {
 		fs.Cluster(f.dir_cluster),
 		fs.Sector_Offset(f.dir_offset),

@@ -173,12 +173,12 @@ _replay_slot :: proc(vol: ^Volume, s: Slot_Entry) -> (replayed: int, completed: 
 			}
 
 			ce := table[je.ce_index]
-			if .Allocated in ce.state && transmute(u8)ce.state == je.state {
+			if .Allocated in ce.state && transmute(u8)ce.state == je.state { // TRANSMUTE: retired-bit-visible skip-if-identical
 				continue
 			}
 
 			table[je.ce_index] = Cluster_Entry {
-				state             = transmute(Cluster_Entry_State)je.state,
+				state             = transmute(Cluster_Entry_State)je.state, // TRANSMUTE: u8 wire value pack into bit_set
 				allocation_size   = je.alloc_size,
 				sector_start      = je.sector_start,
 				next_cluster      = je.next_cluster,
@@ -270,7 +270,7 @@ journal_entry_from_cluster_entry :: proc(
 	return Journal_Entry {
 		cluster = cluster,
 		ce_index = ce_index,
-		state = transmute(u8)ce.state,
+		state = transmute(u8)ce.state, // TRANSMUTE: bit_set unpack into u8 journal record
 		sector_start = ce.sector_start,
 		alloc_size = ce.allocation_size,
 		next_cluster = ce.next_cluster,

@@ -349,7 +349,7 @@ fused_fallocate :: proc "c" (
 	fsys := begin_op()
 	defer end_op(fsys)
 	// Parse the ABI word once; downstream switches on set membership.
-	fmode := transmute(fuse3.Falloc_Flags)(mode)
+	fmode := transmute(fuse3.Falloc_Flags)(mode) // TRANSMUTE: c.int ABI word bit-view as flag set
 	if .Collapse_Range in fmode || .Insert_Range in fmode {
 		return fuse3.nix(.EOPNOTSUPP)
 	}
