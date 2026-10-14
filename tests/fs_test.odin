@@ -115,7 +115,7 @@ test_fs_core :: proc(t: ^testing.T) {
 	testing.expect(t, found, "Kernel entry")
 	kernel_cluster := fs.Cluster(kernel.stored_cluster)
 	kernel_offset := fs.Sector_Offset(kernel.sector_index)
-	runs, ext_err := fs.resolve_extents(&vol, kernel_cluster, kernel_offset)
+	runs, ext_err := fs.resolve_extents(&vol, fs.Chain_Location{kernel_cluster, kernel_offset})
 
 	testing.expectf(t, ext_err == .None, "resolve_extents")
 	testing.expect(t, len(runs) > 0, "extents not empty")
@@ -302,13 +302,13 @@ test_deallocate_sectors_edge_cases :: proc(t: ^testing.T) {
 	fs.alloc_cache_init(&vol.cache, &vol.master)
 	defer fs.alloc_cache_destroy(&vol.cache)
 
-	err := fs.deallocate_sectors(&vol, 0, 0)
+	err := fs.deallocate_sectors(&vol, fs.Chain_Location{0, 0})
 	testing.expect_value(t, err, fs.FS_Error.None)
 
-	c, o, aerr := fs.allocate_sectors(&vol, 0, 0, 1, .File_Content)
+	c, o, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
-	err = fs.deallocate_sectors(&vol, c, o)
+	err = fs.deallocate_sectors(&vol, fs.Chain_Location{c, o})
 	testing.expect_value(t, err, fs.FS_Error.None)
 
 	_, find_err := fs.find_cluster_entry(&vol, c, o)

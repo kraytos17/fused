@@ -45,7 +45,7 @@ test_directory_growth :: proc(t: ^testing.T) {
 		copy(ne.file_name[:], name)
 
 		// Find free slot — scan the directory chain
-		dir_runs, dr_err := fs.resolve_extents(&vol, root_cluster, root_offset)
+		dir_runs, dr_err := fs.resolve_extents(&vol, fs.Chain_Location{root_cluster, root_offset})
 		testing.expectf(t, dr_err == .None, "resolve_extents")
 
 		dsec: fs.Sector_Offset
@@ -78,19 +78,18 @@ test_directory_growth :: proc(t: ^testing.T) {
 			}
 		}
 		if didx < 0 {
-			existing_runs, _ := fs.resolve_extents(&vol, root_cluster, root_offset)
+			existing_runs, _ := fs.resolve_extents(&vol, fs.Chain_Location{root_cluster, root_offset})
 			existing_total: u64
 			for r in existing_runs { existing_total += u64(r.count) }
 
 			_, _, ext_err := fs.allocate_sectors(
 				&vol,
-				root_cluster,
-				root_offset,
+				fs.Chain_Location{root_cluster, root_offset},
 				existing_total + 1,
 				.Directory,
 			)
 			testing.expect_value(t, ext_err, fs.FS_Error.None)
-			dir_runs, dr_err = fs.resolve_extents(&vol, root_cluster, root_offset)
+			dir_runs, dr_err = fs.resolve_extents(&vol, fs.Chain_Location{root_cluster, root_offset})
 
 			testing.expectf(t, dr_err == .None, "resolve_extents after extension")
 			last_run := dir_runs[len(dir_runs) - 1]
@@ -130,7 +129,7 @@ test_directory_growth :: proc(t: ^testing.T) {
 		}
 	}
 
-	dir_runs2, dr2_err := fs.resolve_extents(&vol, root_cluster, root_offset)
+	dir_runs2, dr2_err := fs.resolve_extents(&vol, fs.Chain_Location{root_cluster, root_offset})
 	testing.expectf(t, dr2_err == .None, "resolve_extents after growth")
 	total_entries := 0
 	sector_buf2: [fs.SECTOR_SIZE]u8
@@ -176,11 +175,11 @@ test_entry_timestamp :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	dir_cluster, dir_offset, derr := fs.allocate_sectors(&vol, 0, 0, 1, .Directory)
+	dir_cluster, dir_offset, derr := fs.allocate_sectors(&vol, {}, 1, .Directory)
 	testing.expect_value(t, derr, fs.FS_Error.None)
-	defer fs.deallocate_sectors(&vol, dir_cluster, dir_offset)
+	defer fs.deallocate_sectors(&vol, fs.Chain_Location{dir_cluster, dir_offset})
 
-	dir_runs, _ := fs.resolve_extents(&vol, dir_cluster, dir_offset)
+	dir_runs, _ := fs.resolve_extents(&vol, fs.Chain_Location{dir_cluster, dir_offset})
 	zero_sector: [fs.SECTOR_SIZE]u8
 	fs.sector_write(&vol, dir_runs[0].sector, zero_sector[:])
 
@@ -337,9 +336,9 @@ test_rename_overwrite_simulation :: proc(t: ^testing.T) {
 	}
 
 	testing.expect(t, ia >= 0 && ib >= 0, "two free slots")
-	ac, ao, aer := fs.allocate_sectors(&vol, 0, 0, 1, .File_Content)
+	ac, ao, aer := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aer, fs.FS_Error.None)
-	bc, bo, ber := fs.allocate_sectors(&vol, 0, 0, 1, .File_Content)
+	bc, bo, ber := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, ber, fs.FS_Error.None)
 
 	ea := fs.Directory_Entry {
@@ -358,7 +357,7 @@ test_rename_overwrite_simulation :: proc(t: ^testing.T) {
 	copy(eb.file_name[:], "DST_B")
 	fs.write_directory_entry_at(&vol, fs.File_Identity{root_c, fs.Sector_Offset(ce.sector_start), ib}, &eb)
 
-	fs.deallocate_sectors(&vol, bc, bo)
+	fs.deallocate_sectors(&vol, fs.Chain_Location{bc, bo})
 	eb.flags -= {.Exists, .Allocated}
 	fs.write_directory_entry_at(&vol, fs.File_Identity{root_c, fs.Sector_Offset(ce.sector_start), ib}, &eb)
 
@@ -379,7 +378,7 @@ test_rename_overwrite_simulation :: proc(t: ^testing.T) {
 
 	raw[ia].flags -= {.Exists, .Allocated}
 	fs.write_directory_entry_at(&vol, fs.File_Identity{root_c, fs.Sector_Offset(ce.sector_start), ia}, &raw[ia])
-	fs.deallocate_sectors(&vol, ac, ao)
+	fs.deallocate_sectors(&vol, fs.Chain_Location{ac, ao})
 }
 
 @(test)
@@ -408,9 +407,9 @@ test_cross_dir_rename_simulation :: proc(t: ^testing.T) {
 	testing.expect(t, root_idx_a >= 0 && root_idx_b >= 0, "root slots")
 
 	// Create dirA
-	ac, ao, derr_a := fs.allocate_sectors(&vol, 0, 0, 1, .Directory)
+	ac, ao, derr_a := fs.allocate_sectors(&vol, {}, 1, .Directory)
 	testing.expect_value(t, derr_a, fs.FS_Error.None)
-	druns_a, _ := fs.resolve_extents(&vol, ac, ao)
+	druns_a, _ := fs.resolve_extents(&vol, fs.Chain_Location{ac, ao})
 	zero_buf_a: [fs.SECTOR_SIZE]u8
 	fs.sector_write(&vol, druns_a[0].sector, zero_buf_a[:])
 	ea := fs.Directory_Entry {
@@ -422,9 +421,9 @@ test_cross_dir_rename_simulation :: proc(t: ^testing.T) {
 	fs.write_directory_entry_at(&vol, fs.File_Identity{root_c, fs.Sector_Offset(rce.sector_start), root_idx_a}, &ea)
 
 	// Create dirB
-	bc, bo, derr_b := fs.allocate_sectors(&vol, 0, 0, 1, .Directory)
+	bc, bo, derr_b := fs.allocate_sectors(&vol, {}, 1, .Directory)
 	testing.expect_value(t, derr_b, fs.FS_Error.None)
-	druns_b, _ := fs.resolve_extents(&vol, bc, bo)
+	druns_b, _ := fs.resolve_extents(&vol, fs.Chain_Location{bc, bo})
 	zero_buf_b: [fs.SECTOR_SIZE]u8
 	fs.sector_write(&vol, druns_b[0].sector, zero_buf_b[:])
 	eb := fs.Directory_Entry {
@@ -448,7 +447,7 @@ test_cross_dir_rename_simulation :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, aidx >= 0, "slot in dirA")
 
-	fc, fo, ferr := fs.allocate_sectors(&vol, 0, 0, 1, .File_Content)
+	fc, fo, ferr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, ferr, fs.FS_Error.None)
 
 	fe := fs.Directory_Entry {
@@ -488,7 +487,7 @@ test_cross_dir_rename_simulation :: proc(t: ^testing.T) {
 	// Cleanup
 	braw[bidx].flags -= {.Exists, .Allocated}
 	fs.write_directory_entry_at(&vol, fs.File_Identity{bc, fs.Sector_Offset(bce.sector_start), bidx}, &braw[bidx])
-	fs.deallocate_sectors(&vol, fc, fo)
+	fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	rraw[root_idx_a].flags -= {.Exists, .Allocated}
 	fs.write_directory_entry_at(
 		&vol,
@@ -501,8 +500,8 @@ test_cross_dir_rename_simulation :: proc(t: ^testing.T) {
 		fs.File_Identity{root_c, fs.Sector_Offset(rce.sector_start), root_idx_b},
 		&rraw[root_idx_b],
 	)
-	fs.deallocate_sectors(&vol, ac, ao)
-	fs.deallocate_sectors(&vol, bc, bo)
+	fs.deallocate_sectors(&vol, fs.Chain_Location{ac, ao})
+	fs.deallocate_sectors(&vol, fs.Chain_Location{bc, bo})
 }
 
 @(test)
@@ -512,11 +511,11 @@ test_atime_fields :: proc(t: ^testing.T) {
 	defer close_test_volume(&vol)
 
 	// Create a fresh directory and write an entry with known timestamps
-	dc, d_o, derr := fs.allocate_sectors(&vol, 0, 0, 1, .Directory)
+	dc, d_o, derr := fs.allocate_sectors(&vol, {}, 1, .Directory)
 	testing.expect_value(t, derr, fs.FS_Error.None)
-	defer fs.deallocate_sectors(&vol, dc, d_o)
+	defer fs.deallocate_sectors(&vol, fs.Chain_Location{dc, d_o})
 
-	druns, _ := fs.resolve_extents(&vol, dc, d_o)
+	druns, _ := fs.resolve_extents(&vol, fs.Chain_Location{dc, d_o})
 	zero: [fs.SECTOR_SIZE]u8
 	fs.sector_write(&vol, druns[0].sector, zero[:])
 
@@ -635,13 +634,13 @@ test_symlink_create_and_read :: proc(t: ^testing.T) {
 	testing.expectf(t, rce_err == .None, "root cluster entry")
 
 	sectors_needed := (u64(len(target)) + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
-	new_c, new_o, aerr := fs.allocate_sectors(&vol, 0, 0, sectors_needed, .File_Content)
+	new_c, new_o, aerr := fs.allocate_sectors(&vol, {}, sectors_needed, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
 	buf: [fs.SECTOR_SIZE]u8
 	copy(buf[:], transmute([]u8)(target))
 
-	runs, ext_err := fs.resolve_extents(&vol, new_c, new_o)
+	runs, ext_err := fs.resolve_extents(&vol, fs.Chain_Location{new_c, new_o})
 	testing.expectf(t, ext_err == .None, "resolve_extents")
 	testing.expect(t, len(runs) > 0, "extent runs")
 	testing.expect(t, fs.sector_write(&vol, runs[0].sector, buf[:]) == .None, "write target")
@@ -685,8 +684,7 @@ test_symlink_create_and_read :: proc(t: ^testing.T) {
 
 			runs2, ext_err2 := fs.resolve_extents(
 				&vol,
-				fs.Cluster(d.stored_cluster),
-				fs.Sector_Offset(d.sector_index),
+				fs.Chain_Location{fs.Cluster(d.stored_cluster), fs.Sector_Offset(d.sector_index)},
 			)
 			testing.expectf(t, ext_err2 == .None, "resolve extents for symlink")
 			if ext_err2 == .None && len(runs2) > 0 {

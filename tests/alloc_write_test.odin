@@ -19,10 +19,10 @@ test_write_fresh :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, 1, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
-	runs, ext_err := fs.resolve_extents(&vol, fc, fo)
+	runs, ext_err := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	testing.expectf(t, ext_err == .None, "resolve_extents")
 	testing.expect(t, len(runs) > 0, "extents non-empty")
 
@@ -37,7 +37,7 @@ test_write_fresh :: proc(t: ^testing.T) {
 		testing.expect(t, read_buf[i] == HELLO[i], "byte match")
 	}
 
-	derr := fs.deallocate_sectors(&vol, fc, fo)
+	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
@@ -47,22 +47,22 @@ test_write_append :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, 1, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
-	runs, _ := fs.resolve_extents(&vol, fc, fo)
+	runs, _ := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	abs_sector := runs[0].sector
 
 	sector_buf: [fs.SECTOR_SIZE]u8
 	copy(sector_buf[:], HELLO[:])
 	testing.expect(t, fs.sector_write(&vol, abs_sector, sector_buf[:]) == .None, "first write")
 
-	fc2, fo2, aerr2 := fs.allocate_sectors(&vol, fc, fo, 2, .File_Content)
+	fc2, fo2, aerr2 := fs.allocate_sectors(&vol, fs.Chain_Location{fc, fo}, 2, .File_Content)
 	testing.expect_value(t, aerr2, fs.FS_Error.None)
 	testing.expect_value(t, fc, fc2)
 	testing.expect_value(t, fo, fo2)
 
-	runs2, ext_err2 := fs.resolve_extents(&vol, fc, fo)
+	runs2, ext_err2 := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	testing.expectf(t, ext_err2 == .None, "resolve_extents after append")
 
 	total_sectors: u64
@@ -85,7 +85,7 @@ test_write_append :: proc(t: ^testing.T) {
 		testing.expect(t, read2[i] == WORLD[i], "sector1 content")
 	}
 
-	derr := fs.deallocate_sectors(&vol, fc, fo)
+	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
@@ -98,7 +98,7 @@ test_directory_entry_persistence :: proc(t: ^testing.T) {
 	root_cluster := fs.Cluster(vol.master.root_cluster)
 	root_offset := fs.Sector_Offset(vol.master.root_sector_index)
 
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, 1, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
 	rd_ce, ce_err := fs.find_cluster_entry(&vol, root_cluster, root_offset)
@@ -160,7 +160,7 @@ test_directory_entry_persistence :: proc(t: ^testing.T) {
 
 	re.flags -= {.Exists, .Allocated}
 	fs.write_directory_entry_at(&vol, fs.File_Identity{root_cluster, fs.Sector_Offset(dir_sector), free_idx}, &re)
-	derr := fs.deallocate_sectors(&vol, fc, fo)
+	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
@@ -170,10 +170,10 @@ test_write_read_cycle :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, 3, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, 3, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
-	runs, ext_err := fs.resolve_extents(&vol, fc, fo)
+	runs, ext_err := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	testing.expectf(t, ext_err == .None, "resolve_extents")
 
 	total: u64
@@ -218,7 +218,7 @@ test_write_read_cycle :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, sector_idx, 3)
 
-	derr := fs.deallocate_sectors(&vol, fc, fo)
+	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
@@ -228,11 +228,11 @@ test_sector_integrity :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, 1, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
-	defer fs.deallocate_sectors(&vol, fc, fo)
+	defer fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 
-	runs, _ := fs.resolve_extents(&vol, fc, fo)
+	runs, _ := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	sector := runs[0].sector
 
 	// Write ramp pattern 0..255 across the sector.
@@ -259,11 +259,11 @@ test_write_zero_bytes :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, 1, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
-	defer fs.deallocate_sectors(&vol, fc, fo)
+	defer fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 
-	runs, _ := fs.resolve_extents(&vol, fc, fo)
+	runs, _ := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	defer delete(runs)
 	sector := runs[0].sector
 
@@ -289,10 +289,10 @@ test_write_overwrite :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, 1, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
-	runs, _ := fs.resolve_extents(&vol, fc, fo)
+	runs, _ := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	sector := runs[0].sector
 
 	// Write 0xAA... to sector.
@@ -311,7 +311,7 @@ test_write_overwrite :: proc(t: ^testing.T) {
 	fs.sector_read(&vol, sector, read_buf[:])
 	for i in 0 ..< 10 { testing.expect(t, read_buf[i] == 0xBB, "overwritten byte") }
 	for i in 10 ..< fs.SECTOR_SIZE { testing.expect(t, read_buf[i] == 0xAA, "preserved byte") }
-	fs.deallocate_sectors(&vol, fc, fo)
+	fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 }
 
 @(test)
@@ -321,11 +321,11 @@ test_full_cluster_alloc :: proc(t: ^testing.T) {
 	defer close_test_volume(&vol)
 
 	// Allocate all sectors in one cluster.
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, vol.master.cluster_size, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, vol.master.cluster_size, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
-	defer fs.deallocate_sectors(&vol, fc, fo)
+	defer fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 
-	runs, ext_err := fs.resolve_extents(&vol, fc, fo)
+	runs, ext_err := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	testing.expectf(t, ext_err == .None, "resolve_extents after full cluster alloc")
 
 	total: u64
@@ -377,10 +377,10 @@ test_grow_shrink_cycle :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, 10, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, 10, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
-	runs, _ := fs.resolve_extents(&vol, fc, fo)
+	runs, _ := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	pattern := byte(0xAB)
 	se_idx := 0
 	for run in runs {
@@ -397,13 +397,13 @@ test_grow_shrink_cycle :: proc(t: ^testing.T) {
 	}
 
 	testing.expect_value(t, se_idx, 10)
-	derr := fs.deallocate_sectors(&vol, fc, fo)
+	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 
-	fc2, fo2, aerr2 := fs.allocate_sectors(&vol, 0, 0, 10, .File_Content)
+	fc2, fo2, aerr2 := fs.allocate_sectors(&vol, {}, 10, .File_Content)
 	testing.expect_value(t, aerr2, fs.FS_Error.None)
 
-	runs2, _ := fs.resolve_extents(&vol, fc2, fo2)
+	runs2, _ := fs.resolve_extents(&vol, fs.Chain_Location{fc2, fo2})
 	si2 := 0
 	for run in runs2 {
 		for _ in 0 ..< int(run.count) {
@@ -417,7 +417,7 @@ test_grow_shrink_cycle :: proc(t: ^testing.T) {
 		}
 	}
 	testing.expect_value(t, si2, 10)
-	fs.deallocate_sectors(&vol, fc2, fo2)
+	fs.deallocate_sectors(&vol, fs.Chain_Location{fc2, fo2})
 }
 
 @(test)
@@ -427,10 +427,10 @@ test_multi_cluster_chain :: proc(t: ^testing.T) {
 	defer close_test_volume(&vol)
 
 	needed := vol.master.cluster_size + 4
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, needed, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, needed, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
-	runs, ext_err := fs.resolve_extents(&vol, fc, fo)
+	runs, ext_err := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	testing.expectf(t, ext_err == .None, "resolve_extents")
 	total: u64
 	for r in runs { total += u64(r.count) }
@@ -467,7 +467,7 @@ test_multi_cluster_chain :: proc(t: ^testing.T) {
 			se_idx += 1
 		}
 	}
-	fs.deallocate_sectors(&vol, fc, fo)
+	fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 }
 
 @(test)
@@ -476,30 +476,30 @@ test_chain_extension_from_nonzero :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, 5, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, 5, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
-	fc2, fo2, aerr2 := fs.allocate_sectors(&vol, fc, fo, 10, .File_Content)
+	fc2, fo2, aerr2 := fs.allocate_sectors(&vol, fs.Chain_Location{fc, fo}, 10, .File_Content)
 	testing.expect_value(t, aerr2, fs.FS_Error.None)
 	testing.expect_value(t, fc, fc2)
 	testing.expect_value(t, fo, fo2)
 
-	runs, _ := fs.resolve_extents(&vol, fc, fo)
+	runs, _ := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	total: u64
 	for r in runs { total += u64(r.count) }
 
 	testing.expect_value(t, total, u64(10))
-	fc3, fo3, aerr3 := fs.allocate_sectors(&vol, fc, fo, vol.master.cluster_size, .File_Content)
+	fc3, fo3, aerr3 := fs.allocate_sectors(&vol, fs.Chain_Location{fc, fo}, vol.master.cluster_size, .File_Content)
 
 	testing.expect_value(t, aerr3, fs.FS_Error.None)
 	testing.expect_value(t, fc, fc3)
 	testing.expect_value(t, fo, fo3)
 
-	runs2, _ := fs.resolve_extents(&vol, fc, fo)
+	runs2, _ := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	total2: u64
 	for r in runs2 { total2 += u64(r.count) }
 	testing.expect_value(t, total2, vol.master.cluster_size)
-	fs.deallocate_sectors(&vol, fc, fo)
+	fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 }
 
 @(test)
@@ -508,15 +508,15 @@ test_chain_extension_multi_cluster :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, 5, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, 5, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
-	fc2, fo2, aerr2 := fs.allocate_sectors(&vol, fc, fo, 30, .File_Content)
+	fc2, fo2, aerr2 := fs.allocate_sectors(&vol, fs.Chain_Location{fc, fo}, 30, .File_Content)
 	testing.expect_value(t, aerr2, fs.FS_Error.None)
 	testing.expect_value(t, fc, fc2)
 	testing.expect_value(t, fo, fo2)
 
-	runs, ext_err := fs.resolve_extents(&vol, fc, fo)
+	runs, ext_err := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	testing.expectf(t, ext_err == .None, "resolve_extents")
 	total: u64
 	for r in runs { total += u64(r.count) }
@@ -551,7 +551,7 @@ test_chain_extension_multi_cluster :: proc(t: ^testing.T) {
 		}
 	}
 
-	fs.deallocate_sectors(&vol, fc, fo)
+	fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 }
 
 @(test)
@@ -560,9 +560,9 @@ test_write_read_persistence :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, 2, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, 2, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
-	runs, _ := fs.resolve_extents(&vol, fc, fo)
+	runs, _ := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	s0 := runs[0].sector
 	s1 := fs.Sector(u64(runs[0].sector) + u64(runs[0].count) - 1)
 	if len(runs) > 1 { s1 = runs[1].sector }
@@ -580,7 +580,7 @@ test_write_read_persistence :: proc(t: ^testing.T) {
 	testing.expect(t, string(rbuf[:5]) == "HELLO", "verify HELLO")
 	testing.expect(t, fs.sector_read(&vol, s1, rbuf[:]) == .None, "read 1")
 	testing.expect(t, string(rbuf[:5]) == "WORLD", "verify WORLD")
-	fs.deallocate_sectors(&vol, fc, fo)
+	fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 }
 
 @(test)
@@ -589,7 +589,7 @@ test_truncate_to_zero :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, 5, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, 5, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
 	buf: [fs.SECTOR_SIZE]u8
@@ -607,13 +607,13 @@ test_truncate_to_zero :: proc(t: ^testing.T) {
 		)
 	}
 
-	derr := fs.deallocate_sectors(&vol, fc, fo)
+	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 
-	_, ext_err := fs.resolve_extents(&vol, fc, fo)
+	_, ext_err := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	testing.expectf(t, ext_err != .None, "extents should be empty after deallocate")
 
-	fc2, _, aerr2 := fs.allocate_sectors(&vol, 0, 0, 5, .File_Content)
+	fc2, _, aerr2 := fs.allocate_sectors(&vol, {}, 5, .File_Content)
 	testing.expect_value(t, aerr2, fs.FS_Error.None)
 	testing.expect(t, fc2 != 0, "allocated cluster is valid")
 }
@@ -624,7 +624,7 @@ test_truncate_partial :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, 10, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, 10, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
 	for si in 0 ..< 10 {
@@ -662,7 +662,7 @@ test_truncate_partial :: proc(t: ^testing.T) {
 		}
 	}
 
-	runs, ext_err := fs.resolve_extents(&vol, fc, fo)
+	runs, ext_err := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	testing.expectf(t, ext_err == .None, "resolve_extents after partial truncate")
 	total: u64
 	for r in runs { total += u64(r.count) }
@@ -675,20 +675,20 @@ test_fallocate_extend :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, 2, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, 2, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
-	runs, ext_err := fs.resolve_extents(&vol, fc, fo)
+	runs, ext_err := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	testing.expectf(t, ext_err == .None, "resolve_extents")
 	tt: u64; for r in runs { tt += u64(r.count) }
 	testing.expect_value(t, tt, 2)
 
 	// Extend from 2 sectors to 5
-	fc2, fo2, aerr2 := fs.allocate_sectors(&vol, fc, fo, 5, .File_Content)
+	fc2, fo2, aerr2 := fs.allocate_sectors(&vol, fs.Chain_Location{fc, fo}, 5, .File_Content)
 	testing.expect_value(t, aerr2, fs.FS_Error.None)
 	testing.expect(t, fc2 == fc && fo2 == fo, "extended same chain")
 
-	runs2, ext_err2 := fs.resolve_extents(&vol, fc2, fo2)
+	runs2, ext_err2 := fs.resolve_extents(&vol, fs.Chain_Location{fc2, fo2})
 	testing.expectf(t, ext_err2 == .None, "resolve_extents after extend")
 	tt2: u64; for r in runs2 { tt2 += u64(r.count) }
 	testing.expect_value(t, tt2, 5)
@@ -710,20 +710,20 @@ test_copy_file_range_simple :: proc(t: ^testing.T) {
 	defer close_test_volume(&vol)
 
 	// Create source: allocate 1 sector, write "HELLO"
-	src_c, src_o, aerr := fs.allocate_sectors(&vol, 0, 0, 1, .File_Content)
+	src_c, src_o, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
 	src_buf: [fs.SECTOR_SIZE]u8
 	copy(src_buf[:], "HELLO")
-	src_runs, _ := fs.resolve_extents(&vol, src_c, src_o)
+	src_runs, _ := fs.resolve_extents(&vol, fs.Chain_Location{src_c, src_o})
 	testing.expect(t, fs.sector_write(&vol, src_runs[0].sector, src_buf[:]) == .None, "write src")
 
 	// Create dest: allocate 1 sector
-	dst_c, dst_o, aerr2 := fs.allocate_sectors(&vol, 0, 0, 1, .File_Content)
+	dst_c, dst_o, aerr2 := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr2, fs.FS_Error.None)
 
 	// Manual copy: read from src, write to dst
-	dst_runs, _ := fs.resolve_extents(&vol, dst_c, dst_o)
+	dst_runs, _ := fs.resolve_extents(&vol, fs.Chain_Location{dst_c, dst_o})
 	copy_buf: [fs.SECTOR_SIZE]u8
 	testing.expect(
 		t,

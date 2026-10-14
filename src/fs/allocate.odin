@@ -98,9 +98,9 @@ _cluster_entry_state_for :: proc(kind: Allocation_Kind) -> Cluster_Entry_State {
 
 // allocate_sectors allocates contiguous sectors on a volume.
 //
-// Extension logic: if start_cluster != 0, existing extents are resolved and
+// Extension logic: if start.cluster != 0, existing extents are resolved and
 // their sector count is subtracted from sectors_needed to compute additional_needed.
-// If the existing chain already covers the request, (start_cluster, start_offset) is
+// If the existing chain already covers the request, start is
 // returned immediately.
 //
 // Cluster-map scan: starting from vol.cache.hint, each cluster-map entry is examined.
@@ -113,7 +113,7 @@ _cluster_entry_state_for :: proc(kind: Allocation_Kind) -> Cluster_Entry_State {
 // with a commit once allocation succeeds (or rolled back via the deferred
 // cleanup on error).
 //
-// Tail-chain linking: when extending an existing chain (start_cluster != 0),
+// Tail-chain linking: when extending an existing chain (start.cluster != 0),
 // _link_tail_to_new walks the old chain and appends the first newly allocated cluster,
 // persisting the updated predecessor entry.
 //
@@ -121,8 +121,7 @@ _cluster_entry_state_for :: proc(kind: Allocation_Kind) -> Cluster_Entry_State {
 // cannot be located, or .No_Space when the cluster map is exhausted.
 allocate_sectors :: proc(
 	vol: ^Volume,
-	start_cluster: Cluster,
-	start_offset: Sector_Offset,
+	start: Chain_Location,
 	sectors_needed: u64,
 	kind: Allocation_Kind,
 ) -> (
@@ -131,12 +130,12 @@ allocate_sectors :: proc(
 	err: FS_Error,
 ) {
 	if sectors_needed == 0 {
-		return start_cluster, start_offset, .None
+		return start.cluster, start.offset, .None
 	}
 
 	additional_needed: u64 = sectors_needed
-	if start_cluster != 0 {
-		existing := resolve_extents(vol, start_cluster, start_offset) or_return
+	if start.cluster != 0 {
+		existing := resolve_extents(vol, start) or_return
 		defer delete(existing)
 
 		existing_sectors: u64
@@ -144,7 +143,7 @@ allocate_sectors :: proc(
 			existing_sectors += u64(r.count)
 		}
 		if sectors_needed <= existing_sectors {
-			return start_cluster, start_offset, .None
+			return start.cluster, start.offset, .None
 		}
 		additional_needed = sectors_needed - existing_sectors
 	}
@@ -281,14 +280,8 @@ allocate_sectors :: proc(
 		log.errorf("allocate: No_Space — needed %d, %d remaining", sectors_needed, remaining)
 		return 0, 0, .No_Space
 	}
-	if start_cluster != 0 && !is_first {
-		if lerr := _link_tail_to_new(
-			vol,
-			start_cluster,
-			start_offset,
-			first_cluster,
-			first_offset,
-		); lerr != .None {
+	if start.cluster != 0 && !is_first {
+		if lerr := _link_tail_to_new(vol, start, Chain_Location{first_cluster, first_offset}); lerr != .None {
 			return 0, 0, lerr
 		}
 
@@ -296,7 +289,7 @@ allocate_sectors :: proc(
 		if !backend.commit(vol, &jrnl) { return _allocate_io_err() }
 
 		committed = true
-		return start_cluster, start_offset, .None
+		return start.cluster, start.offset, .None
 	}
 
 	log.debugf("allocate: ok — %d sectors across %d clusters", sectors_needed, first_cluster)
@@ -308,16 +301,12 @@ allocate_sectors :: proc(
 }
 
 // deallocate_sectors frees a chain of cluster entries starting at
-// (start_cluster, start_offset). Each entry has its Allocated flag cleared;
+// start. Each entry has its Allocated flag cleared;
 // if the owning CME was marked Full, that flag is also removed. Deallocations
 // are journaled (v2 WAL or v6 intent log) so a crash cannot resurrect the
 // freed chain on the next mount.
-deallocate_sectors :: proc(
-	vol: ^Volume,
-	start_cluster: Cluster,
-	start_offset: Sector_Offset,
-) -> FS_Error {
-	if start_cluster == 0 {
+deallocate_sectors :: proc(vol: ^Volume, start: Chain_Location) -> FS_Error {
+	if start.cluster == 0 {
 		return .None
 	}
 
@@ -329,8 +318,8 @@ deallocate_sectors :: proc(
 		backend.abort(vol, &jrnl)
 	}
 
-	current_cluster := start_cluster
-	current_offset := start_offset
+	current_cluster := start.cluster
+	current_offset := start.offset
 	for guard in 0 ..< int(vol.master.cluster_map_size) + 1 {
 		if guard == int(vol.master.cluster_map_size) {
 			log.errorf("deallocate: chain too long (corrupted)")
@@ -371,22 +360,16 @@ deallocate_sectors :: proc(
 	}
 
 	committed = true
-	log.debugf("deallocate: ok — cluster=%d offset=%d", start_cluster, start_offset)
+	log.debugf("deallocate: ok — cluster=%d offset=%d", start.cluster, start.offset)
 	return .None
 }
 
-// _link_tail_to_new walks the existing chain from (start_cluster, start_offset) to
+// _link_tail_to_new walks the existing chain from start to
 // its final entry and sets its next_cluster / next_sector_index to point at
-// (first_cluster, first_offset), effectively appending the newly allocated cluster(s).
+// first, effectively appending the newly allocated cluster(s).
 @(private = "file")
-_link_tail_to_new :: proc(
-	vol: ^Volume,
-	start_cluster: Cluster,
-	start_offset: Sector_Offset,
-	first_cluster: Cluster,
-	first_offset: Sector_Offset,
-) -> FS_Error {
-	walk := _chain_walk_start(vol, start_cluster, start_offset)
+_link_tail_to_new :: proc(vol: ^Volume, start, first: Chain_Location) -> FS_Error {
+	walk := _chain_walk_start(vol, start.cluster, start.offset)
 	for walk.guard < walk.limit {
 		tail, tc, step := _chain_next(vol, &walk)
 		if step == .Corrupted {
@@ -394,8 +377,8 @@ _link_tail_to_new :: proc(
 			return .Corrupt_Master_Record
 		}
 		if tail.next_cluster == 0 {
-			tail.next_cluster = u64(first_cluster)
-			tail.next_sector_index = u16(first_offset)
+			tail.next_cluster = u64(first.cluster)
+			tail.next_sector_index = u16(first.offset)
 			tail_table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 			if rerr := read_cluster_entry_table(vol, tc, &tail_table); rerr != .None {
 				return rerr

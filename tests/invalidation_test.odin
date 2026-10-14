@@ -287,7 +287,7 @@ test_invalidation_full_cycle :: proc(t: ^testing.T) {
 	defer fs.alloc_cache_destroy(&vol.cache)
 
 	// Allocate — this exercises all the write helpers in allocate_sectors
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, 3, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, 3, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
 	// Verify cache is consistent for the allocated cluster
@@ -314,7 +314,7 @@ test_invalidation_full_cycle :: proc(t: ^testing.T) {
 		expected_used,
 	)
 	// Deallocate — exercises the deallocate_sectors write paths
-	derr := fs.deallocate_sectors(&vol, fc, fo)
+	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 
 	// Verify cache is consistent after dealloc
@@ -361,17 +361,17 @@ test_invalidation_chain_extension :: proc(t: ^testing.T) {
 	// First allocation fills cluster 1 almost completely (needs 16 sectors)
 	// but cluster 1 has 13 free sectors (16 - 3 used by root).
 	// Allocate 13 to fill cluster 1.
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, 13, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, 13, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
 	// Extend by 3 more — should spill into cluster 2 and chain them
-	fc2, fo2, aerr2 := fs.allocate_sectors(&vol, fc, fo, 16, .File_Content)
+	fc2, fo2, aerr2 := fs.allocate_sectors(&vol, fs.Chain_Location{fc, fo}, 16, .File_Content)
 	testing.expect_value(t, aerr2, fs.FS_Error.None)
 	testing.expect_value(t, fc, fc2)
 	testing.expect_value(t, fo, fo2)
 
 	// Verify extent chain
-	runs, ext_err := fs.resolve_extents(&vol, fc, fo)
+	runs, ext_err := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	testing.expectf(t, ext_err == .None, "resolve_extents after extension")
 	tt: u64
 	for r in runs { tt += u64(r.count) }
@@ -404,6 +404,6 @@ test_invalidation_chain_extension :: proc(t: ^testing.T) {
 		)
 	}
 	// Cleanup
-	derr := fs.deallocate_sectors(&vol, fc, fo)
+	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }

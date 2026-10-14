@@ -107,10 +107,10 @@ lfn_bump_write :: proc(
 	needed := u16(len(name))
 	s, has_state := bump.state.?
 	if !has_state || s.next_byte + needed > SECTOR_SIZE {
-		new_c, new_o, lerr := allocate_sectors(vol, 0, 0, 1, .LFN)
+		new_c, new_o, lerr := allocate_sectors(vol, {}, 1, .LFN)
 		if lerr != .None { return {}, lerr }
 
-		runs, rok := resolve_extents(vol, new_c, new_o)
+		runs, rok := resolve_extents(vol, Chain_Location{new_c, new_o})
 		defer delete(runs)
 		if rok != .None { return {}, rok }
 		if len(runs) == 0 { return {}, .Entry_Not_Found }

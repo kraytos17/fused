@@ -30,11 +30,7 @@ resolve_symlink_target :: proc(
 	if .Link not_in entry.flags { return "" }
 	if entry.stored_cluster == 0 { return "" }
 
-	runs, ext_err := fs.resolve_extents(
-		vol,
-		fs.Cluster(entry.stored_cluster),
-		fs.Sector_Offset(entry.sector_index),
-	)
+	runs, ext_err := fs.resolve_extents(vol, fs.data_chain_of(entry^))
 	if ext_err != .None { return "" }
 
 	sb: strings.Builder

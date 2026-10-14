@@ -189,7 +189,7 @@ test_cache_count_free :: proc(t: ^testing.T) {
 	testing.expect(t, cached_free > 0, "free count > 0")
 
 	// Verify count is consistent by alloc/dealloc cycling with the same cache
-	fc, fo, err := fs.allocate_sectors(&vol, 0, 0, 1, .File_Content)
+	fc, fo, err := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
 
 	after_alloc := fs.alloc_cache_count_free(&vol)
@@ -201,7 +201,7 @@ test_cache_count_free :: proc(t: ^testing.T) {
 		after_alloc,
 	)
 
-	derr := fs.deallocate_sectors(&vol, fc, fo)
+	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 
 	after_dealloc := fs.alloc_cache_count_free(&vol)
@@ -232,15 +232,15 @@ test_cache_allocate_matches_nil :: proc(t: ^testing.T) {
 	fs.alloc_cache_init(&vol.cache, &vol.master)
 	defer fs.alloc_cache_destroy(&vol.cache)
 
-	fc_c, fo_c, err_c := fs.allocate_sectors(&vol, 0, 0, 3, .File_Content)
+	fc_c, fo_c, err_c := fs.allocate_sectors(&vol, {}, 3, .File_Content)
 	testing.expect_value(t, err_c, fs.FS_Error.None)
 
-	runs_c, ext_err_c := fs.resolve_extents(&vol, fc_c, fo_c)
+	runs_c, ext_err_c := fs.resolve_extents(&vol, fs.Chain_Location{fc_c, fo_c})
 	testing.expectf(t, ext_err_c == .None, "resolve_extents (cached)")
 	tt_c: u64; for r in runs_c { tt_c += u64(r.count) }
 	testing.expect_value(t, tt_c, u64(3))
 
-	derr_c := fs.deallocate_sectors(&vol, fc_c, fo_c)
+	derr_c := fs.deallocate_sectors(&vol, fs.Chain_Location{fc_c, fo_c})
 	testing.expect_value(t, derr_c, fs.FS_Error.None)
 }
 
@@ -262,12 +262,12 @@ test_cache_hint_advances :: proc(t: ^testing.T) {
 	defer fs.alloc_cache_destroy(&vol.cache)
 
 	hint_before := vol.cache.hint
-	fc, fo, err := fs.allocate_sectors(&vol, 0, 0, 1, .File_Content)
+	fc, fo, err := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
 	testing.expect(t, vol.cache.hint > hint_before || vol.cache.hint == 0, "hint advanced")
 	_ = fc; _ = fo
 
-	derr := fs.deallocate_sectors(&vol, fc, fo)
+	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
@@ -290,16 +290,16 @@ test_cache_stress_multi_cluster :: proc(t: ^testing.T) {
 
 	// Allocate enough to span multiple clusters
 	needed := master.cluster_size * 3 + 2
-	fc, fo, err := fs.allocate_sectors(&vol, 0, 0, needed, .File_Content)
+	fc, fo, err := fs.allocate_sectors(&vol, {}, needed, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
 
-	runs, ext_err := fs.resolve_extents(&vol, fc, fo)
+	runs, ext_err := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	testing.expectf(t, ext_err == .None, "resolve_extents")
 	tt: u64
 	for r in runs { tt += u64(r.count) }
 	testing.expect_value(t, tt, needed)
 
-	derr := fs.deallocate_sectors(&vol, fc, fo)
+	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 
 	// Verify cache is still consistent after deallocation
@@ -346,20 +346,20 @@ test_cache_chain_extension :: proc(t: ^testing.T) {
 	fs.alloc_cache_init(&vol.cache, &vol.master)
 	defer fs.alloc_cache_destroy(&vol.cache)
 
-	fc, fo, err := fs.allocate_sectors(&vol, 0, 0, 5, .File_Content)
+	fc, fo, err := fs.allocate_sectors(&vol, {}, 5, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
 
-	fc2, fo2, ext_err := fs.allocate_sectors(&vol, fc, fo, 10, .File_Content)
+	fc2, fo2, ext_err := fs.allocate_sectors(&vol, fs.Chain_Location{fc, fo}, 10, .File_Content)
 	testing.expect_value(t, ext_err, fs.FS_Error.None)
 	testing.expect_value(t, fc, fc2)
 	testing.expect_value(t, fo, fo2)
 
-	runs, _ := fs.resolve_extents(&vol, fc, fo)
+	runs, _ := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	tt: u64
 	for r in runs { tt += u64(r.count) }
 	testing.expect_value(t, tt, u64(10))
 
-	derr := fs.deallocate_sectors(&vol, fc, fo)
+	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
@@ -381,16 +381,16 @@ test_cache_many_small_alloc_free :: proc(t: ^testing.T) {
 	defer fs.alloc_cache_destroy(&vol.cache)
 
 	for i in 0 ..< 30 {
-		fc, fo, err := fs.allocate_sectors(&vol, 0, 0, 1, .File_Content)
+		fc, fo, err := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 		testing.expectf(t, err == .None, "alloc %d: expected None got %v", i, err)
 		if err != .None { return }
 
-		runs, ext_err := fs.resolve_extents(&vol, fc, fo)
+		runs, ext_err := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 		testing.expectf(t, ext_err == .None, "resolve_extents")
 		tt: u64; for r in runs { tt += u64(r.count) }
 		testing.expect_value(t, tt, u64(1))
 
-		derr := fs.deallocate_sectors(&vol, fc, fo)
+		derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 		testing.expectf(t, derr == .None, "dealloc %d: expected None got %v", i, derr)
 		if derr != .None { return }
 

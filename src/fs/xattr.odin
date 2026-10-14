@@ -52,7 +52,7 @@ _xattr_chain_free :: proc(vol: ^Volume, cluster: u64) -> FS_Error {
 		return .Entry_Not_Found
 	}
 	if idx, found := ce_find_by_state(ce_buf, {.XAttr, .Allocated}); found {
-		return deallocate_sectors(vol, Cluster(cluster), Sector_Offset(ce_buf[idx].sector_start))
+		return deallocate_sectors(vol, Chain_Location{Cluster(cluster), Sector_Offset(ce_buf[idx].sector_start)})
 	}
 	return .Entry_Not_Found
 }
@@ -79,7 +79,7 @@ xattr_load :: proc(
 		return attrs, .Entry_Not_Found
 	}
 
-	data, rerr := read_chain(vol, cluster, offset, allocator)
+	data, rerr := read_chain(vol, Chain_Location{cluster, offset}, allocator)
 	defer delete(data, allocator)
 	if rerr != .None {
 		return attrs, rerr
@@ -142,11 +142,11 @@ xattr_store :: proc(vol: ^Volume, entry: ^Directory_Entry, attrs: []XAttr) -> FS
 	}
 
 	sectors := (u64(len(data)) + SECTOR_SIZE - 1) / SECTOR_SIZE
-	new_c, new_o, aerr := allocate_sectors(vol, 0, 0, sectors, .XAttr)
+	new_c, new_o, aerr := allocate_sectors(vol, {}, sectors, .XAttr)
 	if aerr != .None {
 		return aerr
 	}
-	if werr := write_chain(vol, new_c, new_o, data); werr != .None {
+	if werr := write_chain(vol, Chain_Location{new_c, new_o}, data); werr != .None {
 		return werr
 	}
 	if old_cluster != 0 {

@@ -205,7 +205,7 @@ fused_readdir :: proc "c" (
 		filler      = filler,
 		buf         = buf,
 	}
-	if werr := fs.walk_chain_sectors(&fsys.vol, dir_cluster, dir_offset, visit, &ctx);
+	if werr := fs.walk_chain_sectors(&fsys.vol, fs.Chain_Location{dir_cluster, dir_offset}, visit, &ctx);
 	   werr != .None {
 		log.debugf("readdir: %s → extent resolve failed", path)
 		return fuse3.nix(.ENOENT)
@@ -276,7 +276,7 @@ fused_read :: proc "c" (
 		return fs_error_to_errno(rerr)
 	}
 
-	runs, xerr := resolve_extents_shared(fsys, data_cluster, data_offset)
+	runs, xerr := resolve_extents_shared(fsys, fs.Chain_Location{data_cluster, data_offset})
 	if xerr != .None {
 		return fuse3.nix(.ENOENT)
 	}
@@ -332,7 +332,7 @@ fused_read_buf :: proc "c" (
 		return fs_error_to_errno(rerr)
 	}
 
-	runs, xerr := resolve_extents_shared(fsys, data_cluster, data_offset)
+	runs, xerr := resolve_extents_shared(fsys, fs.Chain_Location{data_cluster, data_offset})
 	if xerr != .None {
 		return fuse3.nix(.ENOENT)
 	}
@@ -403,8 +403,7 @@ fused_readlink :: proc "c" (path: cstring, buf: [^]c.char, size: c.size_t) -> c.
 
 	runs, xerr := resolve_extents_cached(
 		fsys,
-		fs.Cluster(entry.stored_cluster),
-		fs.Sector_Offset(entry.sector_index),
+		fs.data_chain_of(entry),
 	)
 	if xerr != .None {
 		return fuse3.nix(.EIO)

@@ -12,6 +12,15 @@ Journal_Seq :: distinct u64 // journal transaction sequence number
 // Byte_Offset distinct type for byte positions/sizes
 Byte_Offset :: distinct u64 // byte position or size in the image
 
+// Chain_Location names a position in a sector chain: the starting cluster
+// and the sector offset within it. It bundles the (cluster, offset) input
+// pairs threaded through allocation, resolution, and chain walks. Results
+// that name NEW locations keep their tuples.
+Chain_Location :: struct {
+	cluster: Cluster,
+	offset:  Sector_Offset,
+}
+
 // File_Identity names a directory entry by its parent location: the
 // directory cluster, the sector offset within it, and the entry index.
 // Unlike the structs above it is NOT packed: it is in-memory only (map

@@ -22,8 +22,7 @@ import "src:fuse3"
 ensure_chain_covers :: proc(
 	fsys: ^FS,
 	entry: ^fs.Directory_Entry,
-	data_cluster: fs.Cluster,
-	data_offset: fs.Sector_Offset,
+	start: fs.Chain_Location,
 	total_sectors: u64,
 ) -> (
 	cluster: fs.Cluster,
@@ -33,30 +32,29 @@ ensure_chain_covers :: proc(
 	err: fs.FS_Error,
 ) {
 	ext_err: fs.FS_Error
-	runs, ext_err = resolve_extents_cached(fsys, data_cluster, data_offset)
+	runs, ext_err = resolve_extents_cached(fsys, start)
 	current := fs.chain_sector_count(runs) if ext_err == .None else 0
 	if total_sectors <= current {
-		return data_cluster, data_offset, runs, false, .None
+		return start.cluster, start.offset, runs, false, .None
 	}
 
 	new_c, new_o, aerr := fs.allocate_sectors(
 		&fsys.vol,
-		data_cluster,
-		data_offset,
+		start,
 		total_sectors,
 		.File_Content,
 	)
 	if aerr != .None {
 		return {}, 0, {}, false, aerr
 	}
-	if data_cluster == 0 {
+	if start.cluster == 0 {
 		entry.stored_cluster = u64(new_c)
 		entry.sector_index = u16(new_o)
 	}
 
 	fsys.free_sectors -= total_sectors - current
 	extent_cache_invalidate(fsys, new_c, new_o)
-	runs, ext_err = resolve_extents_cached(fsys, new_c, new_o)
+	runs, ext_err = resolve_extents_cached(fsys, fs.Chain_Location{new_c, new_o})
 	if ext_err != .None {
 		return {}, 0, {}, true, ext_err
 	}

@@ -5,20 +5,19 @@ package fs
 // resolve_extents walks a cluster-entry chain and returns a flat list of extent runs.
 resolve_extents :: proc(
 	vol: ^Volume,
-	start_cluster: Cluster,
-	start_offset: Sector_Offset,
+	start: Chain_Location,
 ) -> (
 	runs: [dynamic]Extent_Run,
 	err: FS_Error,
 ) {
-	if start_cluster == 0 {
+	if start.cluster == 0 {
 		return {}, .Entry_Not_Found
 	}
 
 	stack_buf: [32]Extent_Run
 	n := 0
 	on_heap := false
-	walk := _chain_walk_start(vol, start_cluster, start_offset)
+	walk := _chain_walk_start(vol, start.cluster, start.offset)
 	cluster_size := u64(vol.master.cluster_size)
 	for walk.guard < walk.limit {
 		entry, ec, step := _chain_next(vol, &walk)
@@ -65,14 +64,13 @@ chain_sector_count :: proc(runs: []Extent_Run) -> u64 {
 // contiguous buffer. The caller owns the returned slice and must delete it.
 read_chain :: proc(
 	vol: ^Volume,
-	cluster: Cluster,
-	offset: Sector_Offset,
+	loc: Chain_Location,
 	allocator := context.allocator,
 ) -> (
 	data: []u8,
 	err: FS_Error,
 ) {
-	runs, rerr := resolve_extents(vol, cluster, offset)
+	runs, rerr := resolve_extents(vol, loc)
 	defer delete(runs)
 	if rerr != .None {
 		return {}, rerr
@@ -103,11 +101,10 @@ read_chain :: proc(
 // sector-aligned. The chain must be large enough to hold len(data).
 write_chain :: proc(
 	vol: ^Volume,
-	cluster: Cluster,
-	offset: Sector_Offset,
+	loc: Chain_Location,
 	data: []u8,
 ) -> FS_Error {
-	runs, rerr := resolve_extents(vol, cluster, offset)
+	runs, rerr := resolve_extents(vol, loc)
 	defer delete(runs)
 	if rerr != .None {
 		return rerr
@@ -143,12 +140,11 @@ write_chain :: proc(
 // the walk early.
 walk_chain_sectors :: proc(
 	vol: ^Volume,
-	cluster: Cluster,
-	offset: Sector_Offset,
+	loc: Chain_Location,
 	visit: proc(sector: Sector, user: rawptr) -> bool,
 	user: rawptr,
 ) -> FS_Error {
-	runs, rerr := resolve_extents(vol, cluster, offset)
+	runs, rerr := resolve_extents(vol, loc)
 	defer delete(runs)
 	if rerr != .None {
 		return rerr

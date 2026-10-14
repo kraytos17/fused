@@ -75,8 +75,7 @@ fused_write :: proc "c" (
 	data_cluster, data_offset, runs, _, cerr = ensure_chain_covers(
 		fsys,
 		&entry,
-		data_cluster,
-		data_offset,
+		fs.Chain_Location{data_cluster, data_offset},
 		total_sectors,
 	)
 	if cerr != .None {
@@ -188,8 +187,7 @@ fused_write_buf :: proc "c" (
 	data_cluster, data_offset, runs, _, cerr = ensure_chain_covers(
 		fsys,
 		&entry,
-		data_cluster,
-		data_offset,
+		fs.Chain_Location{data_cluster, data_offset},
 		total_sectors,
 	)
 	if cerr != .None {
@@ -265,8 +263,7 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 	data_cluster, data_offset, runs, _, cerr = ensure_chain_covers(
 		fsys,
 		&entry,
-		data_cluster,
-		data_offset,
+		fs.Chain_Location{data_cluster, data_offset},
 		new_sectors,
 	)
 	if cerr != .None {
@@ -278,12 +275,7 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 
 	current_sectors := fs.chain_sector_count(runs)
 	if new_sectors < current_sectors {
-		if terr := fs.truncate_chain_at(
-			&fsys.vol,
-			fs.Cluster(entry.stored_cluster),
-			fs.Sector_Offset(entry.sector_index),
-			new_sectors,
-		); terr != .None {
+		if terr := fs.truncate_chain_at(&fsys.vol, fs.data_chain_of(entry), new_sectors); terr != .None {
 			return fs_error_to_errno(terr)
 		}
 		fsys.free_sectors += current_sectors - new_sectors
@@ -323,13 +315,12 @@ byte_range_len :: proc(r: Byte_Range) -> u64 {
 zero_file_range :: proc(
 	fsys: ^FS,
 	entry: ^fs.Directory_Entry,
-	data_cluster: fs.Cluster,
-	data_offset: fs.Sector_Offset,
+	loc: fs.Chain_Location,
 	r: Byte_Range,
 ) -> fs.FS_Error {
 	if byte_range_len(r) == 0 { return .None }
 
-	runs, ext_err := fs.resolve_extents(&fsys.vol, data_cluster, data_offset)
+	runs, ext_err := fs.resolve_extents(&fsys.vol, loc)
 	defer delete(runs)
 	if ext_err != .None { return ext_err }
 
@@ -370,8 +361,8 @@ fused_fallocate :: proc "c" (
 	}
 
 	// ABI inputs validate before any fs work (kernel-parity order).
-	alloc_start, sok1 := checked_offset(off)
-	alloc_len, sok2 := checked_offset(length)
+	span_start, sok1 := checked_offset(off)
+	span_len, sok2 := checked_offset(length)
 	if !sok1 || !sok2 {
 		return fuse3.nix(.EINVAL)
 	}
@@ -384,12 +375,13 @@ fused_fallocate :: proc "c" (
 		return fuse3.nix(.EISDIR)
 	}
 
-	alloc_end, aok := _checked_add(alloc_start, alloc_len)
+	span_end, aok := _checked_add(span_start, span_len)
 	if !aok {
 		return fuse3.nix(.EOVERFLOW)
 	}
+	span := Byte_Range{span_start, span_end}
 	if .Punch_Hole in fmode {
-		zerr := zero_file_range(fsys, &entry, data_cluster, data_offset, Byte_Range{alloc_start, alloc_end})
+		zerr := zero_file_range(fsys, &entry, fs.Chain_Location{data_cluster, data_offset}, span)
 		if zerr != .None {
 			return fs_error_to_errno(zerr)
 		}
@@ -402,7 +394,7 @@ fused_fallocate :: proc "c" (
 		return 0
 	}
 
-	total_sectors, sok := _span_sectors(alloc_start, alloc_len)
+	total_sectors, sok := _span_sectors(span.start, byte_range_len(span))
 	if !sok {
 		return fuse3.nix(.EOVERFLOW)
 	}
@@ -412,8 +404,7 @@ fused_fallocate :: proc "c" (
 	data_cluster, data_offset, _, extended, cerr = ensure_chain_covers(
 		fsys,
 		&entry,
-		data_cluster,
-		data_offset,
+		fs.Chain_Location{data_cluster, data_offset},
 		total_sectors,
 	)
 	if cerr != .None {
@@ -424,16 +415,16 @@ fused_fallocate :: proc "c" (
 	}
 	if extended {
 		zero_start := u64(entry.file_size)
-		zero_end := max(alloc_end, zero_start)
+		zero_end := max(span.end, zero_start)
 		if zero_end > zero_start {
-			zerr := zero_file_range(fsys, &entry, data_cluster, data_offset, Byte_Range{zero_start, zero_end})
+			zerr := zero_file_range(fsys, &entry, fs.Chain_Location{data_cluster, data_offset}, Byte_Range{zero_start, zero_end})
 			if zerr != .None {
 				return fs_error_to_errno(zerr)
 			}
 		}
 	}
 	if .Keep_Size not_in fmode {
-		new_size := max(u64(entry.file_size), alloc_end)
+		new_size := max(u64(entry.file_size), span.end)
 		if new_size != u64(entry.file_size) {
 			set_entry_time_to_now(&entry)
 			entry.file_size = new_size
@@ -487,7 +478,7 @@ fused_copy_file_range :: proc "c" (
 		return c.ssize_t(fs_error_to_errno(dst_err))
 	}
 
-	src_runs, src_xerr := resolve_extents_cached(fsys, src_cluster, src_offset)
+	src_runs, src_xerr := resolve_extents_cached(fsys, fs.Chain_Location{src_cluster, src_offset})
 	if src_xerr != .None {
 		return c.ssize_t(fuse3.nix(.ENOENT))
 	}
@@ -503,8 +494,7 @@ fused_copy_file_range :: proc "c" (
 	dst_cluster, dst_offset, dst_runs, _, derr = ensure_chain_covers(
 		fsys,
 		&dst_entry,
-		dst_cluster,
-		dst_offset,
+		fs.Chain_Location{dst_cluster, dst_offset},
 		dst_total_sectors,
 	)
 	if derr != .None {

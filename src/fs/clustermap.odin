@@ -203,13 +203,12 @@ _truncate_io_err :: proc() -> FS_Error { return .Sector_Write_Error }
 
 truncate_chain_at :: proc(
 	vol: ^Volume,
-	cluster: Cluster,
-	offset: Sector_Offset,
+	loc: Chain_Location,
 	new_sectors: u64,
 ) -> FS_Error {
 	cntr: u64
-	current_c := cluster
-	current_o := offset
+	current_c := loc.cluster
+	current_o := loc.offset
 	for {
 		ce_idx: int
 		ce, ce_err := find_cluster_entry(vol, current_c, current_o, nil, &ce_idx)
@@ -224,11 +223,11 @@ truncate_chain_at :: proc(
 			if needed == 0 {
 				nc := Cluster(ce.next_cluster)
 				no := Sector_Offset(ce.next_sector_index)
-				if derr := deallocate_sectors(vol, current_c, current_o); derr != .None {
+				if derr := deallocate_sectors(vol, Chain_Location{current_c, current_o}); derr != .None {
 					return derr
 				}
 				if nc != 0 {
-					if derr := deallocate_sectors(vol, nc, no); derr != .None {
+					if derr := deallocate_sectors(vol, Chain_Location{nc, no}); derr != .None {
 						return _truncate_io_err()
 					}
 				}
@@ -236,7 +235,7 @@ truncate_chain_at :: proc(
 				if ce.next_cluster != 0 {
 					nc := Cluster(ce.next_cluster)
 					no := Sector_Offset(ce.next_sector_index)
-					if derr := deallocate_sectors(vol, nc, no); derr != .None {
+					if derr := deallocate_sectors(vol, Chain_Location{nc, no}); derr != .None {
 						return _truncate_io_err()
 					}
 

@@ -20,7 +20,7 @@ test_allocate_deallocate :: proc(t: ^testing.T) {
 	}
 	defer close_test_volume(&vol)
 
-	c, o, aerr := fs.allocate_sectors(&vol, 0, 0, 4, .File_Content)
+	c, o, aerr := fs.allocate_sectors(&vol, {}, 4, .File_Content)
 	testing.expect(t, aerr == fs.FS_Error.None, "allocate ok")
 	testing.expect(t, c != 0, "allocated cluster != 0")
 
@@ -28,10 +28,10 @@ test_allocate_deallocate :: proc(t: ^testing.T) {
 	testing.expect(t, ferr2 == fs.FS_Error.None, "find_cluster_entry ok")
 	testing.expect(t, .Allocated in entry.state, "entry allocated")
 
-	_, _, aerr = fs.allocate_sectors(&vol, c, o, 10, .File_Content)
+	_, _, aerr = fs.allocate_sectors(&vol, fs.Chain_Location{c, o}, 10, .File_Content)
 	testing.expect(t, aerr == fs.FS_Error.None, "extend ok")
 
-	derr := fs.deallocate_sectors(&vol, c, o)
+	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{c, o})
 	testing.expect(t, derr == fs.FS_Error.None, "deallocate ok")
 	_, ferr3 := fs.find_cluster_entry(&vol, c, o)
 	testing.expect(t, ferr3 == fs.FS_Error.Entry_Not_Found, "entry freed")

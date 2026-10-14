@@ -15,17 +15,17 @@ test_alloc_fresh :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, err := fs.allocate_sectors(&vol, 0, 0, 10, .File_Content)
+	fc, fo, err := fs.allocate_sectors(&vol, {}, 10, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
 
-	runs, ext_err := fs.resolve_extents(&vol, fc, fo)
+	runs, ext_err := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	testing.expectf(t, ext_err == .None, "resolve_extents")
 
 	total: u64
 	for r in runs { total += u64(r.count) }
 
 	testing.expect_value(t, total, u64(10))
-	derr := fs.deallocate_sectors(&vol, fc, fo)
+	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
@@ -42,7 +42,7 @@ test_alloc_no_overlap :: proc(t: ^testing.T) {
 	}
 	runs: [10]Alloc_Run
 	for i in 0 ..< 10 {
-		fc, fo, err := fs.allocate_sectors(&vol, 0, 0, 5, .File_Content)
+		fc, fo, err := fs.allocate_sectors(&vol, {}, 5, .File_Content)
 		testing.expect_value(t, err, fs.FS_Error.None)
 		runs[i] = {fc, fo}
 	}
@@ -63,7 +63,7 @@ test_alloc_no_overlap :: proc(t: ^testing.T) {
 		}
 	}
 	for r in runs {
-		derr := fs.deallocate_sectors(&vol, r.c, r.o)
+		derr := fs.deallocate_sectors(&vol, fs.Chain_Location{r.c, r.o})
 		testing.expect_value(t, derr, fs.FS_Error.None)
 	}
 }
@@ -75,20 +75,20 @@ test_alloc_free_reuse :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, err := fs.allocate_sectors(&vol, 0, 0, 8, .File_Content)
+	fc, fo, err := fs.allocate_sectors(&vol, {}, 8, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
 
-	derr := fs.deallocate_sectors(&vol, fc, fo)
+	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 	vol.cache.hint = 0 // reset hint so alloc reuses the same cluster
-	fc2, fo2, err2 := fs.allocate_sectors(&vol, 0, 0, 8, .File_Content)
+	fc2, fo2, err2 := fs.allocate_sectors(&vol, {}, 8, .File_Content)
 	testing.expect_value(t, err2, fs.FS_Error.None)
 
-	runs_after, _ := fs.resolve_extents(&vol, fc2, fo2)
+	runs_after, _ := fs.resolve_extents(&vol, fs.Chain_Location{fc2, fo2})
 	tt: u64
 	for r in runs_after { tt += u64(r.count) }
 	testing.expect_value(t, tt, u64(8))
-	derr2 := fs.deallocate_sectors(&vol, fc2, fo2)
+	derr2 := fs.deallocate_sectors(&vol, fs.Chain_Location{fc2, fo2})
 	testing.expect_value(t, derr2, fs.FS_Error.None)
 }
 
@@ -100,12 +100,12 @@ test_alloc_free_loop :: proc(t: ^testing.T) {
 	defer close_test_volume(&vol)
 
 	for _ in 0 ..< 50 {
-		fc, fo, err := fs.allocate_sectors(&vol, 0, 0, 1, .File_Content)
+		fc, fo, err := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 		testing.expect_value(t, err, fs.FS_Error.None)
-		runs, _ := fs.resolve_extents(&vol, fc, fo)
+		runs, _ := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 		tt: u64; for r in runs { tt += u64(r.count) }
 		testing.expect_value(t, tt, u64(1))
-		derr := fs.deallocate_sectors(&vol, fc, fo)
+		derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 		testing.expect_value(t, derr, fs.FS_Error.None)
 	}
 }
@@ -117,13 +117,13 @@ test_full_flag :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, err := fs.allocate_sectors(&vol, 0, 0, vol.master.cluster_size, .File_Content)
+	fc, fo, err := fs.allocate_sectors(&vol, {}, vol.master.cluster_size, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
 
 	cme, _ := fs.read_cluster_map_entry(&vol, fc)
 	testing.expect(t, .Full in cme.flags, "FULL flag set")
 
-	derr := fs.deallocate_sectors(&vol, fc, fo)
+	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 	cme2, _ := fs.read_cluster_map_entry(&vol, fc)
 	testing.expect(t, .Full not_in cme2.flags, "FULL flag cleared")
@@ -136,10 +136,10 @@ test_chain_consistency :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, err := fs.allocate_sectors(&vol, 0, 0, vol.master.cluster_size + 4, .File_Content)
+	fc, fo, err := fs.allocate_sectors(&vol, {}, vol.master.cluster_size + 4, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
 
-	_, ext_err := fs.resolve_extents(&vol, fc, fo)
+	_, ext_err := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	testing.expectf(t, ext_err == .None, "resolve_extents")
 
 	tt: u64
@@ -156,7 +156,7 @@ test_chain_consistency :: proc(t: ^testing.T) {
 	}
 
 	testing.expect_value(t, tt, vol.master.cluster_size + 4)
-	derr := fs.deallocate_sectors(&vol, fc, fo)
+	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
@@ -167,19 +167,19 @@ test_extension :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, err := fs.allocate_sectors(&vol, 0, 0, 5, .File_Content)
+	fc, fo, err := fs.allocate_sectors(&vol, {}, 5, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
-	fc2, fo2, ext_err := fs.allocate_sectors(&vol, fc, fo, 10, .File_Content)
+	fc2, fo2, ext_err := fs.allocate_sectors(&vol, fs.Chain_Location{fc, fo}, 10, .File_Content)
 	testing.expect_value(t, ext_err, fs.FS_Error.None)
 	testing.expect_value(t, fc, fc2)
 	testing.expect_value(t, fo, fo2)
 
-	runs, _ := fs.resolve_extents(&vol, fc, fo)
+	runs, _ := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	tt: u64
 	for r in runs { tt += u64(r.count) }
 
 	testing.expect_value(t, tt, u64(10))
-	derr := fs.deallocate_sectors(&vol, fc, fo)
+	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
@@ -208,21 +208,21 @@ test_alloc_cache_stress :: proc(t: ^testing.T) {
 
 	ITERATIONS :: 100
 	for i in 0 ..< ITERATIONS {
-		fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, 1, .File_Content)
+		fc, fo, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 		testing.expectf(t, aerr == .None, "alloc iteration %d: %v", i, aerr)
 		if aerr != .None { return }
 
-		runs, ext_err := fs.resolve_extents(&vol, fc, fo)
+		runs, ext_err := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 		testing.expectf(t, ext_err == .None, "resolve extents iteration %d", i)
 		if ext_err != .None { return }
 		tt: u64; for r in runs { tt += u64(r.count) }
 		testing.expectf(t, tt == 1, "iteration %d: expected 1 sector, got %d", i, tt)
 
-		derr := fs.deallocate_sectors(&vol, fc, fo)
+		derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 		testing.expectf(t, derr == .None, "dealloc iteration %d: %v", i, derr)
 		if derr != .None { return }
 
-		_, ext_err2 := fs.resolve_extents(&vol, fc, fo)
+		_, ext_err2 := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 		testing.expectf(
 			t,
 			ext_err2 != .None,

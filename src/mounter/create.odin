@@ -44,11 +44,11 @@ prepare_parent_slot :: proc(
 
 	dir_cluster := fs.Cluster(parent_entry.stored_cluster)
 	dir_offset := fs.Sector_Offset(parent_entry.sector_index)
-	if check_name_exists(fsys, dir_cluster, dir_offset, base_name) {
+	if check_name_exists(fsys, fs.Chain_Location{dir_cluster, dir_offset}, base_name) {
 		return .Name_Exists, {}, 0, 0, ""
 	}
 
-	slot, slot_err := find_or_extend_dir(fsys, dir_cluster, dir_offset)
+	slot, slot_err := find_or_extend_dir(fsys, fs.Chain_Location{dir_cluster, dir_offset})
 	if slot_err == .Entry_Not_Found {
 		return .Dir_Full, {}, 0, 0, ""
 	}
@@ -123,13 +123,13 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 	case .Ok:
 	}
 
-	new_cluster, new_offset, derr := fs.allocate_sectors(&fsys.vol, 0, 0, 1, .Directory)
+	new_cluster, new_offset, derr := fs.allocate_sectors(&fsys.vol, {}, 1, .Directory)
 	if derr != .None {
 		return fuse3.nix(.ENOSPC)
 	}
 
 	fsys.free_sectors -= 1
-	dir_runs, dr_err := fs.resolve_extents(&fsys.vol, new_cluster, new_offset)
+	dir_runs, dr_err := fs.resolve_extents(&fsys.vol, fs.Chain_Location{new_cluster, new_offset})
 	defer delete(dir_runs)
 	if dr_err != .None || len(dir_runs) == 0 {
 		return fuse3.nix(.EIO)
@@ -183,14 +183,14 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 	}
 
 	sectors_needed := (u64(len(target_str)) + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
-	new_c, new_o, aerr := fs.allocate_sectors(&fsys.vol, 0, 0, sectors_needed, .File_Content)
+	new_c, new_o, aerr := fs.allocate_sectors(&fsys.vol, {}, sectors_needed, .File_Content)
 	if aerr != .None {
 		return fuse3.nix(.ENOSPC)
 	}
 
 	fsys.free_sectors -= sectors_needed
 	{
-		runs, r_err := fs.resolve_extents(&fsys.vol, new_c, new_o)
+		runs, r_err := fs.resolve_extents(&fsys.vol, fs.Chain_Location{new_c, new_o})
 		defer delete(runs)
 		if r_err != .None || len(runs) == 0 {
 			return fuse3.nix(.EIO)
@@ -235,11 +235,7 @@ remove_directory_entry :: proc(
 	loc: fs.File_Identity,
 ) -> fs.FS_Error {
 	if entry.stored_cluster != 0 {
-		if derr := fs.deallocate_sectors(
-			&fsys.vol,
-			fs.Cluster(entry.stored_cluster),
-			fs.Sector_Offset(entry.sector_index),
-		); derr != .None {
+		if derr := fs.deallocate_sectors(&fsys.vol, fs.data_chain_of(entry^)); derr != .None {
 			return derr
 		}
 	}
@@ -456,7 +452,7 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 		}
 	}
 
-	dst_slot, slot_err := find_or_extend_dir(fsys, new_parent_c, new_parent_o)
+	dst_slot, slot_err := find_or_extend_dir(fsys, fs.Chain_Location{new_parent_c, new_parent_o})
 	if slot_err == .Entry_Not_Found {
 		return fuse3.nix(.ENOSPC)
 	}

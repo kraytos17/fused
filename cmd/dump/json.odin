@@ -100,7 +100,7 @@ build_directory :: proc(
 	cluster: fs.Cluster,
 	offset: fs.Sector_Offset,
 ) -> map[string]EntryJSON {
-	runs, ext_err := fs.resolve_extents(vol, cluster, offset)
+	runs, ext_err := fs.resolve_extents(vol, fs.Chain_Location{cluster, offset})
 	if ext_err != .None { return nil }
 
 	result := make(map[string]EntryJSON)

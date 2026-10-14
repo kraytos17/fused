@@ -45,8 +45,7 @@ write_entry_at :: proc(fsys: ^FS, loc: fs.File_Identity, entry: ^fs.Directory_En
 // walk errors propagate instead of stopping the walk silently.
 find_free_slot_in_extent :: proc(
 	fsys: ^FS,
-	dir_cluster: fs.Cluster,
-	dir_offset: fs.Sector_Offset,
+	dir: fs.Chain_Location,
 ) -> (
 	loc: fs.File_Identity,
 	err: fs.FS_Error,
@@ -78,7 +77,7 @@ find_free_slot_in_extent :: proc(
 		depc = depc,
 	}
 
-	werr := fs.walk_chain_sectors(&fsys.vol, dir_cluster, dir_offset, visit, &ctx)
+	werr := fs.walk_chain_sectors(&fsys.vol, dir, visit, &ctx)
 	if ctx.err != .None {
 		return {}, ctx.err
 	}
@@ -96,13 +95,12 @@ find_free_slot_in_extent :: proc(
 // over a corrupt chain would mask it).
 find_or_extend_dir :: proc(
 	fsys: ^FS,
-	dir_cluster: fs.Cluster,
-	dir_offset: fs.Sector_Offset,
+	dir: fs.Chain_Location,
 ) -> (
 	loc: fs.File_Identity,
 	err: fs.FS_Error,
 ) {
-	slot, ferr := find_free_slot_in_extent(fsys, dir_cluster, dir_offset)
+	slot, ferr := find_free_slot_in_extent(fsys, dir)
 	if ferr == .None {
 		return slot, .None
 	}
@@ -110,7 +108,7 @@ find_or_extend_dir :: proc(
 		return {}, ferr
 	}
 
-	current_runs, cr_err := fs.resolve_extents(&fsys.vol, dir_cluster, dir_offset)
+	current_runs, cr_err := fs.resolve_extents(&fsys.vol, dir)
 	defer delete(current_runs)
 	if cr_err != .None {
 		return {}, cr_err
@@ -123,8 +121,7 @@ find_or_extend_dir :: proc(
 
 	_, _, ext_err := fs.allocate_sectors(
 		&fsys.vol,
-		dir_cluster,
-		dir_offset,
+		dir,
 		current_count + 1,
 		.Directory,
 	)
@@ -133,7 +130,7 @@ find_or_extend_dir :: proc(
 	}
 
 	fsys.free_sectors -= 1
-	dir_runs, dir_err := fs.resolve_extents(&fsys.vol, dir_cluster, dir_offset)
+	dir_runs, dir_err := fs.resolve_extents(&fsys.vol, dir)
 	defer delete(dir_runs)
 	if dir_err != .None {
 		return {}, dir_err
@@ -165,8 +162,7 @@ find_or_extend_dir :: proc(
 // check_name_exists checks whether a name already exists in the directory.
 check_name_exists :: proc(
 	fsys: ^FS,
-	dir_cluster: fs.Cluster,
-	dir_offset: fs.Sector_Offset,
+	dir: fs.Chain_Location,
 	name: string,
 ) -> bool {
 	depc := dir_entries_per_buf(fsys.vol.master.features)
@@ -193,7 +189,7 @@ check_name_exists :: proc(
 		name = name,
 	}
 
-	fs.walk_chain_sectors(&fsys.vol, dir_cluster, dir_offset, visit, &ctx)
+	fs.walk_chain_sectors(&fsys.vol, dir, visit, &ctx)
 	return ctx.found
 }
 
@@ -214,8 +210,7 @@ set_entry_name :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> f
 		if ptr.cluster != 0 {
 			if derr := fs.deallocate_sectors(
 				&fsys.vol,
-				fs.Cluster(ptr.cluster),
-				fs.Sector_Offset(ptr.sector),
+				fs.Chain_Location{fs.Cluster(ptr.cluster), fs.Sector_Offset(ptr.sector)},
 			); derr != .None {
 				return derr
 			}

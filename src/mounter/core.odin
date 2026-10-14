@@ -550,18 +550,17 @@ destroy_fs_for_test :: proc(fsys: ^FS) {
 // errno its path already reported (lseek/read ENOENT, bmap/readlink EIO).
 resolve_extents_cached :: proc(
 	fsys: ^FS,
-	cluster: fs.Cluster,
-	offset: fs.Sector_Offset,
+	loc: fs.Chain_Location,
 ) -> (
 	runs: []fs.Extent_Run,
 	err: fs.FS_Error,
 ) {
-	key := Extent_Cache_Key{u64(cluster), u16(offset)}
+	key := Extent_Cache_Key{u64(loc.cluster), u16(loc.offset)}
 	if cached, hit := fsys.extents[key]; hit {
 		return cached, .None
 	}
 
-	r, rerr := fs.resolve_extents(&fsys.vol, cluster, offset)
+	r, rerr := fs.resolve_extents(&fsys.vol, loc)
 	if rerr != .None {
 		return nil, rerr
 	}
@@ -585,13 +584,12 @@ resolve_extents_cached :: proc(
 // exclusive is taken, so no deadlock against concurrent writers.
 resolve_extents_shared :: proc(
 	fsys: ^FS,
-	cluster: fs.Cluster,
-	offset: fs.Sector_Offset,
+	loc: fs.Chain_Location,
 ) -> (
 	runs: []fs.Extent_Run,
 	err: fs.FS_Error,
 ) {
-	key := Extent_Cache_Key{u64(cluster), u16(offset)}
+	key := Extent_Cache_Key{u64(loc.cluster), u16(loc.offset)}
 	if cached, hit := fsys.extents[key]; hit {
 		out, _ := slice.clone(cached, context.temp_allocator)
 		return out, .None
@@ -606,7 +604,7 @@ resolve_extents_shared :: proc(
 		return out, .None
 	}
 
-	r, rerr := fs.resolve_extents(&fsys.vol, cluster, offset)
+	r, rerr := fs.resolve_extents(&fsys.vol, loc)
 	if rerr != .None {
 		sync.rw_mutex_unlock(&fsys.mu)
 		sync.rw_mutex_shared_lock(&fsys.mu)

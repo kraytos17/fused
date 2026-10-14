@@ -151,7 +151,7 @@ print_directory :: proc(
 	prefix: string,
 	is_root: bool,
 ) {
-	runs, ext_err := fs.resolve_extents(vol, cluster, offset)
+	runs, ext_err := fs.resolve_extents(vol, fs.Chain_Location{cluster, offset})
 	if ext_err != .None { return }
 	for run in runs {
 		n := int(run.count)
@@ -280,11 +280,7 @@ print_hex_by_path :: proc(vol: ^fs.Volume, path: string) {
 		os.exit(1)
 	}
 
-	runs, ext_err := fs.resolve_extents(
-		vol,
-		fs.Cluster(entry.stored_cluster),
-		fs.Sector_Offset(entry.sector_index),
-	)
+	runs, ext_err := fs.resolve_extents(vol, fs.data_chain_of(entry))
 	if ext_err != .None {
 		log.errorf("resolve_extents failed")
 		os.exit(1)

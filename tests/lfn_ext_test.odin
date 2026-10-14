@@ -102,10 +102,10 @@ test_lseek_hole_data :: proc(t: ^testing.T) {
 	if !vol_ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	fc, fo, aerr := fs.allocate_sectors(&vol, 0, 0, 4, .File_Content)
+	fc, fo, aerr := fs.allocate_sectors(&vol, {}, 4, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 
-	runs, ext_err := fs.resolve_extents(&vol, fc, fo)
+	runs, ext_err := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	testing.expectf(t, ext_err == .None, "resolve_extents")
 	testing.expect(t, len(runs) >= 1, "at least one extent")
 
@@ -126,7 +126,7 @@ test_lseek_hole_data :: proc(t: ^testing.T) {
 	testing.expect(t, fs.sector_write(&vol, last_sec, buf3[:]) == .None, "write last sector")
 
 	// Verify extents are correct
-	_, ext_err2 := fs.resolve_extents(&vol, fc, fo)
+	_, ext_err2 := fs.resolve_extents(&vol, fs.Chain_Location{fc, fo})
 	testing.expectf(t, ext_err2 == .None, "resolve_extents after writes")
 }
 
@@ -137,12 +137,12 @@ test_resolve_lfn_actual_resolution :: proc(t: ^testing.T) {
 	defer close_test_volume(&vol)
 
 	// Allocate one sector for LFN data
-	lfn_c, lfn_o, aerr := fs.allocate_sectors(&vol, 0, 0, 1, .LFN)
+	lfn_c, lfn_o, aerr := fs.allocate_sectors(&vol, {}, 1, .LFN)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
-	defer fs.deallocate_sectors(&vol, lfn_c, lfn_o)
+	defer fs.deallocate_sectors(&vol, fs.Chain_Location{lfn_c, lfn_o})
 
 	// Resolve the allocated sector
-	lfn_runs, ext_err := fs.resolve_extents(&vol, lfn_c, lfn_o)
+	lfn_runs, ext_err := fs.resolve_extents(&vol, fs.Chain_Location{lfn_c, lfn_o})
 	testing.expectf(t, ext_err == .None, "resolve LFN extents")
 	testing.expect(t, len(lfn_runs) > 0, "LFN extents not empty")
 

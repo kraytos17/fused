@@ -217,7 +217,7 @@ fused_lseek :: proc "c" (
 		return posix.off_t(fs_error_to_errno(err))
 	}
 
-	runs, rerr := resolve_extents_cached(fsys, data_cluster, data_offset)
+	runs, rerr := resolve_extents_cached(fsys, fs.Chain_Location{data_cluster, data_offset})
 	if rerr != .None {
 		return posix.off_t(fuse3.nix(.ENOENT))
 	}
@@ -368,7 +368,7 @@ fused_bmap :: proc "c" (path: cstring, blocksize: c.size_t, idx: ^c.uint64_t) ->
 
 	data_cluster := fs.Cluster(entry.stored_cluster)
 	data_offset := fs.Sector_Offset(entry.sector_index)
-	runs, xerr := resolve_extents_cached(fsys, data_cluster, data_offset)
+	runs, xerr := resolve_extents_cached(fsys, fs.Chain_Location{data_cluster, data_offset})
 	if xerr != .None || len(runs) == 0 {
 		return fuse3.nix(.EIO)
 	}

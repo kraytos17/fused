@@ -34,7 +34,7 @@ read_directory_entries :: proc(
 	entries: [dynamic]Indexed_Entry,
 	err: FS_Error,
 ) {
-	data, derr := read_chain(vol, cluster, sector_offset)
+	data, derr := read_chain(vol, Chain_Location{cluster, sector_offset})
 	defer delete(data)
 	if derr != .None {
 		return {}, derr
@@ -163,28 +163,33 @@ write_directory_entry_at :: proc(
 	return sector_write(vol, table_sector, buf[:])
 }
 
+// data_chain_of names the data chain owned by an entry: its stored cluster
+// and sector index. Centralizes the stored_cluster/sector_index pairing
+// repeated at every data-path call site.
+data_chain_of :: proc(entry: Directory_Entry) -> Chain_Location {
+	return {Cluster(entry.stored_cluster), Sector_Offset(entry.sector_index)}
+}
+
 // entry_sector_for_index returns the absolute sector and the entry index
 // within that sector for a directory entry addressed by a chain-relative
 // index. Returns Entry_Not_Found when the index falls outside the chain;
 // resolve I/O errors propagate unchanged.
 entry_sector_for_index :: proc(
 	vol: ^Volume,
-	cluster: Cluster,
-	offset: Sector_Offset,
-	index: int,
+	id: File_Identity,
 ) -> (
 	Sector,
 	int,
 	FS_Error,
 ) {
-	runs, err := resolve_extents(vol, cluster, offset)
+	runs, err := resolve_extents(vol, Chain_Location{id.dir_cluster, id.dir_offset})
 	defer delete(runs)
 	if err != .None {
 		return {}, 0, err
 	}
 
 	deps := int(dir_entries_per_sector(vol.master.features))
-	remaining := index
+	remaining := id.entry_index
 	for r in runs {
 		n := int(r.count) * deps
 		if remaining < n {
@@ -205,7 +210,7 @@ read_entry_at_index :: proc(
 	entry: Directory_Entry,
 	err: FS_Error,
 ) {
-	sec, within, rerr := entry_sector_for_index(vol, id.dir_cluster, id.dir_offset, id.entry_index)
+	sec, within, rerr := entry_sector_for_index(vol, id)
 	if rerr != .None {
 		return {}, rerr
 	}
@@ -231,7 +236,7 @@ write_entry_at_index :: proc(
 	id: File_Identity,
 	entry: ^Directory_Entry,
 ) -> FS_Error {
-	sec, within, err := entry_sector_for_index(vol, id.dir_cluster, id.dir_offset, id.entry_index)
+	sec, within, err := entry_sector_for_index(vol, id)
 	if err != .None {
 		return err
 	}
