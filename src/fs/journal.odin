@@ -129,6 +129,69 @@ journal_finish :: proc(vol: ^Volume, seq: Journal_Seq) {
 	write_master_record(vol)
 }
 
+@(private = "file")
+Slot_Entry :: struct {
+	pos: Sector,
+	hdr: Journal_Header,
+}
+
+// slot_seq_cmp orders journal slots by ascending sequence number for the
+// recovery sort: older transactions replay before newer ones that may
+// overwrite the same Cluster_Entry.
+@(private = "file")
+slot_seq_cmp :: proc(a, b: Slot_Entry) -> int {
+	if a.hdr.seq < b.hdr.seq { return -1 }
+	if a.hdr.seq > b.hdr.seq { return +1 }
+	return 0
+}
+
+// _replay_slot replays one committed transaction slot, returning the entry
+// count and whether the slot completed. A torn record sector aborts the
+// slot (completed=false, watermark not advanced) without affecting other
+// slots; per-entry table I/O failures skip that entry.
+@(private = "file")
+_replay_slot :: proc(vol: ^Volume, s: Slot_Entry) -> (replayed: int, completed: bool) {
+	for ri: u16; ri < s.hdr.rec_sectors; ri += 1 {
+		rec_buf: [SECTOR_SIZE]u8
+		if sector_read(vol, s.pos + Sector(ri) + 1, rec_buf[:]) != .None {
+			log.warnf("journal: can't read record sector %d — aborting replay", ri)
+			return replayed, false
+		}
+
+		rec := (^Journal_Record)(raw_data(rec_buf[:]))
+		for ei in 0 ..< JOURNAL_ENTRIES_PER_RECORD {
+			idx := int(ri) * JOURNAL_ENTRIES_PER_RECORD + ei
+			if idx >= int(s.hdr.rec_count) { break }
+
+			je := rec.entries[ei]
+			table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
+			if read_cluster_entry_table(vol, Cluster(je.cluster), &table) != .None {
+				continue
+			}
+			if int(je.ce_index) >= len(table) {
+				continue
+			}
+
+			ce := table[je.ce_index]
+			if .Allocated in ce.state && transmute(u8)ce.state == je.state {
+				continue
+			}
+
+			table[je.ce_index] = Cluster_Entry {
+				state             = transmute(Cluster_Entry_State)je.state,
+				allocation_size   = je.alloc_size,
+				sector_start      = je.sector_start,
+				next_cluster      = je.next_cluster,
+				next_sector_index = je.next_sector_index,
+			}
+
+			_ = write_cluster_entry_table(vol, Cluster(je.cluster), &table)
+			replayed += 1
+		}
+	}
+	return replayed, true
+}
+
 @(cold, optimization_mode = "favor_size")
 journal_recover :: proc(vol: ^Volume) {
 	J := journal_region_base(&vol.master)
@@ -139,11 +202,6 @@ journal_recover :: proc(vol: ^Volume) {
 	// position and the header so we can replay in seq order — the ring
 	// buffer's physical order is not guaranteed to match sequence order
 	// after wraparound.
-	Slot_Entry :: struct {
-		pos: Sector,
-		hdr: Journal_Header,
-	}
-
 	valid: [dynamic]Slot_Entry
 	delete(valid)
 
@@ -169,11 +227,7 @@ journal_recover :: proc(vol: ^Volume) {
 
 	// Sort by sequence number ascending so older transactions are replayed
 	// before newer ones that may overwrite the same Cluster_Entry.
-	sort.quick_sort_proc(valid[:], proc(a, b: Slot_Entry) -> int {
-		if a.hdr.seq < b.hdr.seq { return -1 }
-		if a.hdr.seq > b.hdr.seq { return +1 }
-		return 0
-	})
+	sort.quick_sort_proc(valid[:], slot_seq_cmp)
 
 	replayed: int
 	for s in valid {
@@ -184,47 +238,9 @@ journal_recover :: proc(vol: ^Volume) {
 			s.hdr.rec_sectors,
 		)
 
-		replay_ok := true
-		for ri: u16; ri < s.hdr.rec_sectors; ri += 1 {
-			rec_buf: [SECTOR_SIZE]u8
-			if sector_read(vol, s.pos + Sector(ri) + 1, rec_buf[:]) != .None {
-				log.warnf("journal: can't read record sector %d — aborting replay", ri)
-				replay_ok = false
-				break
-			}
-
-			rec := (^Journal_Record)(raw_data(rec_buf[:]))
-			for ei in 0 ..< JOURNAL_ENTRIES_PER_RECORD {
-				idx := int(ri) * JOURNAL_ENTRIES_PER_RECORD + ei
-				if idx >= int(s.hdr.rec_count) { break }
-
-				je := rec.entries[ei]
-				table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-				if read_cluster_entry_table(vol, Cluster(je.cluster), &table) != .None {
-					continue
-				}
-				if int(je.ce_index) >= len(table) {
-					continue
-				}
-
-				ce := table[je.ce_index]
-				if .Allocated in ce.state && transmute(u8)ce.state == je.state {
-					continue
-				}
-
-				table[je.ce_index] = Cluster_Entry {
-					state             = transmute(Cluster_Entry_State)je.state,
-					allocation_size   = je.alloc_size,
-					sector_start      = je.sector_start,
-					next_cluster      = je.next_cluster,
-					next_sector_index = je.next_sector_index,
-				}
-
-				_ = write_cluster_entry_table(vol, Cluster(je.cluster), &table)
-				replayed += 1
-			}
-		}
-		if replay_ok {
+		n, completed := _replay_slot(vol, s)
+		replayed += n
+		if completed {
 			W = s.hdr.seq + 1
 		}
 	}
