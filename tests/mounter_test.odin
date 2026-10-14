@@ -651,3 +651,51 @@ test_lfn_cache_key_distinct :: proc(t: ^testing.T) {
 	c := mounter.Lfn_Cache_Key{cluster = 7, offset = 2, index = 0}
 	testing.expect(t, b == c, "identical triples must match")
 }
+
+// test_mount_create_past_dir_extend — fill a directory past its first
+// sector (9 entries/sector) so find_or_extend_dir extends the chain
+// repeatedly, then verify every file resolves. Without the post-extension
+// extent-cache invalidate, the re-resolve hits the pre-extend chain and
+// new files land in the full old tail sector, overwriting siblings
+// (fewer names in readdir, getattr misses).
+@(test)
+test_mount_create_past_dir_extend :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	ok := setup_mounter(t, &fsys)
+	if !ok { return }
+	defer teardown_mounter(&fsys)
+
+	fi: fuse3.File_Info
+	rc := mounter.fused_mkdir("/bigdir", posix.mode_t{.IRUSR, .IWUSR, .IXUSR})
+	testing.expect_value(t, rc, 0)
+
+	path_buf: [32]u8
+	copy(path_buf[:], "/bigdir/F")
+	for i in 0 ..< 30 {
+		path_buf[9] = u8('0' + (i / 10))
+		path_buf[10] = u8('0' + (i % 10))
+		path_buf[11] = 0
+		rc = mounter.fused_create(cstring(raw_data(path_buf[:])), posix.mode_t{.IRUSR, .IWUSR}, &fi)
+		testing.expect_value(t, rc, 0)
+	}
+
+	collector: Dir_Collector
+	rc = mounter.fused_readdir("/bigdir", &collector, collect_filler, 0, nil, 0)
+	testing.expect_value(t, rc, 0)
+	found := 0
+	list := strings.split(string(collector.buf[:collector.len]), "\x00")
+	defer delete(list)
+	for e in list {
+		if len(e) == 3 && e[0] == 'F' { found += 1 }
+	}
+	testing.expect(t, found == 30, "all 30 files listed")
+
+	st: fuse3.Stat
+	for i in 0 ..< 30 {
+		path_buf[9] = u8('0' + (i / 10))
+		path_buf[10] = u8('0' + (i % 10))
+		path_buf[11] = 0
+		rc = mounter.fused_getattr(cstring(raw_data(path_buf[:])), &st, nil)
+		testing.expect_value(t, rc, 0)
+	}
+}

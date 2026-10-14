@@ -108,8 +108,9 @@ find_or_extend_dir :: proc(
 		return {}, ferr
 	}
 
-	current_runs, cr_err := fs.resolve_extents(&fsys.vol, dir)
-	defer delete(current_runs)
+	// Cached resolve: counting only needs the slice read-only, and the
+	// caller holds the write lock, so the borrowed slice is valid here.
+	current_runs, cr_err := resolve_extents_cached(fsys, dir)
 	if cr_err != .None {
 		return {}, cr_err
 	}
@@ -129,9 +130,13 @@ find_or_extend_dir :: proc(
 		return {}, ext_err
 	}
 
+	// The extension changed the chain on disk: drop the cached runs before
+	// re-resolving, or the lookup below would hit the pre-extend chain and
+	// name a slot in the wrong sector.
+	extent_cache_invalidate(fsys, dir.cluster, dir.offset)
+
 	fsys.free_sectors -= 1
-	dir_runs, dir_err := fs.resolve_extents(&fsys.vol, dir)
-	defer delete(dir_runs)
+	dir_runs, dir_err := resolve_extents_cached(fsys, dir)
 	if dir_err != .None {
 		return {}, dir_err
 	}
