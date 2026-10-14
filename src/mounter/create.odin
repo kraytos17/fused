@@ -94,7 +94,7 @@ fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 	if werr := write_entry_with_lfn(fsys, &new_entry, name); werr != .None {
 		return fs_error_to_errno(werr)
 	}
-	if fs.write_directory_entry_at(&fsys.vol, fs.File_Identity{dcluster, dsec, didx}, &new_entry) != .None {
+	if write_entry_at(fsys, fs.File_Identity{dcluster, dsec, didx}, &new_entry) != .None {
 		return fuse3.nix(.EIO)
 	}
 
@@ -153,7 +153,7 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 	if len(name) < len(new_entry.file_name) {
 		new_entry.file_name[len(name)] = 0
 	}
-	if fs.write_directory_entry_at(&fsys.vol, fs.File_Identity{dcluster, dsec, didx}, &new_entry) != .None {
+	if write_entry_at(fsys, fs.File_Identity{dcluster, dsec, didx}, &new_entry) != .None {
 		return fuse3.nix(.EIO)
 	}
 
@@ -216,7 +216,7 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 	if werr := write_entry_with_lfn(fsys, &new_entry, name); werr != .None {
 		return fs_error_to_errno(werr)
 	}
-	if fs.write_directory_entry_at(&fsys.vol, fs.File_Identity{dcluster, dsec, didx}, &new_entry) != .None {
+	if write_entry_at(fsys, fs.File_Identity{dcluster, dsec, didx}, &new_entry) != .None {
 		return fuse3.nix(.EIO)
 	}
 
@@ -465,8 +465,7 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	if nerr := set_entry_name(fsys, &entry, new_name); nerr != .None {
 		return fs_error_to_errno(nerr)
 	}
-	if fs.write_directory_entry_at(&fsys.vol, fs.File_Identity{dst_cluster, dst_sec, dst_slot_idx}, &entry) !=
-	   .None {
+	if write_entry_at(fsys, fs.File_Identity{dst_cluster, dst_sec, dst_slot_idx}, &entry) != .None {
 		return fuse3.nix(.EIO)
 	}
 
