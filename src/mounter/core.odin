@@ -546,22 +546,24 @@ destroy_fs_for_test :: proc(fsys: ^FS) {
 // slice is owned by the cache — callers must NOT delete it.  Caller must hold
 // the WRITE lock (begin_op): the lookup may insert, and the borrowed slice
 // is only valid until the next invalidation, which also requires the lock.
+// Resolution failures propagate as FS_Error; each boundary maps them to the
+// errno its path already reported (lseek/read ENOENT, bmap/readlink EIO).
 resolve_extents_cached :: proc(
 	fsys: ^FS,
 	cluster: fs.Cluster,
 	offset: fs.Sector_Offset,
 ) -> (
 	runs: []fs.Extent_Run,
-	ok: bool,
+	err: fs.FS_Error,
 ) {
 	key := Extent_Cache_Key{u64(cluster), u16(offset)}
 	if cached, hit := fsys.extents[key]; hit {
-		return cached, true
+		return cached, .None
 	}
 
-	r, err := fs.resolve_extents(&fsys.vol, cluster, offset)
-	if err != .None {
-		return nil, false
+	r, rerr := fs.resolve_extents(&fsys.vol, cluster, offset)
+	if rerr != .None {
+		return nil, rerr
 	}
 
 	// Explicit fsys.allocator: `context` does not propagate upward to
@@ -570,7 +572,7 @@ resolve_extents_cached :: proc(
 	slice_copy, _ := slice.clone(r[:], fsys.allocator)
 	delete(r)
 	fsys.extents[key] = slice_copy
-	return slice_copy, true
+	return slice_copy, .None
 }
 
 // resolve_extents_shared resolves an extent chain for read-only paths.
@@ -587,12 +589,12 @@ resolve_extents_shared :: proc(
 	offset: fs.Sector_Offset,
 ) -> (
 	runs: []fs.Extent_Run,
-	ok: bool,
+	err: fs.FS_Error,
 ) {
 	key := Extent_Cache_Key{u64(cluster), u16(offset)}
 	if cached, hit := fsys.extents[key]; hit {
 		out, _ := slice.clone(cached, context.temp_allocator)
-		return out, true
+		return out, .None
 	}
 
 	sync.rw_mutex_shared_unlock(&fsys.mu)
@@ -601,14 +603,14 @@ resolve_extents_shared :: proc(
 		out, _ := slice.clone(cached, context.temp_allocator)
 		sync.rw_mutex_unlock(&fsys.mu)
 		sync.rw_mutex_shared_lock(&fsys.mu)
-		return out, true
+		return out, .None
 	}
 
-	r, err := fs.resolve_extents(&fsys.vol, cluster, offset)
-	if err != .None {
+	r, rerr := fs.resolve_extents(&fsys.vol, cluster, offset)
+	if rerr != .None {
 		sync.rw_mutex_unlock(&fsys.mu)
 		sync.rw_mutex_shared_lock(&fsys.mu)
-		return nil, false
+		return nil, rerr
 	}
 
 	// Explicit fsys.allocator: see resolve_extents_cached.
@@ -619,7 +621,7 @@ resolve_extents_shared :: proc(
 	out, _ := slice.clone(slice_copy, context.temp_allocator)
 	sync.rw_mutex_unlock(&fsys.mu)
 	sync.rw_mutex_shared_lock(&fsys.mu)
-	return out, true
+	return out, .None
 }
 
 // extent_cache_invalidate_all drops every cached extent chain.  Call after any

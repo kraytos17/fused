@@ -461,8 +461,8 @@ fused_copy_file_range :: proc "c" (
 		return c.ssize_t(fs_error_to_errno(dst_err))
 	}
 
-	src_runs, src_err := resolve_extents_cached(fsys, src_cluster, src_offset)
-	if !src_err {
+	src_runs, src_xerr := resolve_extents_cached(fsys, src_cluster, src_offset)
+	if src_xerr != .None {
 		return c.ssize_t(fuse3.nix(.ENOENT))
 	}
 

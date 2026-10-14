@@ -32,9 +32,9 @@ ensure_chain_covers :: proc(
 	extended: bool,
 	err: fs.FS_Error,
 ) {
-	ext_ok: bool
-	runs, ext_ok = resolve_extents_cached(fsys, data_cluster, data_offset)
-	current := fs.chain_sector_count(runs) if ext_ok else 0
+	ext_err: fs.FS_Error
+	runs, ext_err = resolve_extents_cached(fsys, data_cluster, data_offset)
+	current := fs.chain_sector_count(runs) if ext_err == .None else 0
 	if total_sectors <= current {
 		return data_cluster, data_offset, runs, false, .None
 	}
@@ -56,9 +56,9 @@ ensure_chain_covers :: proc(
 
 	fsys.free_sectors -= total_sectors - current
 	extent_cache_invalidate(fsys, new_c, new_o)
-	runs, ext_ok = resolve_extents_cached(fsys, new_c, new_o)
-	if !ext_ok {
-		return {}, 0, {}, true, .Entry_Not_Found
+	runs, ext_err = resolve_extents_cached(fsys, new_c, new_o)
+	if ext_err != .None {
+		return {}, 0, {}, true, ext_err
 	}
 	return new_c, new_o, runs, true, .None
 }

@@ -135,11 +135,11 @@ Slot_Entry :: struct {
 	hdr: Journal_Header,
 }
 
-// slot_seq_cmp orders journal slots by ascending sequence number for the
+// _slot_seq_cmp orders journal slots by ascending sequence number for the
 // recovery sort: older transactions replay before newer ones that may
 // overwrite the same Cluster_Entry.
 @(private = "file")
-slot_seq_cmp :: proc(a, b: Slot_Entry) -> int {
+_slot_seq_cmp :: proc(a, b: Slot_Entry) -> int {
 	if a.hdr.seq < b.hdr.seq { return -1 }
 	if a.hdr.seq > b.hdr.seq { return +1 }
 	return 0
@@ -227,7 +227,7 @@ journal_recover :: proc(vol: ^Volume) {
 
 	// Sort by sequence number ascending so older transactions are replayed
 	// before newer ones that may overwrite the same Cluster_Entry.
-	sort.quick_sort_proc(valid[:], slot_seq_cmp)
+	sort.quick_sort_proc(valid[:], _slot_seq_cmp)
 
 	replayed: int
 	for s in valid {
