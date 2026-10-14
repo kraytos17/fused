@@ -258,6 +258,9 @@ fused_statfs :: proc "c" (path: cstring, stbuf: ^posix.statvfs_t) -> c.int {
 
 	total_sectors := u64(fsys.vol.image_size) / fs.SECTOR_SIZE
 	free_sectors := fsys.free_sectors
+	// NAME_MAX is the Linux VFS filename limit (<linux/limits.h>); the
+	// statvfs-facing claim, independent of the on-disk LFN capacity.
+	NAME_MAX :: 255
 	stbuf^ = {
 		f_bsize   = c.ulong(fs.SECTOR_SIZE),
 		f_frsize  = c.ulong(fs.SECTOR_SIZE),
@@ -274,7 +277,7 @@ fused_statfs :: proc "c" (path: cstring, stbuf: ^posix.statvfs_t) -> c.int {
 			fsys.vol.master.cluster_map_size * u64(dir_entries_per_buf(fsys.vol.master.features)),
 		),
 		f_flag    = posix.VFS_Flags{},
-		f_namemax = c.ulong(255),
+		f_namemax = c.ulong(NAME_MAX),
 	}
 	return 0
 }

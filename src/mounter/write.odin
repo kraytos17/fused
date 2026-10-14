@@ -287,7 +287,8 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 }
 
 // zero_file_range zeros a byte range within a file by reading partial sectors
-// and writing full zeroed sectors where possible.
+// and writing full zeroed sectors where possible. Extent-resolution errors
+// propagate; a short write reports .Sector_Write_Error.
 zero_file_range :: proc(
 	fsys: ^FS,
 	entry: ^fs.Directory_Entry,
@@ -295,12 +296,12 @@ zero_file_range :: proc(
 	data_offset: fs.Sector_Offset,
 	start: u64,
 	end: u64,
-) -> bool {
-	if start >= end { return true }
+) -> fs.FS_Error {
+	if start >= end { return .None }
 
 	runs, ext_err := fs.resolve_extents(&fsys.vol, data_cluster, data_offset)
 	defer delete(runs)
-	if ext_err != .None { return false }
+	if ext_err != .None { return ext_err }
 
 	zero_src := Zero_Source {
 		fsys      = fsys,
@@ -314,7 +315,10 @@ zero_file_range :: proc(
 	}
 
 	written := write_range_to_runs(fsys, runs[:], start, &bytes_src)
-	return written == end - start
+	if written != end - start {
+		return .Sector_Write_Error
+	}
+	return .None
 }
 
 // fused_fallocate pre-allocates space for a file (supports PUNCH_HOLE and
@@ -329,7 +333,9 @@ fused_fallocate :: proc "c" (
 	context = runtime.default_context()
 	fsys := begin_op()
 	defer end_op(fsys)
-	if mode & (fuse3.FALLOC_FL_COLLAPSE_RANGE | fuse3.FALLOC_FL_INSERT_RANGE) != 0 {
+	// Parse the ABI word once; downstream switches on set membership.
+	fmode := transmute(fuse3.Falloc_Flags)(mode)
+	if .Collapse_Range in fmode || .Insert_Range in fmode {
 		return fuse3.nix(.EOPNOTSUPP)
 	}
 
@@ -347,10 +353,10 @@ fused_fallocate :: proc "c" (
 	if !aok {
 		return fuse3.nix(.EOVERFLOW)
 	}
-	if mode & fuse3.FALLOC_FL_PUNCH_HOLE != 0 {
-		zok := zero_file_range(fsys, &entry, data_cluster, data_offset, alloc_start, alloc_end)
-		if !zok {
-			return fuse3.nix(.EIO)
+	if .Punch_Hole in fmode {
+		zerr := zero_file_range(fsys, &entry, data_cluster, data_offset, alloc_start, alloc_end)
+		if zerr != .None {
+			return fs_error_to_errno(zerr)
 		}
 		// Update file_size if needed (PUNCH_HOLE implies KEEP_SIZE)
 		if werr := write_entry_at(fsys, fh_parts(fi.fh), &entry); werr != .None {
@@ -385,13 +391,13 @@ fused_fallocate :: proc "c" (
 		zero_start := u64(entry.file_size)
 		zero_end := max(alloc_end, zero_start)
 		if zero_end > zero_start {
-			zok := zero_file_range(fsys, &entry, data_cluster, data_offset, zero_start, zero_end)
-			if !zok {
-				return fuse3.nix(.EIO)
+			zerr := zero_file_range(fsys, &entry, data_cluster, data_offset, zero_start, zero_end)
+			if zerr != .None {
+				return fs_error_to_errno(zerr)
 			}
 		}
 	}
-	if mode & fuse3.FALLOC_FL_KEEP_SIZE == 0 {
+	if .Keep_Size not_in fmode {
 		new_size := max(u64(entry.file_size), alloc_end)
 		if new_size != u64(entry.file_size) {
 			set_entry_time_to_now(&entry)

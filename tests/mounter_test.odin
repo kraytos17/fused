@@ -385,12 +385,13 @@ test_mount_xattr :: proc(t: ^testing.T) {
 	rc = mounter.fused_getxattr("/Kernel", "user.missing", nil, 0)
 	expect_errno(t, rc, .ENODATA)
 
-	// CREATE on existing → EEXIST.
-	rc = mounter.fused_setxattr("/Kernel", "user.color", raw_data(blue), 4, fuse3.XATTR_CREATE)
+	// CREATE on existing → EEXIST. The ABI word is built from the typed
+	// set (positions transmute back to wire values), never spelled raw.
+	rc = mounter.fused_setxattr("/Kernel", "user.color", raw_data(blue), 4, transmute(c.int)(fuse3.Xattr_Flags{.Create}))
 	expect_errno(t, rc, .EEXIST)
 
 	// REPLACE on missing → ENODATA.
-	rc = mounter.fused_setxattr("/Kernel", "user.nope", raw_data(one_char), 1, fuse3.XATTR_REPLACE)
+	rc = mounter.fused_setxattr("/Kernel", "user.nope", raw_data(one_char), 1, transmute(c.int)(fuse3.Xattr_Flags{.Replace}))
 	expect_errno(t, rc, .ENODATA)
 
 	// List.

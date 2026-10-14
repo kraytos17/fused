@@ -2,7 +2,13 @@
 #+build linux
 package fuse3
 
+import "base:intrinsics"
 import "core:c"
+
+// log2 is the bit-position projection used by core:sys/posix flag enums:
+// members below hold positions so their bit_sets transmute losslessly
+// against the c.int ABI words.
+log2 :: intrinsics.constant_log2
 
 FUSE_USE_VERSION_MAJOR :: 3
 FUSE_USE_VERSION_MINOR :: 18
@@ -39,18 +45,30 @@ RENAME_NOREPLACE :: c.uint(1 << 0)
 RENAME_EXCHANGE :: c.uint(1 << 1)
 RENAME_WHITEOUT :: c.uint(1 << 2)
 
-// xattr setxattr flags (linux/xattr.h)
-XATTR_CREATE :: c.int(1 << 0) // fail if the attribute already exists
-XATTR_REPLACE :: c.int(1 << 1) // fail if the attribute does not exist
+// xattr setxattr flags (linux/xattr.h). Members are bit *positions*
+// (log2 of the C values, following core:sys/posix O_Flag_Bits), so the set
+// transmutes losslessly against the c.int ABI word. Parsed into
+// Xattr_Flags at the mounter boundary; the ABI parameter stays c.int.
+Xattr_Flag :: enum c.int {
+	Create  = log2(1 << 0), // fail if the attribute already exists
+	Replace = log2(1 << 1), // fail if the attribute does not exist
+}
+
+Xattr_Flags :: bit_set[Xattr_Flag;c.int]
+
 
 SEEK_DATA :: c.int(3)
 SEEK_HOLE :: c.int(4)
 
-FALLOC_FL_KEEP_SIZE :: c.int(1 << 0)
-FALLOC_FL_PUNCH_HOLE :: c.int(1 << 1)
-FALLOC_FL_ZERO_RANGE :: c.int(1 << 2)
-FALLOC_FL_COLLAPSE_RANGE :: c.int(1 << 3)
-FALLOC_FL_INSERT_RANGE :: c.int(1 << 5)
+Falloc_Flag :: enum c.int {
+	Keep_Size      = log2(1 << 0),
+	Punch_Hole     = log2(1 << 1),
+	Zero_Range     = log2(1 << 2),
+	Collapse_Range = log2(1 << 3),
+	Insert_Range   = log2(1 << 5),
+}
+
+Falloc_Flags :: bit_set[Falloc_Flag;c.int]
 
 Cap_Bit :: enum u32 {
 	Async_Read, // 1<<0

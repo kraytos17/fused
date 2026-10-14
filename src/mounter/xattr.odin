@@ -54,10 +54,12 @@ fused_setxattr :: proc "c" (
 			break
 		}
 	}
-	if flags & fuse3.XATTR_CREATE != 0 && exists {
+	// Parse the ABI word once; downstream switches on set membership.
+	xflags := transmute(fuse3.Xattr_Flags)(flags)
+	if .Create in xflags && exists {
 		return fuse3.nix(.EEXIST)
 	}
-	if flags & fuse3.XATTR_REPLACE != 0 && !exists {
+	if .Replace in xflags && !exists {
 		return fuse3.nix(.ENODATA)
 	}
 	if exists {

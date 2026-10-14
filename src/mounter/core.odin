@@ -394,11 +394,16 @@ path_cache_get :: proc(fsys: ^FS, path: string) -> (Path_Cache_Value, bool) {
 	return lru.get(&fsys.path_cache, path)
 }
 
-// path_cache_put stores a path resolution in the cache. Paths longer than 256
-// bytes are not cached. The key is cloned with fsys.allocator and freed in
-// path_cache_on_remove with the same allocator.
+// PATH_CACHE_MAX_BYTES caps the path length admitted to the path cache.
+// Paths longer than this are still resolved, just never cached. This is a
+// byte-length limit, distinct from Cache_Config.path_cap (entry count).
+PATH_CACHE_MAX_BYTES :: 256
+
+// path_cache_put stores a path resolution in the cache. Paths longer than
+// PATH_CACHE_MAX_BYTES are not cached. The key is cloned with fsys.allocator
+// and freed in path_cache_on_remove with the same allocator.
 path_cache_put :: proc(fsys: ^FS, path: string, val: Path_Cache_Value) {
-	if len(path) > 256 {
+	if len(path) > PATH_CACHE_MAX_BYTES {
 		return
 	}
 
