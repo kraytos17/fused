@@ -26,7 +26,8 @@ import "core:strings"
 
 // parse_log_level maps a level name to log.Level. Accepts lowercase names
 // plus "warn"; anything else (including "") is rejected.
-parse_log_level :: proc(s: string) -> (lvl: log.Level, ok: bool) {	switch strings.to_lower(s, context.temp_allocator) {
+parse_log_level :: proc(s: string) -> (lvl: log.Level, ok: bool) {
+	switch strings.to_lower(s, context.temp_allocator) {
 	case "debug":
 		return .Debug, true
 	case "info":
