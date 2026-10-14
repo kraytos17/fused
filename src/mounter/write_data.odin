@@ -235,7 +235,7 @@ _bufvec_copy :: proc(user: rawptr, dst: []u8, byte_off: u64, take: u64) -> u64 {
 	if n == 0 {
 		return 0
 	}
-	if b.flags & fuse3.FUSE_BUF_IS_FD != 0 {
+	if .Is_Fd in b.flags {
 		// Fd-backed bufs have no userspace address: a partial-sector copy
 		// through the staging buffer is impossible. Flag the error (the
 		// caller maps it to EIO) instead of panicking through C.
@@ -262,7 +262,7 @@ _bufvec_bulk :: proc(user: rawptr, sec: fs.Sector, sectors: u64) -> u64 {
 
 	b := &s.bufs[s.buf_idx]
 	bulk_len := sectors * fs.SECTOR_SIZE
-	if b.flags & fuse3.FUSE_BUF_IS_FD != 0 {
+	if .Is_Fd in b.flags {
 		phys_off := i64(u64(sec) * fs.SECTOR_SIZE)
 		written: u64
 		for written < bulk_len {
@@ -289,7 +289,7 @@ _bufvec_bulk :: proc(user: rawptr, sec: fs.Sector, sectors: u64) -> u64 {
 	}
 
 	b.size -= c.size_t(bulk_len)
-	if b.flags & fuse3.FUSE_BUF_IS_FD == 0 {
+	if .Is_Fd not_in b.flags {
 		b.mem = rawptr(mem.ptr_offset(([^]u8)(b.mem), int(bulk_len)))
 	}
 	if b.size == 0 {

@@ -337,11 +337,13 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	fsys := begin_op()
 	defer end_op(fsys)
 
-	if u32(flags) & u32(fuse3.RENAME_NOREPLACE) != 0 {
+	// Parse the ABI word once; downstream switches on set membership.
+	rflags := transmute(fuse3.Rename_Flags)(flags)
+	if .No_Replace in rflags {
 		log.debugf("rename: RENAME_NOREPLACE not supported")
 		return fuse3.nix(.ENOSYS)
 	}
-	if u32(flags) & u32(fuse3.RENAME_EXCHANGE) != 0 {
+	if .Exchange in rflags {
 		log.debugf("rename: RENAME_EXCHANGE not supported")
 		return fuse3.nix(.ENOSYS)
 	}

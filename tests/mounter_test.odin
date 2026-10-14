@@ -564,7 +564,7 @@ test_mount_write_buf_fd_backed_partial_is_eio :: proc(t: ^testing.T) {
 	bv.count = 1
 	bv._buf[0] = fuse3.Buf{
 		size  = 10,
-		flags = fuse3.FUSE_BUF_IS_FD,
+		flags = {.Is_Fd},
 		fd    = -1,
 	}
 	// off=1: unaligned head forces the copy path, which has no userspace

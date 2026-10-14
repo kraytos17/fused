@@ -147,7 +147,7 @@ Session :: struct {}
 Pollhandle :: struct {}
 Buf :: struct {
 	size:     c.size_t,
-	flags:    c.int,
+	flags:    Buf_Flags,
 	_ignore1: c.uint32_t,
 	mem:      rawptr,
 	fd:       c.int,
@@ -166,9 +166,6 @@ Bufvec :: struct {
 }
 
 #assert(size_of(Bufvec) == 72)
-
-FUSE_BUF_IS_FD :: 2
-FUSE_BUF_FD_SEEK :: 4
 
 Fill_Dir_Proc :: proc "c" (
 	buf: rawptr,

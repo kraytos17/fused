@@ -93,17 +93,12 @@ main :: proc() {
 			}
 		case strings.has_prefix(arg, "--log-format="):
 			fmt_str := strings.trim_prefix(arg, "--log-format=")
-			switch fmt_str {
-			case "short":
-				log_opts = {.Level}
-			case "long":
-				log_opts = log.Default_Console_Logger_Opts
-			case "full":
-				log_opts = log.Default_Console_Logger_Opts + {.Thread_Id}
-			case:
+			lf, fok := logflags.parse_log_format(fmt_str)
+			if !fok {
 				fmt.eprintf("unknown log format: %s (use short|long|full)\n", fmt_str)
 				os.exit(1)
 			}
+			log_opts = logflags.log_format_opts(lf)
 		case:
 			append(&fuse_args, arg)
 		}

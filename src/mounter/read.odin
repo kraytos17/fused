@@ -352,7 +352,7 @@ fused_read_buf :: proc "c" (
 	bufs := slice.from_ptr(&bv._buf[0], int(bv.count))
 	for s, i in slices {
 		bufs[i].size = c.size_t(s.len)
-		bufs[i].flags = fuse3.FUSE_BUF_IS_FD | fuse3.FUSE_BUF_FD_SEEK
+		bufs[i].flags = {.Is_Fd, .Fd_Seek}
 		bufs[i].fd = fsys.disk_raw_fd
 		bufs[i].pos = posix.off_t(u64(s.sector) * fs.SECTOR_SIZE)
 		bufs[i].mem = nil

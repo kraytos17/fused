@@ -41,9 +41,13 @@ OPT_KEY_NONOPT :: c.int(-2)
 OPT_KEY_KEEP :: c.int(-3)
 OPT_KEY_DISCARD :: c.int(-4)
 
-RENAME_NOREPLACE :: c.uint(1 << 0)
-RENAME_EXCHANGE :: c.uint(1 << 1)
-RENAME_WHITEOUT :: c.uint(1 << 2)
+Rename_Flag :: enum c.uint {
+	No_Replace = log2(1 << 0),
+	Exchange   = log2(1 << 1),
+	Whiteout   = log2(1 << 2),
+}
+
+Rename_Flags :: bit_set[Rename_Flag;c.uint]
 
 // xattr setxattr flags (linux/xattr.h). Members are bit *positions*
 // (log2 of the C values, following core:sys/posix O_Flag_Bits), so the set
@@ -59,6 +63,15 @@ Xattr_Flags :: bit_set[Xattr_Flag;c.int]
 
 SEEK_DATA :: c.int(3)
 SEEK_HOLE :: c.int(4)
+
+// Buf wire flags (fuse_buf flags). Members are bit positions (log2 of the
+// C values); the set transmutes losslessly against the Buf.flags word.
+Buf_Flag :: enum c.int {
+	Is_Fd   = log2(2),
+	Fd_Seek = log2(4),
+}
+
+Buf_Flags :: bit_set[Buf_Flag;c.int]
 
 Falloc_Flag :: enum c.int {
 	Keep_Size      = log2(1 << 0),

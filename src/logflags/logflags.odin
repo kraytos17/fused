@@ -26,8 +26,7 @@ import "core:strings"
 
 // parse_log_level maps a level name to log.Level. Accepts lowercase names
 // plus "warn"; anything else (including "") is rejected.
-parse_log_level :: proc(s: string) -> (lvl: log.Level, ok: bool) {
-	switch strings.to_lower(s, context.temp_allocator) {
+parse_log_level :: proc(s: string) -> (lvl: log.Level, ok: bool) {	switch strings.to_lower(s, context.temp_allocator) {
 	case "debug":
 		return .Debug, true
 	case "info":
@@ -64,4 +63,38 @@ set_log_level :: proc(
 
 	(cast(^log.Level)data)^ = lvl
 	return "", true, .None
+}
+
+// Log_Format selects the console logger verbosity profile.
+Log_Format :: enum {
+	Short, // level only
+	Long, // date/time/location (default)
+	Full, // level + thread id
+}
+
+// parse_log_format maps a format name to Log_Format; anything else
+// (including "") is rejected.
+parse_log_format :: proc(s: string) -> (fmt: Log_Format, ok: bool) {
+	switch strings.to_lower(s, context.temp_allocator) {
+	case "short":
+		return .Short, true
+	case "long":
+		return .Long, true
+	case "full":
+		return .Full, true
+	}
+	return .Long, false
+}
+
+// log_format_opts maps a Log_Format to console logger options.
+log_format_opts :: proc(fmt: Log_Format) -> log.Options {
+	switch fmt {
+	case .Short:
+		return {.Level}
+	case .Long:
+		return log.Default_Console_Logger_Opts
+	case .Full:
+		return log.Default_Console_Logger_Opts + {.Thread_Id}
+	}
+	unreachable() // Log_Format is closed; the switch is exhaustive.
 }
