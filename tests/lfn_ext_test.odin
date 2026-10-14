@@ -211,9 +211,10 @@ test_resolve_lfn_actual_resolution :: proc(t: ^testing.T) {
 	testing.expect(t, len(dirs) >= 2, "at least 2 entries")
 	// Find our LFN entry and resolve its name
 	resolved := false
-	for &d in dirs {
+	for &w in dirs {
+		d := &w.entry
 		if .LFN in d.flags {
-			name, name_ok := fs.resolve_lfn(&vol, &d)
+			name, name_ok := fs.resolve_lfn(&vol, d)
 			testing.expect(t, name_ok, "resolve_lfn ok")
 			if name_ok {
 				defer delete(name)

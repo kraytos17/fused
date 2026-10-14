@@ -103,9 +103,10 @@ test_fs_core :: proc(t: ^testing.T) {
 
 	kernel: fs.Directory_Entry
 	found := false
-	for &d in dirs {
-		if fs.entry_short_name(&d) == "Kernel" {
-			kernel = d
+	for &w in dirs {
+		d := &w.entry
+		if fs.entry_short_name(d) == "Kernel" {
+			kernel = d^
 			found = true
 			break
 		}

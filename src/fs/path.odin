@@ -61,19 +61,20 @@ resolve_path :: proc(
 		if dirs_err != .None { return {}, dirs_err }
 
 		found := false
-		for &d, didx in dirs {
-			if entry_short_name(&d) == target {
+		for &w in dirs {
+			d := &w.entry
+			if entry_short_name(d) == target {
 				found = true
 			}
 			if !found && .LFN in d.flags {
-				lfn_name, lfn_ok := resolve_lfn(vol, &d, context.temp_allocator)
+				lfn_name, lfn_ok := resolve_lfn(vol, d, context.temp_allocator)
 				if lfn_ok && lfn_name == target {
 					found = true
 				}
 			}
 			if found {
 				if is_last {
-					return Resolved_Entry{d, current_cluster, current_offset, didx}, .None
+					return Resolved_Entry{d^, current_cluster, current_offset, w.index}, .None
 				}
 				if .Directory not_in d.flags {
 					return {}, .Not_A_Directory

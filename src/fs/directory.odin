@@ -14,13 +14,24 @@ entry_short_name :: proc "contextless" (entry: ^Directory_Entry) -> string {
 	return string(entry.file_name[:n])
 }
 
-// read_directory_entries reads all directory entries in a directory's extent chain.
+// Indexed_Entry pairs a directory entry with its physical slot index
+// within the directory chain. Only existing entries are returned, but the
+// index is the true slot (stable across unlinks that leave holes) — never
+// a dense position. Callers that persist locations (file handles) must use
+// index; dense positions go stale on the first unlink.
+Indexed_Entry :: struct {
+	entry: Directory_Entry,
+	index: int,
+}
+
+// read_directory_entries reads all existing directory entries in a
+// directory's extent chain.
 read_directory_entries :: proc(
 	vol: ^Volume,
 	cluster: Cluster,
 	sector_offset: Sector_Offset,
 ) -> (
-	entries: [dynamic]Directory_Entry,
+	entries: [dynamic]Indexed_Entry,
 	err: FS_Error,
 ) {
 	data, derr := read_chain(vol, cluster, sector_offset)
@@ -36,7 +47,7 @@ read_directory_entries :: proc(
 		for i in 0 ..< deps {
 			entry := (^Directory_Entry)(mem.ptr_offset(&data[0], sec_idx * SECTOR_SIZE + i * des))
 			if .Exists in entry.flags {
-				append(&entries, entry^)
+				append(&entries, Indexed_Entry{entry^, sec_idx * deps + i})
 			}
 		}
 	}

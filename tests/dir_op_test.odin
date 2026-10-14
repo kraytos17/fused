@@ -122,8 +122,9 @@ test_directory_growth :: proc(t: ^testing.T) {
 
 	testing.expectf(t, dirs_err == .None, "read_directory_entries")
 	found := 0
-	for &d in dirs {
-		name := fs.entry_short_name(&d)
+	for &w in dirs {
+		d := &w.entry
+		name := fs.entry_short_name(d)
 		if len(name) > 0 && name[0] == 'f' {
 			found += 1
 		}
@@ -688,7 +689,8 @@ test_symlink_create_and_read :: proc(t: ^testing.T) {
 	defer delete(dirs)
 	testing.expectf(t, dirs_err == .None, "read dir")
 	found := false
-	for &d in dirs {
+	for &w in dirs {
+		d := &w.entry
 		if .Link in d.flags {
 			found = true
 			testing.expect(t, .Directory not_in d.flags, "link is not dir")
@@ -737,7 +739,8 @@ test_chmod_persistence :: proc(t: ^testing.T) {
 	defer delete(dirs)
 	testing.expectf(t, dirs_err == .None, "read dir")
 
-	for &d in dirs {
+	for &w in dirs {
+		d := &w.entry
 		// Check default: No_Read should not be set for normal files
 		testing.expect(t, .No_Read not_in d.flags, "default: No_Read not set")
 		testing.expect(t, .No_Write not_in d.flags, "default: No_Write not set")
@@ -751,7 +754,7 @@ test_chmod_persistence :: proc(t: ^testing.T) {
 				fs.Cluster(vol.master.root_cluster),
 				fs.Sector_Offset(rce.sector_start),
 				0,
-				&d,
+				d,
 			) ==
 			.None,
 			"write No_Read entry",
@@ -765,7 +768,7 @@ test_chmod_persistence :: proc(t: ^testing.T) {
 		)
 		delete(dirs2)
 		if len(dirs2) > 0 {
-			testing.expect(t, .No_Read in dirs2[0].flags, "readback: No_Read set")
+			testing.expect(t, .No_Read in dirs2[0].entry.flags, "readback: No_Read set")
 		}
 
 		// Clear No_Read, set No_Write
@@ -778,7 +781,7 @@ test_chmod_persistence :: proc(t: ^testing.T) {
 				fs.Cluster(vol.master.root_cluster),
 				fs.Sector_Offset(rce.sector_start),
 				0,
-				&d,
+				d,
 			) ==
 			.None,
 			"write No_Write entry",
@@ -791,8 +794,8 @@ test_chmod_persistence :: proc(t: ^testing.T) {
 		)
 		delete(dirs3)
 		if len(dirs3) > 0 {
-			testing.expect(t, .No_Read not_in dirs3[0].flags, "readback: No_Read cleared")
-			testing.expect(t, .No_Write in dirs3[0].flags, "readback: No_Write set")
+			testing.expect(t, .No_Read not_in dirs3[0].entry.flags, "readback: No_Read cleared")
+			testing.expect(t, .No_Write in dirs3[0].entry.flags, "readback: No_Write set")
 		}
 
 		// Reset
@@ -804,7 +807,7 @@ test_chmod_persistence :: proc(t: ^testing.T) {
 				fs.Cluster(vol.master.root_cluster),
 				fs.Sector_Offset(rce.sector_start),
 				0,
-				&d,
+				d,
 			) ==
 			.None,
 			"reset flags",

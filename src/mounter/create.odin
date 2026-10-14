@@ -315,8 +315,8 @@ fused_rmdir :: proc "c" (path: cstring) -> c.int {
 
 	defer delete(dirs)
 	if dir_err != .None {  }
-	for &d in dirs {
-		if .Exists in d.flags {
+	for &w in dirs {
+		if .Exists in w.entry.flags {
 			log.debugf("rmdir: %s → ENOTEMPTY", path)
 			return fuse3.nix(.ENOTEMPTY)
 		}
