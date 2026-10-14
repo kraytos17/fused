@@ -76,15 +76,16 @@ Extent_Cache_Key :: struct {
 	offset:  u16,
 }
 
-// Lfn_Cache_Key identifies a cached long filename by its entry's chain
-// start (cluster, offset) and chain-relative entry index. It is a struct,
-// not a packed integer: packing would collide once the entry index exceeds
-// the offset field (directories can hold more than 2^16 entries — there is
-// no directory-size cap), handing back the wrong name on lookup.
+// Lfn_Cache_Key identifies a cached long filename by its directory and
+// chain-relative entry index. It is a struct, not a packed integer:
+// packing (cluster, offset, index) into a u64 collides once the entry
+// index exceeds the offset field (directories can hold more than 2^16
+// entries — there is no directory-size cap), handing back the wrong name
+// on lookup. Chain-relative index is the stable identity (slots never
+// shift), so no sector arithmetic is needed to name an entry.
 Lfn_Cache_Key :: struct {
-	cluster: fs.Cluster,
-	offset:  fs.Sector_Offset,
-	index:   int,
+	dir:   fs.Chain_Location,
+	index: int,
 }
 
 // get_fs retrieves the FS pointer from the FUSE context's private_data.
@@ -343,15 +344,11 @@ lfn_cache_on_remove :: proc(key: Lfn_Cache_Key, val: string, user_data: rawptr) 
 }
 
 // lfn_cache_key builds the cache key for an entry's long filename from its
-// chain start and chain-relative entry index. See Lfn_Cache_Key for why the
+// directory and chain-relative entry index. See Lfn_Cache_Key for why the
 // key is a struct rather than a packed integer.
 @(require_results)
-lfn_cache_key :: #force_inline proc(
-	cluster: fs.Cluster,
-	offset: fs.Sector_Offset,
-	index: int,
-) -> Lfn_Cache_Key {
-	return {cluster, offset, index}
+lfn_cache_key :: #force_inline proc(dir: fs.Chain_Location, index: int) -> Lfn_Cache_Key {
+	return {dir, index}
 }
 
 // lfn_lookup_shared resolves a long filename through the LFN cache without

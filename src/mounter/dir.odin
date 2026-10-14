@@ -9,8 +9,7 @@ import "src:fs"
 // Dir_Scan_Ctx is the shared state for single-sector directory scan
 // visitors: the FS, entries-per-sector, and the scratch sector buffer.
 // Per-scan result fields (found slots, names, errors) stay on the specific
-// context. (Readdir_Ctx keeps its own copy: it carries filler/output state
-// and lives a different visitor lifecycle.)
+// context.
 Dir_Scan_Ctx :: struct {
 	fsys:     ^FS,
 	depc:     int,

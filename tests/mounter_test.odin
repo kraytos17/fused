@@ -638,18 +638,17 @@ test_mount_negative_offsets_are_einval :: proc(t: ^testing.T) {
 	testing.expect_value(t, rc, c.int(len(data)))
 }
 
-// test_lfn_cache_key_distinct pins the Lfn_Cache_Key injectivity that the
-// old u64 packing lacked: (cluster, offset 0, index 0x20000) and (cluster,
-// offset 2, index 0) packed to the same word, so past 2^16 entries in one
-// directory the cache could hand back another entry's long name. Struct
-// keys make that collision unrepresentable; identical triples still match.
+// test_lfn_cache_key_distinct pins Lfn_Cache_Key injectivity: the key names
+// an entry by directory plus chain-relative index with no packing, so
+// distinct entries cannot collide the way the old u64 word did past 2^16
+// entries per directory. Identical triples still match.
 @(test)
 test_lfn_cache_key_distinct :: proc(t: ^testing.T) {
-	a := mounter.Lfn_Cache_Key{cluster = 7, offset = 0, index = 0x20000}
-	b := mounter.Lfn_Cache_Key{cluster = 7, offset = 2, index = 0}
-	testing.expect(t, a != b, "historically-colliding triples must differ")
-	c := mounter.Lfn_Cache_Key{cluster = 7, offset = 2, index = 0}
-	testing.expect(t, b == c, "identical triples must match")
+	a := mounter.Lfn_Cache_Key{dir = {7, 0}, index = 0x20000}
+	b := mounter.Lfn_Cache_Key{dir = {7, 2}, index = 0}
+	testing.expect(t, a != b, "distinct entries must differ")
+	c := mounter.Lfn_Cache_Key{dir = {7, 2}, index = 0}
+	testing.expect(t, b == c, "identical entries must match")
 }
 
 // test_mount_create_past_dir_extend — fill a directory past its first

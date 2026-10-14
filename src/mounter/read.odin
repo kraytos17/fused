@@ -17,18 +17,6 @@ import "core:time"
 import "src:fs"
 import "src:fuse3"
 
-@(private = "file")
-Readdir_Ctx :: struct {
-	fsys:        ^FS,
-	depc:        int,
-	sector_buf:  [fs.SECTOR_SIZE]u8,
-	dir_cluster: fs.Cluster,
-	filler:      fuse3.Fill_Dir_Proc,
-	buf:         rawptr,
-	e:           int,
-	stop_rc:     c.int,
-}
-
 // fused_getattr returns file or directory attributes (stat) for a path (FUSE
 // getattr callback).
 fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Info) -> c.int {
@@ -120,13 +108,13 @@ fused_readdir :: proc "c" (
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
-	// Fast path: resolve path under the write lock (resolution may insert
-	// into the path cache), then release before the I/O phase. The walk
-	// below re-takes the read lock per entry; on-disk data reads are
-	// pread-based and thread-safe, and LFN names go through
-	// lfn_lookup_shared, so concurrent writers are never blocked by fill_dir.
+	// Fast path: resolve the path and snapshot the listing under the write
+	// lock (both may populate their caches), then release before the fill
+	// phase. The fill below re-takes the read lock per LFN entry only;
+	// short names come straight from the snapshot, and LFN names go
+	// through lfn_lookup_shared, so concurrent writers are never blocked
+	// by fill_dir.
 	sync.rw_mutex_lock(&fsys.mu)
-	depc := dir_entries_per_buf(fsys.vol.master.features)
 	entry, _, _, _, rerr := resolve_path_cached(fsys, string(path), context.temp_allocator)
 	if rerr != .None {
 		sync.rw_mutex_unlock(&fsys.mu)
@@ -141,7 +129,16 @@ fused_readdir :: proc "c" (
 
 	dir_cluster := fs.Cluster(entry.stored_cluster)
 	dir_offset := fs.Sector_Offset(entry.sector_index)
+	// Snapshot the listing while holding the write lock: the array is an
+	// owned heap clone, safe to consume after unlock. On a warm dir cache
+	// the fill below becomes pure memory scans — no sector I/O, no walk.
+	snapshot, serr := fs.read_directory_entries(&fsys.vol, dir_cluster, dir_offset)
 	sync.rw_mutex_unlock(&fsys.mu)
+	if serr != .None {
+		log.debugf("readdir: %s → entries failed", path)
+		return fs_error_to_errno(serr)
+	}
+	defer delete(snapshot)
 	if rc := fuse3.fill_dir(filler, buf, ".", nil); rc != 0 {
 		return rc
 	}
@@ -149,72 +146,40 @@ fused_readdir :: proc "c" (
 		return rc
 	}
 
-	visit := proc(sec: fs.Sector, user: rawptr) -> bool {
-		ctx := (^Readdir_Ctx)(user)
-		if fs.sector_read(&ctx.fsys.vol, sec, ctx.sector_buf[:]) != .None {
-			ctx.stop_rc = fuse3.nix(.EIO)
-			return false
-		}
-		for i in 0 ..< ctx.depc {
-			if .Exists in get_dir_entry(ctx.sector_buf[:], i, ctx.fsys.vol.master.features).flags {
-				entry := get_dir_entry(ctx.sector_buf[:], i, ctx.fsys.vol.master.features)^
-				name := fs.entry_short_name(&entry)
-				if .LFN in entry.flags {
-					// Look up under the read lock; the helper upgrades to
-					// exclusive internally on a miss. The borrowed string is
-					// copied to temp before unlocking so fill_dir below runs
-					// lock-free without stalling writers.
-					sec_off := fs.Sector_Offset(
-						u64(sec) - u64(ctx.dir_cluster) * ctx.fsys.vol.master.cluster_size,
-					)
-					cache_k := lfn_cache_key(ctx.dir_cluster, sec_off, i)
-					sync.rw_mutex_shared_lock(&ctx.fsys.mu)
-					lfn, l_ok := lfn_lookup_shared(ctx.fsys, cache_k, &ctx.fsys.vol, &entry)
-					lfn_cstr: cstring
-					if l_ok {
-						lfn_cstr, _ = strings.clone_to_cstring(lfn, context.temp_allocator)
-					}
-
-					sync.rw_mutex_shared_unlock(&ctx.fsys.mu)
-					if l_ok {
-						if rc := fuse3.fill_dir(ctx.filler, ctx.buf, lfn_cstr, nil); rc != 0 {
-							ctx.stop_rc = rc
-							return false
-						}
-
-						ctx.e += 1
-						continue
-					}
-				}
-
-				name_cstr := strings.clone_to_cstring(name, context.temp_allocator) or_continue
-				if rc := fuse3.fill_dir(ctx.filler, ctx.buf, name_cstr, nil); rc != 0 {
-					ctx.stop_rc = rc
-					return false
-				}
-				ctx.e += 1
+	e := 0
+	for w in snapshot {
+		ent := w.entry
+		name := fs.entry_short_name(&ent)
+		if .LFN in ent.flags {
+			// Look up under the read lock; the helper upgrades to
+			// exclusive internally on a miss. The borrowed string is
+			// copied to temp before unlocking so fill_dir below runs
+			// lock-free without stalling writers.
+			cache_k := lfn_cache_key(fs.Chain_Location{dir_cluster, dir_offset}, w.index)
+			sync.rw_mutex_shared_lock(&fsys.mu)
+			lfn, l_ok := lfn_lookup_shared(fsys, cache_k, &fsys.vol, &ent)
+			lfn_cstr: cstring
+			if l_ok {
+				lfn_cstr, _ = strings.clone_to_cstring(lfn, context.temp_allocator)
 			}
+
+			sync.rw_mutex_shared_unlock(&fsys.mu)
+			if l_ok {
+				if rc := fuse3.fill_dir(filler, buf, lfn_cstr, nil); rc != 0 {
+					return rc
+				}
+			}
+
+			e += 1
+			continue
 		}
-		return true
-	}
 
-	ctx := Readdir_Ctx {
-		fsys        = fsys,
-		depc        = depc,
-		dir_cluster = dir_cluster,
-		filler      = filler,
-		buf         = buf,
+		name_cstr := strings.clone_to_cstring(name, context.temp_allocator) or_continue
+		if rc := fuse3.fill_dir(filler, buf, name_cstr, nil); rc != 0 {
+			return rc
+		}
+		e += 1
 	}
-	if werr := fs.walk_chain_sectors(&fsys.vol, fs.Chain_Location{dir_cluster, dir_offset}, visit, &ctx);
-	   werr != .None {
-		log.debugf("readdir: %s → extent resolve failed", path)
-		return fuse3.nix(.ENOENT)
-	}
-	if ctx.stop_rc != 0 {
-		return ctx.stop_rc
-	}
-
-	e := ctx.e
 	log.debugf("readdir: %s → ok %d entries", path, e)
 	return 0
 }
