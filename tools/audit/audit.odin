@@ -5,6 +5,10 @@
 //   (a) every fused_* proc "c" calls a lock primitive somewhere in its own
 //       body (begin_op/begin_read_op, sync.rw_mutex_lock/shared_lock), or
 //       carries a `// UNLOCKED:` reason in the 6 lines above its declaration.
+//   (g) every begin_op()/begin_read_op() call is immediately followed by
+//       context.logger = fsys.logger (the assignment inside begin_op is
+//       callee-local, so without the caller's own line the callback's
+//       debugf goes nowhere).
 //   (b) no os.exit() outside cmd/ and tools/ (binaries own process exit).
 //   (c) no panic() in src/ (must not unwind through C callbacks).
 //   (d) no (&x[0]) reinterpret casts in src/ (use the raw_data form).
@@ -34,7 +38,6 @@ main :: proc() {
 
 	f: Flags
 	flags.parse_or_exit(&f, os.args, flags.Parsing_Style.Unix)
-
 	dh, err := os.open("src/mounter")
 	if err == nil {
 		defer os.close(dh)
@@ -46,10 +49,10 @@ main :: proc() {
 
 	run_locking_audit()
 
+	run_logger_audit()
 	if audit_src_hygiene() > 0 {
 		os.exit(1)
 	}
-
 	if !audit_fs_attributes(f.strict) {
 		os.exit(1)
 	}
@@ -348,6 +351,7 @@ unlocked_reason_line :: proc(lines: []string, name: string) -> (decl_line: int, 
 	for i in 0 ..< len(lines) {
 		trimmed := strings.trim_space(lines[i])
 		if !strings.has_prefix(trimmed, name) { continue }
+
 		rest := trimmed[len(name):]
 		if !strings.has_prefix(rest, " :: proc") { continue }
 		for k in max(0, i - 6) ..< i {
@@ -366,8 +370,8 @@ audit_locking_file :: proc(path: string) -> (checked, failed: int) {
 		fmt.eprintf("warning: cannot read %s: %v\n", path, err)
 		return
 	}
-	lines := strings.split(string(data), "\n", context.temp_allocator)
 
+	lines := strings.split(string(data), "\n", context.temp_allocator)
 	file: ast.File
 	file.src = string(data)
 	file.fullpath = path
@@ -383,23 +387,28 @@ audit_locking_file :: proc(path: string) -> (checked, failed: int) {
 			vd = v
 		}
 		if vd == nil || len(vd.names) == 0 { continue }
+
 		name_ident: ^ast.Ident
 		#partial switch v in vd.names[0].derived_expr {
 		case ^ast.Ident:
 			name_ident = v
 		}
 		if name_ident == nil || !strings.has_prefix(name_ident.name, "fused_") { continue }
+
 		name := name_ident.name
 		if len(vd.values) == 0 { continue }
+
 		proc_lit: ^ast.Proc_Lit
 		#partial switch v in vd.values[0].derived_expr {
 		case ^ast.Proc_Lit:
 			proc_lit = v
 		}
 		if proc_lit == nil || proc_lit.type == nil { continue }
+
 		cc_str := fmt.tprintf("%v", proc_lit.type.calling_convention)
 		if cc_str != "\"c\"" { continue }
 		if proc_lit.body == nil { continue }
+
 		block: ^ast.Block_Stmt
 		#partial switch v in proc_lit.body.derived_stmt {
 		case ^ast.Block_Stmt:
@@ -409,8 +418,10 @@ audit_locking_file :: proc(path: string) -> (checked, failed: int) {
 
 		checked += 1
 		if body_calls_lock(block) { continue }
+
 		decl_line, has_reason := unlocked_reason_line(lines, name)
 		if has_reason { continue }
+
 		fmt.printf(
 			"FAIL   %s:%d %s: no lock call and no // UNLOCKED: reason\n",
 			path,
@@ -430,6 +441,66 @@ run_locking_audit :: proc() {
 		os.exit(1)
 	}
 	defer os.close(dh)
+
+	fis, ferr := os.read_dir(dh, 0, context.allocator)
+	if ferr != nil {
+		fmt.eprintf("cannot list src/mounter: %v\n", ferr)
+		os.exit(1)
+	}
+
+	defer os.file_info_slice_delete(fis, context.allocator)
+	for fi in fis {
+		if !strings.has_suffix(fi.name, ".odin") { continue }
+
+		path, _ := filepath.join([]string{"src/mounter", fi.name})
+		c, f := audit_locking_file(path)
+		total_c += c
+		total_f += f
+	}
+
+	fmt.printf("=== Locking audit: %d checked, %d failed ===\n", total_c, total_f)
+	if total_f > 0 { os.exit(1) }
+}
+
+// audit_logger_lines (rule g): every top-level fsys := begin_op() /
+// begin_read_op() call must be followed (next non-blank line) by
+// context.logger = fsys.logger. Line-based deliberately: AST matching
+// proved unreliable for `context` receivers (a bare `context` does not
+// parse as ^ast.Ident, verified by probe), while the enforced shape is a
+// fixed two-line idiom. The single-tab prefix restricts the check to
+// top-level calls; nested lock acquisition stays out of scope.
+audit_logger_lines :: proc(path: string) -> (checked, failed: int) {
+	data, err := os.read_entire_file(path, context.temp_allocator)
+	if err != nil {
+		fmt.eprintf("warning: cannot read %s: %v\n", path)
+		return
+	}
+	lines := strings.split(string(data), "\n", context.temp_allocator)
+	for i in 0 ..< len(lines) {
+		if lines[i] != "\tfsys := begin_op()" && lines[i] != "\tfsys := begin_read_op()" {
+			continue
+		}
+		checked += 1
+		j := i + 1
+		for j < len(lines) && strings.trim_space(lines[j]) == "" {
+			j += 1
+		}
+		if j >= len(lines) || strings.trim_space(lines[j]) != "context.logger = fsys.logger" {
+			fmt.printf("FAIL   %s:%d missing context.logger after begin_op()\n", path, i + 1)
+			failed += 1
+		}
+	}
+	return
+}
+
+run_logger_audit :: proc() {
+	total_c, total_f := 0, 0
+	dh, derr := os.open("src/mounter")
+	if derr != nil {
+		fmt.eprintf("cannot open src/mounter: %v\n", derr)
+		os.exit(1)
+	}
+	defer os.close(dh)
 	fis, ferr := os.read_dir(dh, 0, context.allocator)
 	if ferr != nil {
 		fmt.eprintf("cannot list src/mounter: %v\n", ferr)
@@ -439,12 +510,12 @@ run_locking_audit :: proc() {
 	for fi in fis {
 		if !strings.has_suffix(fi.name, ".odin") { continue }
 		path, _ := filepath.join([]string{"src/mounter", fi.name})
-		c, f := audit_locking_file(path)
+		c, f := audit_logger_lines(path)
 		total_c += c
 		total_f += f
 	}
 
-	fmt.printf("=== Locking audit: %d checked, %d failed ===\n", total_c, total_f)
+	fmt.printf("=== Logger audit: %d checked, %d failed ===\n", total_c, total_f)
 	if total_f > 0 { os.exit(1) }
 }
 
@@ -462,14 +533,19 @@ has_value_cast :: proc(line: string) -> bool {
 	for {
 		idx := strings.index(line[from:], "cast(")
 		if idx < 0 { return false }
+
 		pos := from + idx
 		if pos > 0 {
-			c := line[pos-1]
-			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+			c := line[pos - 1]
+			if (c >= 'a' && c <= 'z') ||
+			   (c >= 'A' && c <= 'Z') ||
+			   (c >= '0' && c <= '9') ||
+			   c == '_' {
 				from = pos + len("cast(")
 				continue
 			}
 		}
+
 		after := pos + len("cast(")
 		if after < len(line) && line[after] == '^' {
 			from = after + 1
@@ -485,6 +561,7 @@ has_old_cast :: proc(line: string) -> bool {
 	// and is idiomatic as-is, so it must NOT match.
 	idx := strings.index(line, ")(&")
 	if idx < 0 { return false }
+
 	rest := line[idx + len(HAS_OLD_CAST_ANCHOR) + 1:]
 	end := strings.index(rest, "[0])")
 	if end <= 0 { return false }
@@ -494,6 +571,7 @@ has_old_cast :: proc(line: string) -> bool {
 audit_hygiene_file :: proc(path: string) -> (failed: int) {
 	data, err := os.read_entire_file(path, context.temp_allocator)
 	if err != nil { return }
+
 	lines := strings.split(string(data), "\n", context.temp_allocator)
 	for i in 0 ..< len(lines) {
 		trimmed := strings.trim_space(lines[i])
@@ -523,7 +601,11 @@ audit_hygiene_file :: proc(path: string) -> (failed: int) {
 		// Every transmute cites its invariant in a same-line marker.
 		if strings.contains(lines[i], "transmute(") &&
 		   !strings.contains(lines[i], "// TRANSMUTE:") {
-			fmt.printf("FAIL   %s:%d transmute without // TRANSMUTE: invariant marker\n", path, i + 1)
+			fmt.printf(
+				"FAIL   %s:%d transmute without // TRANSMUTE: invariant marker\n",
+				path,
+				i + 1,
+			)
 			failed += 1
 		}
 		// Private procs must be _-prefixed (structs/enums/vars exempt).
@@ -562,12 +644,14 @@ audit_src_hygiene :: proc() -> (failed: int) {
 			continue
 		}
 		defer os.close(dh)
+
 		fis, ferr := os.read_dir(dh, 0, context.temp_allocator)
 		if ferr != nil {
 			fmt.eprintf("warning: cannot list %s: %v\n", dir, ferr)
 			failed += 1
 			continue
 		}
+
 		defer os.file_info_slice_delete(fis, context.temp_allocator)
 		for fi in fis {
 			if !strings.has_suffix(fi.name, ".odin") { continue }
