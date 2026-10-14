@@ -36,6 +36,56 @@ Mount_Options :: struct {
 	cache:         fs.Cache_Config,
 }
 
+// build_operations assembles the FUSE callback table. Extracted from run()
+// so the 43-callback wiring reads (and reviews) in isolation; no logic.
+build_operations :: proc() -> fuse3.Operations {
+	return {
+		init            = fused_init,
+		destroy         = fused_destroy,
+		getattr         = fused_getattr,
+		readdir         = fused_readdir,
+		open            = fused_open,
+		read            = fused_read,
+		write           = fused_write,
+		create          = fused_create,
+		symlink         = fused_symlink,
+		readlink        = fused_readlink,
+		mkdir           = fused_mkdir,
+		unlink          = fused_unlink,
+		rmdir           = fused_rmdir,
+		truncate        = fused_truncate,
+		rename          = fused_rename,
+		access          = fused_access,
+		chmod           = fused_chmod,
+		chown           = fused_chown,
+		utimens         = fused_utimens,
+		fallocate       = fused_fallocate,
+		flush           = fused_flush,
+		release         = fused_release,
+		setxattr        = fused_setxattr,
+		getxattr        = fused_getxattr,
+		listxattr       = fused_listxattr,
+		removexattr     = fused_removexattr,
+		copy_file_range = fused_copy_file_range,
+		read_buf        = fused_read_buf,
+		write_buf       = fused_write_buf,
+		opendir         = fused_opendir,
+		releasedir      = fused_releasedir,
+		fsync           = fused_fsync,
+		lseek           = fused_lseek,
+		statfs          = fused_statfs,
+		fsyncdir        = fused_fsyncdir,
+		lock            = fused_lock,
+		flock           = fused_flock,
+		mknod           = fused_mknod,
+		ioctl           = fused_ioctl,
+		link            = fused_link,
+		statx           = fused_statx,
+		bmap            = fused_bmap,
+		poll            = fused_poll,
+	}
+}
+
 run :: proc(opts: Mount_Options) -> bool {
 	context = runtime.default_context()
 
@@ -97,51 +147,7 @@ run :: proc(opts: Mount_Options) -> bool {
 		vol.master.root_cluster,
 	)
 
-	ops := fuse3.Operations {
-		init            = fused_init,
-		destroy         = fused_destroy,
-		getattr         = fused_getattr,
-		readdir         = fused_readdir,
-		open            = fused_open,
-		read            = fused_read,
-		write           = fused_write,
-		create          = fused_create,
-		symlink         = fused_symlink,
-		readlink        = fused_readlink,
-		mkdir           = fused_mkdir,
-		unlink          = fused_unlink,
-		rmdir           = fused_rmdir,
-		truncate        = fused_truncate,
-		rename          = fused_rename,
-		access          = fused_access,
-		chmod           = fused_chmod,
-		chown           = fused_chown,
-		utimens         = fused_utimens,
-		fallocate       = fused_fallocate,
-		flush           = fused_flush,
-		release         = fused_release,
-		setxattr        = fused_setxattr,
-		getxattr        = fused_getxattr,
-		listxattr       = fused_listxattr,
-		removexattr     = fused_removexattr,
-		copy_file_range = fused_copy_file_range,
-		read_buf        = fused_read_buf,
-		write_buf       = fused_write_buf,
-		opendir         = fused_opendir,
-		releasedir      = fused_releasedir,
-		fsync           = fused_fsync,
-		lseek           = fused_lseek,
-		statfs          = fused_statfs,
-		fsyncdir        = fused_fsyncdir,
-		lock            = fused_lock,
-		flock           = fused_flock,
-		mknod           = fused_mknod,
-		ioctl           = fused_ioctl,
-		link            = fused_link,
-		statx           = fused_statx,
-		bmap            = fused_bmap,
-		poll            = fused_poll,
-	}
+	ops := build_operations()
 
 	// Plain dynamic (not SVO): this nightly has no delete overload for
 	// [dynamic; N]T, and the backing must be freed explicitly below.
