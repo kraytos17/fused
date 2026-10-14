@@ -106,7 +106,13 @@ run :: proc(opts: Mount_Options) -> bool {
 	fuse_args := opts.fuse_args
 
 	fsys := new(FS)
-	if log_file_path != "" {
+	// Loggers live until run() returns (after unmount): their destroys must
+	// be function-scoped. A defer inside either branch below would fire at
+	// BRANCH exit (Odin defers run at scope end, unlike Go), freeing logger
+	// state while mounted callbacks still use it — use-after-free.
+	file_log := log_file_path != ""
+	file_logger: log.Logger
+	if file_log {
 		log_fd, log_open_err := os.open(log_file_path, {.Create, .Write, .Append})
 		if log_open_err != nil {
 			log.errorf("cannot open log file %s: %v", log_file_path, log_open_err)
@@ -114,15 +120,17 @@ run :: proc(opts: Mount_Options) -> bool {
 			return false
 		}
 
-		file_logger := log.create_file_logger(log_fd, log_level, log.Default_File_Logger_Opts)
-		defer log.destroy_file_logger(file_logger)
-
+		file_logger = log.create_file_logger(log_fd, log_level, log.Default_File_Logger_Opts)
 		context.logger = log.create_multi_logger(file_logger)
 		fsys.logger = context.logger
 	} else {
 		context.logger = log.create_console_logger(log_level, log_opts)
-		defer log.destroy_console_logger(context.logger)
 		fsys.logger = context.logger
+	}
+	defer if file_log {
+		log.destroy_file_logger(file_logger)
+	} else {
+		log.destroy_console_logger(context.logger)
 	}
 
 	image_path := opts.image_path
