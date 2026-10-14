@@ -6,12 +6,6 @@ import "core:container/bit_array"
 import "core:log"
 
 @(cold)
-_allocate_no_space :: proc(needed, remaining: u64) -> (Cluster, Sector_Offset, FS_Error) {
-	log.errorf("allocate: No_Space — needed %d, %d remaining", needed, remaining)
-	return 0, 0, .No_Space
-}
-
-@(cold)
 _allocate_io_err_single :: proc() -> FS_Error { return .Sector_Write_Error }
 
 @(cold)
