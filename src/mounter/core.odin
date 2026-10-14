@@ -125,6 +125,7 @@ end_read_op :: proc(fsys: ^FS) {
 // Unknown errors fall through to EIO (the `case:` default is deliberate —
 // a new FS_Error value is a mapping decision, not a compile error; keep it
 // in sync with `FS_Error` in src/fs/structure.odin).
+@(require_results)
 fs_error_to_errno :: proc(err: fs.FS_Error) -> c.int {
 	#partial switch err {
 	case .None:
@@ -228,6 +229,7 @@ File_Identity :: struct {
 
 // fh_parts unpacks a packed file handle into the identity of the directory
 // entry it refers to.
+@(require_results)
 fh_parts :: proc "contextless" (fh: u64) -> (id: File_Identity) {
 	f := transmute(fs.File_Handle)(fh)
 	return File_Identity {
@@ -325,6 +327,7 @@ lfn_cache_on_remove :: proc(key: u64, val: string, user_data: rawptr) {
 
 // lfn_cache_key builds a 64-bit key from a cluster, offset, and entry index
 // for the LFN cache.
+@(require_results)
 lfn_cache_key :: #force_inline proc(
 	cluster: fs.Cluster,
 	offset: fs.Sector_Offset,
@@ -634,12 +637,20 @@ extent_cache_invalidate_all :: proc(fsys: ^FS) {
 
 // extent_cache_invalidate drops a single cached chain.  Use when a mutation
 // affects only one chain so other borrowed cached slices stay valid.
-extent_cache_invalidate :: proc(fsys: ^FS, cluster: fs.Cluster, offset: fs.Sector_Offset) {
+extent_cache_invalidate_one :: proc(fsys: ^FS, cluster: fs.Cluster, offset: fs.Sector_Offset) {
 	key := Extent_Cache_Key{u64(cluster), u16(offset)}
 	if runs, ok := fsys.extents[key]; ok {
 		delete(runs, fsys.allocator)
 		delete_key(&fsys.extents, key)
 	}
+}
+
+// extent_cache_invalidate drops cached extent chains: a single chain by
+// (cluster, offset), or every chain. Overload resolves on arity, so existing
+// call sites read unchanged.
+extent_cache_invalidate :: proc {
+	extent_cache_invalidate_one,
+	extent_cache_invalidate_all,
 }
 
 // reinit_free_sectors recomputes the cached free-sector count from the volume.

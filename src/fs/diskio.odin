@@ -33,6 +33,7 @@ sector_write_bulk :: proc(vol: ^Volume, start_sector: Sector, buf: []u8) -> FS_E
 }
 
 // sector_for returns the absolute sector for a (cluster, offset) pair.
+@(require_results)
 sector_for :: proc(cluster: Cluster, offset: Sector_Offset, cluster_size: u64) -> Sector {
 	return Sector(u64(cluster) * cluster_size + u64(offset))
 }

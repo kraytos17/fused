@@ -61,8 +61,13 @@ Xattr_Flag :: enum c.int {
 Xattr_Flags :: bit_set[Xattr_Flag;c.int]
 
 
-SEEK_DATA :: c.int(3)
-SEEK_HOLE :: c.int(4)
+// Seek_Whence restricts lseek to the supported hole/data modes (SEEK_* from
+// <fcntl.h>). Converted from the c.int ABI word at the fused_lseek boundary;
+// anything else is ENOSYS (closed world).
+Seek_Whence :: enum c.int {
+	Data = 3,
+	Hole = 4,
+}
 
 // Buf wire flags (fuse_buf flags). Members are bit positions (log2 of the
 // C values); the set transmutes losslessly against the Buf.flags word.

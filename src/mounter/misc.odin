@@ -200,7 +200,10 @@ fused_lseek :: proc "c" (
 	context = runtime.default_context()
 	fsys := begin_op()
 	defer end_op(fsys)
-	if whence != fuse3.SEEK_DATA && whence != fuse3.SEEK_HOLE {
+	// Integer-to-enum conversion is explicit; out-of-range words compare
+	// unequal to every variant and fall into ENOSYS below.
+	seek_how := fuse3.Seek_Whence(whence)
+	if seek_how != .Data && seek_how != .Hole {
 		return posix.off_t(fuse3.nix(.ENOSYS))
 	}
 
@@ -217,7 +220,7 @@ fused_lseek :: proc "c" (
 	pos := u64(off)
 	file_size := u64(entry.file_size)
 	if len(runs) == 0 {
-		if whence == fuse3.SEEK_DATA {
+		if seek_how == .Data {
 			return posix.off_t(file_size)
 		}
 		return posix.off_t(pos)
@@ -225,7 +228,7 @@ fused_lseek :: proc "c" (
 
 	// Walk extent runs in file-offset space; the two whence values
 	// share the run walk, differing only in the hole/data predicate.
-	is_data := whence == fuse3.SEEK_DATA
+	is_data := seek_how == .Data
 	offset: u64 = 0
 	for run in runs {
 		run_end := offset + u64(run.count) * fs.SECTOR_SIZE
@@ -408,9 +411,9 @@ fused_poll :: proc "c" (
 }
 
 // FUSE INIT handshake tuning.
-FUSE_TIME_GRAN :: 1 // timestamp granularity, nanoseconds
-FUSE_MAX_BACKGROUND :: 16 // max outstanding background requests
-FUSE_CONGESTION_THRESHOLD :: 12 // background queue congestion mark
+FUSE_TIME_GRAN :: c.uint32_t(1) // timestamp granularity, nanoseconds
+FUSE_MAX_BACKGROUND :: c.uint32_t(16) // max outstanding background requests
+FUSE_CONGESTION_THRESHOLD :: c.uint32_t(12) // background queue congestion mark
 
 // fused_init initialises FUSE, configures connection info, and returns the FS
 // pointer as private_data.

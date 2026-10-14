@@ -17,6 +17,7 @@ Resolved_Entry :: struct {
 // Lookup failures return Entry_Not_Found; I/O errors and structural problems
 // (over-deep paths, non-directory intermediates) propagate precisely instead
 // of collapsing to not-found.
+@(require_results)
 resolve_path :: proc(
 	vol: ^Volume,
 	path: string,

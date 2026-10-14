@@ -78,6 +78,7 @@ flock_parse_op :: proc(op: c.int) -> (cmd: Flock_Cmd, nonblock: bool) {
 
 // lock_mode_from_type maps a POSIX flock type to a Lock_Mode. UNLCK never
 // reaches here (callers filter it first); treat it as Shared defensively.
+@(require_results)
 lock_mode_from_type :: proc(t: posix.Lock_Type) -> Lock_Mode {
 	return .Exclusive if t == posix.Lock_Type.WRLCK else .Shared
 }

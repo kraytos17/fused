@@ -7,6 +7,7 @@ import "core:mem"
 import "core:strings"
 
 // entry_short_name returns the file name from a Directory_Entry (up to first null byte).
+@(require_results)
 entry_short_name :: proc "contextless" (entry: ^Directory_Entry) -> string {
 	n := strings.index_byte(string(entry.file_name[:]), 0)
 	if n < 0 { n = len(entry.file_name) }
