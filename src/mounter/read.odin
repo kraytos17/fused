@@ -22,6 +22,7 @@ import "src:fuse3"
 fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	entry, _, _, _, rerr := resolve_path_cached(fsys, string(path), context.temp_allocator)
@@ -188,6 +189,7 @@ fused_readdir :: proc "c" (
 fused_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	entry, parent_cluster, parent_offset, entry_idx, rerr := resolve_path_cached(
@@ -228,6 +230,7 @@ fused_read :: proc "c" (
 ) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_read_op()
+	context.logger = fsys.logger
 	defer end_read_op(fsys)
 
 	read_start := time.now()
@@ -284,6 +287,7 @@ fused_read_buf :: proc "c" (
 ) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_read_op()
+	context.logger = fsys.logger
 	defer end_read_op(fsys)
 
 	read_start := time.now()
@@ -353,6 +357,7 @@ fused_read_buf :: proc "c" (
 fused_readlink :: proc "c" (path: cstring, buf: [^]c.char, size: c.size_t) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	entry, _, _, _, rerr := resolve_path_cached(fsys, string(path), context.temp_allocator)

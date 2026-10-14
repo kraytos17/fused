@@ -98,7 +98,10 @@ get_fs :: #force_inline proc "contextless" () -> ^FS {
 // callbacks that mutate shared state (caches, lock tables, free count).
 // NOTE: `context` does not propagate upward to callers, so assignments here
 // only affect this frame. Anything stored into shared structures must name
-// its allocator explicitly (fsys.allocator), never rely on context.
+// its allocator explicitly (fsys.allocator), never rely on context. The
+// `context.logger` assignment below is likewise callee-local: every caller
+// must repeat `context.logger = fsys.logger` after the call, or debugf in
+// its own frame goes nowhere.
 begin_op :: proc() -> ^FS {
 	fsys := get_fs()
 	free_all(context.temp_allocator)
@@ -119,7 +122,9 @@ end_op :: proc(fsys: ^FS) {
 // upgrade internally). Never insert into or clear a cache while shared-held
 // except through an upgrade helper (resolve_extents_shared,
 // lfn_lookup_shared), which releases shared, takes exclusive, re-checks,
-// and re-takes shared before returning.
+// and re-takes shared before returning. Like begin_op, the logger
+// assignment inside is callee-local: callers must repeat
+// `context.logger = fsys.logger` after the call.
 begin_read_op :: proc() -> ^FS {
 	fsys := get_fs()
 	free_all(context.temp_allocator)

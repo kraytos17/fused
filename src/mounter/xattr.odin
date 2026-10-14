@@ -20,6 +20,7 @@ fused_setxattr :: proc "c" (
 ) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	attr_name := string(name)
@@ -107,6 +108,7 @@ fused_getxattr :: proc "c" (
 ) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	entry, _, _, _, _, _, rerr := resolve_entry(fsys, path, nil)
@@ -139,6 +141,7 @@ fused_getxattr :: proc "c" (
 fused_listxattr :: proc "c" (path: cstring, list: [^]c.char, size: c.size_t) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	entry, _, _, _, _, _, rerr := resolve_entry(fsys, path, nil)
@@ -185,6 +188,7 @@ fused_listxattr :: proc "c" (path: cstring, list: [^]c.char, size: c.size_t) -> 
 fused_removexattr :: proc "c" (path: cstring, name: cstring) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	entry, entry_cluster, entry_offset, entry_idx, _, _, rerr := resolve_entry(fsys, path, nil)

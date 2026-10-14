@@ -62,6 +62,7 @@ prepare_parent_slot :: proc(
 fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	res, dcluster, dsec, didx, name := prepare_parent_slot(fsys, string(path))
@@ -108,6 +109,7 @@ fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	res, dcluster, dsec, didx, name := prepare_parent_slot(fsys, string(path))
@@ -166,6 +168,7 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	target_str := string(target)
@@ -257,6 +260,7 @@ remove_directory_entry :: proc(
 fused_unlink :: proc "c" (path: cstring) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	entry, cluster, offset, idx, rerr := resolve_path_cached(
@@ -288,6 +292,7 @@ fused_unlink :: proc "c" (path: cstring) -> c.int {
 fused_rmdir :: proc "c" (path: cstring) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	entry, cluster, offset, idx, rerr := resolve_path_cached(
@@ -331,6 +336,7 @@ fused_rmdir :: proc "c" (path: cstring) -> c.int {
 fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	// Parse the ABI word once; downstream switches on set membership.

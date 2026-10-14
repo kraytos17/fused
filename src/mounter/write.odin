@@ -50,6 +50,7 @@ fused_write :: proc "c" (
 ) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	write_start := time.now()
 	defer end_op(fsys)
 
@@ -152,6 +153,7 @@ fused_write_buf :: proc "c" (
 ) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	write_start := time.now()
 	defer end_op(fsys)
 
@@ -239,6 +241,7 @@ fused_write_buf :: proc "c" (
 fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	log.debugf("truncate: %s size=%d fi=%v", path, size, fi != nil)
@@ -356,6 +359,7 @@ fused_fallocate :: proc "c" (
 ) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 	// Parse the ABI word once; downstream switches on set membership.
 	fmode := transmute(fuse3.Falloc_Flags)(mode) // TRANSMUTE: c.int ABI word bit-view as flag set
@@ -456,6 +460,7 @@ fused_copy_file_range :: proc "c" (
 ) -> c.ssize_t {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	log.debugf(
 		"copy_file_range: path_in=%s size=%d off_in=%d off_out=%d",
 		path_in,

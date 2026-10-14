@@ -243,6 +243,7 @@ lock_mutate :: proc(fsys: ^FS, id: fs.File_Identity, owner: u64, fl: ^posix.floc
 fused_lock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, cmd: c.int, lock: rawptr) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 	if lock == nil {
 		return fuse3.nix(.EINVAL)
@@ -285,6 +286,7 @@ fused_lock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, cmd: c.int, lock: r
 fused_flock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, op: c.int) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	id := fh_parts(fi.fh)

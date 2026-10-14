@@ -14,6 +14,7 @@ import "src:fuse3"
 fused_utimens :: proc "c" (path: cstring, tv: [^]posix.timespec, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 	return mutate_entry_at(fsys, Mutate_Request{path, fi, proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool {
 			tv := ([^]posix.timespec)(user)
@@ -44,6 +45,7 @@ fused_utimens :: proc "c" (path: cstring, tv: [^]posix.timespec, fi: ^fuse3.File
 fused_access :: proc "c" (path: cstring, mask: c.int) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	entry, _, _, _, rerr := resolve_path_cached(fsys, string(path), context.temp_allocator)
@@ -73,6 +75,7 @@ fused_access :: proc "c" (path: cstring, mask: c.int) -> c.int {
 fused_chmod :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	Chmod_Ctx :: struct {
@@ -112,6 +115,7 @@ fused_chown :: proc "c" (
 ) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	Chown_Ctx :: struct {
@@ -153,6 +157,7 @@ fused_flush :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 fused_release :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 	// Drop this owner's locks when the fd closes (kernel releases a
 	// process's locks when its last fd to the file closes). Takes the write
@@ -199,6 +204,7 @@ fused_lseek :: proc "c" (
 ) -> posix.off_t {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 	// Integer-to-enum conversion is explicit; out-of-range words compare
 	// unequal to every variant and fall into ENOSYS below.
@@ -261,6 +267,7 @@ fused_lseek :: proc "c" (
 fused_statfs :: proc "c" (path: cstring, stbuf: ^posix.statvfs_t) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_read_op()
+	context.logger = fsys.logger
 	defer end_read_op(fsys)
 
 	total_sectors := u64(fsys.vol.image_size) / fs.SECTOR_SIZE
@@ -356,6 +363,7 @@ fused_statx :: proc "c" (
 fused_bmap :: proc "c" (path: cstring, blocksize: c.size_t, idx: ^c.uint64_t) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
+	context.logger = fsys.logger
 	defer end_op(fsys)
 
 	entry, _, _, _, rerr := resolve_path_cached(fsys, string(path), context.temp_allocator)
