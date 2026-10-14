@@ -450,3 +450,70 @@ test_dir_cache_evicts_at_cap :: proc(t: ^testing.T) {
 		testing.expect_value(t, derr, fs.FS_Error.None)
 	}
 }
+
+// test_dir_cache_drop_covers_extended_sectors — regression test: the
+// invalidate key used to be the written slot's location, which only
+// matches the cached chain-head key for single-sector directories. A
+// write to an extended sector left the stale pre-extend listing cached;
+// the getattr-after-create then missed the new file and the kernel
+// reported ENOENT for a file the daemon had written.
+@(test)
+test_dir_cache_drop_covers_extended_sectors :: proc(t: ^testing.T) {
+	vol, vol_ok := open_test_volume()
+	if !vol_ok { testing.fail(t); return }
+	defer close_test_volume(&vol)
+
+	dc, d_o, derr := fs.allocate_sectors(&vol, {}, 2, .Directory)
+	testing.expect_value(t, derr, fs.FS_Error.None)
+	defer fs.deallocate_sectors(&vol, fs.Chain_Location{dc, d_o})
+
+	runs, rerr := fs.resolve_extents(&vol, fs.Chain_Location{dc, d_o})
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+	defer delete(runs)
+
+	// Zero every sector of the chain.
+	zero: [fs.SECTOR_SIZE]u8
+	for r in runs {
+		for si in 0 ..< int(r.count) {
+			s := fs.Sector(u64(r.sector) + u64(si))
+			testing.expect(t, fs.sector_write(&vol, s, zero[:]) == .None, "zero")
+		}
+	}
+
+	// Prime: the empty listing is cached under the chain head.
+	e0, err0 := fs.read_directory_entries(&vol, dc, d_o)
+	testing.expect_value(t, err0, fs.FS_Error.None)
+	testing.expect(t, len(e0) == 0, "empty dir")
+	delete(e0)
+
+	// Write an entry into the LAST sector, which for a multi-sector chain
+	// is never the head sector: its slot location differs from the cached
+	// key, exercising the clear fallback.
+	last := runs[len(runs) - 1]
+	last_sec := fs.Sector(u64(last.sector) + u64(last.count) - 1)
+	dlc := fs.Cluster(u64(last_sec) / vol.master.cluster_size)
+	dsec := fs.Sector_Offset(u64(last_sec) - u64(dlc) * vol.master.cluster_size)
+	testing.expect(t, dlc != dc || dsec != d_o, "far sector differs from head")
+
+	sneak := fs.Directory_Entry{flags = {.Allocated, .Exists}}
+	copy(sneak.file_name[:], "FAR")
+	sneak.file_name[3] = 0
+	testing.expect(
+		t,
+		fs.write_directory_entry_at(&vol, fs.File_Identity{dlc, dsec, 3}, &sneak) == .None,
+		"write far slot",
+	)
+
+	// The cached listing must be gone: re-read finds the far entry with
+	// its true chain-relative index.
+	e1, err1 := fs.read_directory_entries(&vol, dc, d_o)
+	testing.expect_value(t, err1, fs.FS_Error.None)
+	testing.expect(t, len(e1) == 1, "fresh after far write")
+	if len(e1) == 1 {
+		testing.expect(t, fs.entry_short_name(&e1[0].entry) == "FAR", "name")
+		total := 0
+		for r in runs { total += int(r.count) }
+		testing.expect(t, e1[0].index == (total-1)*fs.DIR_ENTRIES_PER_SECTOR+3, "far slot index")
+	}
+	delete(e1)
+}

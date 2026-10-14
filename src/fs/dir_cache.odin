@@ -50,6 +50,18 @@ dir_cache_destroy :: proc(cache: ^Dir_Entry_Cache) {
 
 // dir_cache_invalidate drops a directory's listing from the cache.
 // Called from the fs entry-write procs on every slot write.
+//
+// loc names the written SLOT, not the chain head the listing is cached
+// under: for single-sector directories the two coincide and the drop is
+// exact, but a slot in an extended sector misses its chain's key (this
+// exact gap once served a stale pre-extend listing to the
+// getattr-after-create, and the kernel reported ENOENT for a file the
+// daemon had written). A miss therefore falls back to clearing the whole
+// cache — never stale, at worst cold. Keys are unique per chain head, so
+// an exact hit is always complete.
 dir_cache_invalidate :: proc(cache: ^Dir_Entry_Cache, loc: Chain_Location) {
-	lru.remove(&cache.lru, loc)
+	if lru.remove(&cache.lru, loc) {
+		return
+	}
+	lru.clear(&cache.lru, true)
 }
