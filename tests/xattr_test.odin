@@ -12,9 +12,9 @@ test_xattr_roundtrip :: proc(t: ^testing.T) {
 	if !ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	res, rok := fs.resolve_path(&vol, "/Kernel")
-	testing.expectf(t, rok, "resolve /Kernel")
-	if !rok { return }
+	res, resolve_err := fs.resolve_path(&vol, "/Kernel")
+	testing.expectf(t, resolve_err == .None, "resolve /Kernel")
+	if resolve_err != .None { return }
 
 	entry := res.entry
 	red: string = "red"
@@ -95,9 +95,9 @@ test_xattr_large_value :: proc(t: ^testing.T) {
 	if !ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	res, rok := fs.resolve_path(&vol, "/Kernel")
-	testing.expectf(t, rok, "resolve /Kernel")
-	if !rok { return }
+	res, resolve_err := fs.resolve_path(&vol, "/Kernel")
+	testing.expectf(t, resolve_err == .None, "resolve /Kernel")
+	if resolve_err != .None { return }
 
 	big := make([]u8, 3 * fs.SECTOR_SIZE)
 	defer delete(big)

@@ -28,7 +28,8 @@ setup_mounter :: proc(t: ^testing.T, fsys: ^mounter.FS) -> (ok: bool) {
 		return false
 	}
 
-	fsys^ = mounter.init_fs_for_test(vol)
+	fsys^ = {}
+	mounter.init_fs_for_test(fsys, vol)
 	ctx := fuse3.Context {
 		uid          = 1000,
 		gid          = 1000,
@@ -50,10 +51,12 @@ teardown_mounter :: proc(fsys: ^mounter.FS) {
 // test image.
 cleanup_root :: proc(fsys: ^mounter.FS, names: []string) {
 	for name in names {
-		buf := make([]u8, 1 + len(name))
+		// +1 for the NUL: cstring(raw_data(...)) below strlen-scans, so
+		// the buffer must be terminated (make zero-fills the trailing byte).
+		buf := make([]u8, 2 + len(name))
 		buf[0] = '/'
 		copy(buf[1:], name)
-		path := string(buf)
+		path := string(buf[:1+len(name)])
 		// Try unlink, then rmdir; ignore errors.
 		mounter.fused_unlink(cstring(raw_data(path)))
 		mounter.fused_rmdir(cstring(raw_data(path)))
@@ -515,7 +518,8 @@ test_mount_readdir_lfn_shared :: proc(t: ^testing.T) {
 	defer cleanup_root(&fsys, []string{long})
 
 	fi: fuse3.File_Info
-	path_buf := make([]u8, 1 + len(long))
+	// +1 for the NUL terminator cstring() scans for (make zero-fills it).
+	path_buf := make([]u8, 2 + len(long))
 	defer delete(path_buf)
 	path_buf[0] = '/'
 	copy(path_buf[1:], long)

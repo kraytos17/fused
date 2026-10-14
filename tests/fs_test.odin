@@ -162,7 +162,7 @@ test_validate_master_error_paths :: proc(t: ^testing.T) {
 		reserved3          = 0,
 		reserved4          = 0,
 		resv               = {},
-		end_sig            = 0x0BB0,
+		end_sig            = fs.END_SIG,
 	}
 
 	img_size: fs.Byte_Offset = 1 * 1024 * 1024
@@ -229,9 +229,10 @@ test_display_flag_str_functions :: proc(t: ^testing.T) {
 	testing.expect_value(t, s6, "0")
 }
 
-// test_sector_read_write_bulk — tests sector_read_bulk/sector_write_bulk round-trip
+// test_sector_write_bulk — tests sector_write_bulk round-trip against
+// plain sector_read.
 @(test)
-test_sector_read_write_bulk :: proc(t: ^testing.T) {
+test_sector_write_bulk :: proc(t: ^testing.T) {
 	fd, open_err := os.open("fused.img", {.Read, .Write})
 	if open_err != nil { testing.fail(t); return }
 	defer os.close(fd)
@@ -258,9 +259,7 @@ test_sector_read_write_bulk :: proc(t: ^testing.T) {
 
 	orig := make([]u8, fs.SECTOR_SIZE)
 	defer delete(orig)
-	n, read_ok := fs.sector_read_bulk(&vol, abs_sector, orig)
-	testing.expect(t, read_ok, "sector_read_bulk")
-	testing.expect_value(t, n, fs.SECTOR_SIZE)
+	testing.expect(t, fs.sector_read(&vol, abs_sector, orig) == .None, "sector_read")
 
 	modified := make([]u8, fs.SECTOR_SIZE)
 	defer delete(modified)
@@ -274,9 +273,7 @@ test_sector_read_write_bulk :: proc(t: ^testing.T) {
 	readback := make([]u8, fs.SECTOR_SIZE)
 	defer delete(readback)
 
-	n, read_ok = fs.sector_read_bulk(&vol, abs_sector, readback)
-	testing.expect(t, read_ok, "sector_read_bulk verify")
-	testing.expect_value(t, n, fs.SECTOR_SIZE)
+	testing.expect(t, fs.sector_read(&vol, abs_sector, readback) == .None, "sector_read verify")
 	for i in 0 ..< fs.SECTOR_SIZE {
 		if readback[i] != modified[i] {
 			testing.expect(t, false, "bulk content mismatch")
