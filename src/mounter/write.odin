@@ -234,11 +234,8 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 
 	set_entry_time_to_now(&entry)
 	entry.file_size = u64(size)
-	if werr := write_entry_at(
-		fsys,
-		File_Identity{entry_cluster, entry_offset, entry_idx},
-		&entry,
-	); werr != .None {
+	if werr := write_entry_at(fsys, File_Identity{entry_cluster, entry_offset, entry_idx}, &entry);
+	   werr != .None {
 		return fs_error_to_errno(werr)
 	}
 

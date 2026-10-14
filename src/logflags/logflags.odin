@@ -56,10 +56,12 @@ set_log_level :: proc(
 	if data_type != log.Level {
 		return "", false, .None
 	}
+
 	lvl, ok := parse_log_level(unparsed_value)
 	if !ok {
 		return "expected debug, info, warn or error", true, .None
 	}
+
 	(cast(^log.Level)data)^ = lvl
 	return "", true, .None
 }

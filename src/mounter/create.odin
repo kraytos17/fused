@@ -283,7 +283,8 @@ fused_unlink :: proc "c" (path: cstring) -> c.int {
 	}
 
 	log.debugf("unlink: %s xattr_cluster=%d", path, entry.xattr_cluster)
-	if err := remove_directory_entry(fsys, &entry, File_Identity{cluster, offset, idx}); err != .None {
+	if err := remove_directory_entry(fsys, &entry, File_Identity{cluster, offset, idx});
+	   err != .None {
 		return fs_error_to_errno(err)
 	}
 
@@ -325,7 +326,8 @@ fused_rmdir :: proc "c" (path: cstring) -> c.int {
 			return fuse3.nix(.ENOTEMPTY)
 		}
 	}
-	if err := remove_directory_entry(fsys, &entry, File_Identity{cluster, offset, idx}); err != .None {
+	if err := remove_directory_entry(fsys, &entry, File_Identity{cluster, offset, idx});
+	   err != .None {
 		return fs_error_to_errno(err)
 	}
 
@@ -398,11 +400,8 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 		if nerr := set_entry_name(fsys, &entry, new_name); nerr != .None {
 			return fs_error_to_errno(nerr)
 		}
-		if werr := write_entry_at(
-			fsys,
-			File_Identity{old_cluster, old_offset, old_idx},
-			&entry,
-		); werr != .None {
+		if werr := write_entry_at(fsys, File_Identity{old_cluster, old_offset, old_idx}, &entry);
+		   werr != .None {
 			return fs_error_to_errno(werr)
 		}
 
@@ -460,18 +459,16 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 		}
 	}
 
-	dst_slot, slot_err := find_or_extend_dir(
-		fsys,
-		new_parent_c,
-		new_parent_o,
-	)
+	dst_slot, slot_err := find_or_extend_dir(fsys, new_parent_c, new_parent_o)
 	if slot_err == .Entry_Not_Found {
 		return fuse3.nix(.ENOSPC)
 	}
 	if slot_err != .None {
 		return fs_error_to_errno(slot_err)
 	}
-	dst_cluster, dst_sec, dst_slot_idx := dst_slot.dir_cluster, dst_slot.dir_offset, dst_slot.entry_index
+
+	dst_cluster, dst_sec, dst_slot_idx :=
+		dst_slot.dir_cluster, dst_slot.dir_offset, dst_slot.entry_index
 	if nerr := set_entry_name(fsys, &entry, new_name); nerr != .None {
 		return fs_error_to_errno(nerr)
 	}
@@ -481,11 +478,8 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	}
 
 	entry.flags = {}
-	if werr := write_entry_at(
-		fsys,
-		File_Identity{old_cluster, old_offset, old_idx},
-		&entry,
-	); werr != .None {
+	if werr := write_entry_at(fsys, File_Identity{old_cluster, old_offset, old_idx}, &entry);
+	   werr != .None {
 		return fs_error_to_errno(werr)
 	}
 

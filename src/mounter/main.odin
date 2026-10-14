@@ -22,18 +22,18 @@ import "src:fuse3"
 // passed here pre-split. The library never reads os.args.
 Mount_Options :: struct {
 	// image_path is the fused disk image to mount.
-	image_path: string,
+	image_path:    string,
 	// log_file_path selects file logging; "" means console logging.
 	log_file_path: string,
 	// log_level is the logger verbosity.
-	log_level: log.Level,
+	log_level:     log.Level,
 	// log_opts selects the console logger format.
-	log_opts: log.Options,
+	log_opts:      log.Options,
 	// fuse_args is the opaque FUSE passthrough (options + mountpoint),
 	// NOT including image_path. Borrowed: the caller owns it.
-	fuse_args: []string,
+	fuse_args:     []string,
 	// cache sizes the three in-memory caches; zero entries select defaults.
-	cache: fs.Cache_Config,
+	cache:         fs.Cache_Config,
 }
 
 run :: proc(opts: Mount_Options) -> bool {

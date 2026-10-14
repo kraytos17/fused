@@ -28,12 +28,14 @@ Check_Name_Ctx :: struct {
 
 // write_entry_at writes a Directory_Entry back to its location on disk,
 // propagating the underlying error instead of collapsing it to bool.
-write_entry_at :: proc(
-	fsys: ^FS,
-	loc: File_Identity,
-	entry: ^fs.Directory_Entry,
-) -> fs.FS_Error {
-	return fs.write_entry_at_index(&fsys.vol, loc.dir_cluster, loc.dir_offset, loc.entry_index, entry)
+write_entry_at :: proc(fsys: ^FS, loc: File_Identity, entry: ^fs.Directory_Entry) -> fs.FS_Error {
+	return fs.write_entry_at_index(
+		&fsys.vol,
+		loc.dir_cluster,
+		loc.dir_offset,
+		loc.entry_index,
+		entry,
+	)
 }
 
 // find_free_slot_in_extent scans a directory's extent chain for the first free
@@ -147,11 +149,12 @@ find_or_extend_dir :: proc(
 	for i in 0 ..< depc {
 		if get_dir_entry(ext_buf[:], i, fsys.vol.master.features).flags == zero_flags {
 			dlc := u64(last_sec) / fsys.vol.master.cluster_size
-			return File_Identity{
-				fs.Cluster(dlc),
-				fs.Sector_Offset(u64(last_sec) - dlc * fsys.vol.master.cluster_size),
-				i,
-			}, .None
+			return File_Identity {
+					fs.Cluster(dlc),
+					fs.Sector_Offset(u64(last_sec) - dlc * fsys.vol.master.cluster_size),
+					i,
+				},
+				.None
 		}
 	}
 	return {}, .Entry_Not_Found

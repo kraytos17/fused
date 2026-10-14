@@ -59,6 +59,7 @@ main :: proc() {
 		if n == 0 {
 			return false
 		}
+
 		dst^ = int(n)
 		return true
 	}
@@ -121,7 +122,6 @@ main :: proc() {
 		usage()
 		os.exit(0)
 	}
-
 	if len(fuse_args) < 1 {
 		fmt.eprintf(
 			"usage: fused [--log-file=<path>] [--log-level=<level>] <image-path> [fuse-options...] <mountpoint>\n",

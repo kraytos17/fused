@@ -230,7 +230,11 @@ File_Identity :: struct {
 // entry it refers to.
 fh_parts :: proc "contextless" (fh: u64) -> (id: File_Identity) {
 	f := transmute(fs.File_Handle)(fh)
-	return File_Identity{fs.Cluster(f.dir_cluster), fs.Sector_Offset(f.dir_offset), int(f.entry_index)}
+	return File_Identity {
+		fs.Cluster(f.dir_cluster),
+		fs.Sector_Offset(f.dir_offset),
+		int(f.entry_index),
+	}
 }
 
 // mutate_entry_at is the shared read-modify-write wrapper for metadata-only
@@ -255,11 +259,8 @@ mutate_entry_at :: proc(
 	if !mutate(&entry, user) {
 		return 0
 	}
-	if werr := write_entry_at(
-		fsys,
-		File_Identity{entry_cluster, entry_offset, entry_idx},
-		&entry,
-	); werr != .None {
+	if werr := write_entry_at(fsys, File_Identity{entry_cluster, entry_offset, entry_idx}, &entry);
+	   werr != .None {
 		return fs_error_to_errno(werr)
 	}
 	if invalidate_all {
@@ -490,7 +491,11 @@ init_fs_for_test :: proc(
 // init_fs_state initialises the caches, lock tables, and free-sector count
 // shared by the FUSE daemon (run) and the test harness (init_fs_for_test).
 // fsys.vol must already be set.
-init_fs_state :: proc(fsys: ^FS, allocator := context.allocator, cache := fs.DEFAULT_CACHE_CONFIG) {
+init_fs_state :: proc(
+	fsys: ^FS,
+	allocator := context.allocator,
+	cache := fs.DEFAULT_CACHE_CONFIG,
+) {
 	fsys.allocator = allocator
 	path_cap := cache.path_cap if cache.path_cap > 0 else fs.DEFAULT_CACHE_CONFIG.path_cap
 	lfn_cap := cache.lfn_cap if cache.lfn_cap > 0 else fs.DEFAULT_CACHE_CONFIG.lfn_cap

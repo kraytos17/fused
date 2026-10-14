@@ -282,8 +282,13 @@ allocate_sectors :: proc(
 		return 0, 0, .No_Space
 	}
 	if start_cluster != 0 && !is_first {
-		if lerr := _link_tail_to_new(vol, start_cluster, start_offset, first_cluster, first_offset);
-		   lerr != .None {
+		if lerr := _link_tail_to_new(
+			vol,
+			start_cluster,
+			start_offset,
+			first_cluster,
+			first_offset,
+		); lerr != .None {
 			return 0, 0, lerr
 		}
 

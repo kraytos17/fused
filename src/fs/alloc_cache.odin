@@ -22,7 +22,11 @@ Cache_Config :: struct {
 }
 
 // DEFAULT_CACHE_CONFIG is the stock cache sizing (matches historic constants).
-DEFAULT_CACHE_CONFIG :: Cache_Config{path_cap = 128, lfn_cap = 256, alloc_cap = 1024}
+DEFAULT_CACHE_CONFIG :: Cache_Config {
+	path_cap  = 128,
+	lfn_cap   = 256,
+	alloc_cap = 1024,
+}
 
 // Cluster_Bitmap_Cache LRU cache for cluster bitmaps
 Cluster_Bitmap_Cache :: struct {
@@ -38,7 +42,11 @@ _alloc_cache_on_remove :: proc(key: u64, val: Alloc_Cache_Entry, user_data: rawp
 }
 
 // alloc_cache_init initializes the bitmap cache
-alloc_cache_init :: proc(cache: ^Cluster_Bitmap_Cache, master: ^Master_Record, capacity := DEFAULT_CACHE_CONFIG.alloc_cap) {
+alloc_cache_init :: proc(
+	cache: ^Cluster_Bitmap_Cache,
+	master: ^Master_Record,
+	capacity := DEFAULT_CACHE_CONFIG.alloc_cap,
+) {
 	cache.cache_size = int(master.cluster_size)
 	cache.hint = 0
 	lru.init(&cache.lru, capacity, context.allocator, context.allocator)

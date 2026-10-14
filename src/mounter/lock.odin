@@ -27,18 +27,18 @@ FUSE_FLOCK_LOCKS :: c.uint32_t(1 << 10) // remote BSD flock
 
 // Region_Lock is one POSIX (fcntl) lock record.
 Region_Lock :: struct {
-	owner:     u64, // fi.lock_owner
-	pid:       posix.pid_t, // flock.l_pid (for F_GETLK reporting)
-	start:     i64, // byte offset
-	len:       i64, // length in bytes (0 = to EOF)
-	mode:      Lock_Mode, // .Exclusive = F_WRLCK, .Shared = F_RDLCK
+	owner: u64, // fi.lock_owner
+	pid:   posix.pid_t, // flock.l_pid (for F_GETLK reporting)
+	start: i64, // byte offset
+	len:   i64, // length in bytes (0 = to EOF)
+	mode:  Lock_Mode, // .Exclusive = F_WRLCK, .Shared = F_RDLCK
 }
 
 // Flock_State is one BSD flock holder on a file (whole-file).  A file may
 // have many shared holders or a single exclusive holder.
 Flock_State :: struct {
-	owner:     u64, // fi.lock_owner
-	mode:      Lock_Mode, // .Exclusive = LOCK_EX, .Shared = LOCK_SH
+	owner: u64, // fi.lock_owner
+	mode:  Lock_Mode, // .Exclusive = LOCK_EX, .Shared = LOCK_SH
 }
 
 // Lock_Mode is the shared/exclusive distinction shared by POSIX region locks
