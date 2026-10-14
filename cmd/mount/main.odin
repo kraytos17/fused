@@ -54,17 +54,46 @@ main :: proc() {
 	fuse_args: [dynamic]string
 	defer delete(fuse_args)
 
-	parse_cache_cap :: proc(arg, prefix: string, dst: ^int) -> bool {
-		n := strconv.parse_uint(strings.trim_prefix(arg, prefix)) or_else 0
-		if n == 0 {
-			return false
-		}
+	// Cache_Cap_Spec maps one --<name>-cache-cap=<n> flag to its config
+	// field so the three arms share one parser instead of triplicated
+	// prefix/parse/assign blocks.
+	Cache_Cap_Spec :: struct {
+		prefix: string, // includes trailing "="
+		dst:    ^int,
+	}
+	cap_specs := [?]Cache_Cap_Spec{
+		{"--path-cache-cap=", &cache.path_cap},
+		{"--lfn-cache-cap=", &cache.lfn_cap},
+		{"--alloc-cache-cap=", &cache.alloc_cap},
+	}
 
-		dst^ = int(n)
-		return true
+	// try_cache_cap matches a cache-cap flag against the spec table.
+	// matched=false falls through to the other parsers below.
+	try_cache_cap :: proc(arg: string, specs: []Cache_Cap_Spec) -> (matched, valid: bool) {
+		for s in specs {
+			if strings.has_prefix(arg, s.prefix) {
+				n := strconv.parse_uint(strings.trim_prefix(arg, s.prefix)) or_else 0
+				if n == 0 {
+					fmt.eprintf(
+						"invalid %s (want positive int)\n",
+						strings.trim_suffix(s.prefix, "="),
+					)
+					return true, false
+				}
+				s.dst^ = int(n)
+				return true, true
+			}
+		}
+		return false, false
 	}
 
 	for arg in os.args[1:] {
+		if matched, valid := try_cache_cap(arg, cap_specs[:]); matched {
+			if !valid {
+				os.exit(1)
+			}
+			continue
+		}
 		switch {
 		case strings.has_prefix(arg, "--log-file="):
 			log_file_path = strings.trim_prefix(arg, "--log-file=")
@@ -76,21 +105,6 @@ main :: proc() {
 				os.exit(1)
 			}
 			log_level = lvl
-		case strings.has_prefix(arg, "--path-cache-cap="):
-			if !parse_cache_cap(arg, "--path-cache-cap=", &cache.path_cap) {
-				fmt.eprintf("invalid --path-cache-cap (want positive int)\n")
-				os.exit(1)
-			}
-		case strings.has_prefix(arg, "--lfn-cache-cap="):
-			if !parse_cache_cap(arg, "--lfn-cache-cap=", &cache.lfn_cap) {
-				fmt.eprintf("invalid --lfn-cache-cap (want positive int)\n")
-				os.exit(1)
-			}
-		case strings.has_prefix(arg, "--alloc-cache-cap="):
-			if !parse_cache_cap(arg, "--alloc-cache-cap=", &cache.alloc_cap) {
-				fmt.eprintf("invalid --alloc-cache-cap (want positive int)\n")
-				os.exit(1)
-			}
 		case strings.has_prefix(arg, "--log-format="):
 			fmt_str := strings.trim_prefix(arg, "--log-format=")
 			lf, fok := logflags.parse_log_format(fmt_str)

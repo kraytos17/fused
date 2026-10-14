@@ -10,6 +10,8 @@
 //   (d) no (&x[0]) reinterpret casts in src/ (use the raw_data form).
 package main
 
+import "base:runtime"
+import "core:flags"
 import "core:fmt"
 import "core:odin/ast"
 import "core:odin/parser"
@@ -17,14 +19,17 @@ import "core:os"
 import "core:path/filepath"
 import "core:strings"
 
+Flags :: struct {
+	strict: bool `args:"name=strict" usage:"Enable strict attribute checks"`,
+}
+// Unknown flags are rejected by parse_or_exit, matching the check/dump/
+// format tools (previously they were silently ignored).
+
 main :: proc() {
-	strict := false
-	for arg in os.args {
-		if arg == "--strict" {
-			strict = true
-			break
-		}
-	}
+	context = runtime.default_context()
+
+	f: Flags
+	flags.parse_or_exit(&f, os.args, flags.Parsing_Style.Unix)
 
 	dh, err := os.open("src/mounter")
 	if err == nil {
@@ -41,7 +46,7 @@ main :: proc() {
 		os.exit(1)
 	}
 
-	if !audit_fs_attributes(strict) {
+	if !audit_fs_attributes(f.strict) {
 		os.exit(1)
 	}
 }
