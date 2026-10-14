@@ -248,12 +248,7 @@ fused_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 		return fuse3.nix(.EACCES)
 	}
 
-	fi.fh = transmute(u64)(fs.File_Handle {
-			dir_cluster = u64(parent_cluster),
-			dir_offset = u16(parent_offset),
-			entry_index = u16(entry_idx),
-		})
-
+	fi.fh = transmute(u64)fs.make_file_handle(parent_cluster, parent_offset, entry_idx)
 	log.debugf("open: %s → ok", path)
 	return 0
 }

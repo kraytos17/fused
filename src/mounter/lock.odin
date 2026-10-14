@@ -48,6 +48,34 @@ Lock_Mode :: enum {
 	Exclusive,
 }
 
+// Flock_Cmd is the parsed BSD flock operation: the base command plus the
+// non-blocking modifier. Parsed once at the FUSE boundary (fused_flock) so
+// the holder state machine below switches on an enum instead of re-testing
+// raw LOCK_* bits. (The LOCK_* constants themselves stay c.int — they are
+// ABI values, not a bit_set — only the parse is typed.)
+Flock_Cmd :: enum {
+	Unlock,
+	Shared,
+	Exclusive,
+}
+
+// flock_parse_op splits a flock op word into its base command and modifier.
+// Precedence matches flock(2): UN dominates, then EX, anything else reads as
+// Shared (preserving the historical fallthrough for op words with no base
+// bits set). LOCK_NB is reported but needs no branch: conflicts always
+// return EAGAIN since FUSE callbacks cannot block (documented limitation).
+flock_parse_op :: proc(op: c.int) -> (cmd: Flock_Cmd, nonblock: bool) {
+	nonblock = op & LOCK_NB != 0
+	switch {
+	case op & LOCK_UN != 0:
+		return .Unlock, nonblock
+	case op & LOCK_EX != 0:
+		return .Exclusive, nonblock
+	case:
+		return .Shared, nonblock
+	}
+}
+
 // lock_mode_from_type maps a POSIX flock type to a Lock_Mode. UNLCK never
 // reaches here (callers filter it first); treat it as Shared defensively.
 lock_mode_from_type :: proc(t: posix.Lock_Type) -> Lock_Mode {
@@ -248,15 +276,14 @@ fused_flock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, op: c.int) -> c.in
 
 	id := fh_parts(fi.fh)
 	owner := fi.lock_owner
-	if op & LOCK_UN != 0 {
+	cmd, _ := flock_parse_op(op)
+	// nonblock is discarded: conflicts always return EAGAIN (see parse).
+	if cmd == .Unlock {
 		locks_remove_owner(fsys, id, owner)
 		return 0
 	}
 
-	mode := Lock_Mode.Shared
-	if op & LOCK_EX != 0 {
-		mode = .Exclusive
-	}
+	mode := Lock_Mode.Shared if cmd == .Shared else .Exclusive
 	// Snapshot current holders.
 	old, has_old := fsys.flock_locks[id]
 	holders := make([dynamic]Flock_State, 0, 4)

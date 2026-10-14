@@ -166,3 +166,30 @@ test_flock_ex_unlock :: proc(t: ^testing.T) {
 	testing.expect_value(t, rc, 0)
 	mounter.fused_unlink("/flock1")
 }
+
+// test_flock_parse_op — boundary parse preserves flock(2) precedence
+// (UN > EX > SH-default) and reports LOCK_NB orthogonally.
+@(test)
+test_flock_parse_op :: proc(t: ^testing.T) {
+	cmd, nb := mounter.flock_parse_op(mounter.LOCK_UN)
+	testing.expect_value(t, cmd, mounter.Flock_Cmd.Unlock)
+	testing.expect(t, !nb, "UN without NB")
+
+	cmd, nb = mounter.flock_parse_op(mounter.LOCK_EX)
+	testing.expect_value(t, cmd, mounter.Flock_Cmd.Exclusive)
+	testing.expect(t, !nb, "EX without NB")
+
+	cmd, nb = mounter.flock_parse_op(mounter.LOCK_SH)
+	testing.expect_value(t, cmd, mounter.Flock_Cmd.Shared)
+	testing.expect(t, !nb, "SH without NB")
+
+	cmd, nb = mounter.flock_parse_op(mounter.LOCK_EX | mounter.LOCK_NB)
+	testing.expect_value(t, cmd, mounter.Flock_Cmd.Exclusive)
+	testing.expect(t, nb, "EX|NB reports nonblock")
+
+	// UN dominates combined words; bare 0 keeps the historic SH default.
+	cmd, _ = mounter.flock_parse_op(mounter.LOCK_UN | mounter.LOCK_EX)
+	testing.expect_value(t, cmd, mounter.Flock_Cmd.Unlock)
+	cmd, _ = mounter.flock_parse_op(0)
+	testing.expect_value(t, cmd, mounter.Flock_Cmd.Shared)
+}

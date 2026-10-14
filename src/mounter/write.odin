@@ -2,6 +2,7 @@
 #+build linux
 package mounter
 
+import "base:intrinsics"
 import "base:runtime"
 import "core:c"
 import "core:log"
@@ -10,6 +11,34 @@ import "core:sys/posix"
 import "core:time"
 import "src:fs"
 import "src:fuse3"
+
+// _checked_add adds two byte offsets, failing closed on overflow. FUSE
+// offsets/sizes are kernel-supplied but untrusted at this boundary: a
+// wrapped sum would shrink an allocation and let a write run past it.
+@(private = "file")
+_checked_add :: proc(a, b: u64) -> (sum: u64, ok: bool) {
+	total, wrapped := intrinsics.overflow_add(a, b)
+	if wrapped {
+		return 0, false
+	}
+	return total, true
+}
+
+// _span_sectors converts the byte span [off, off+size) to a covering sector
+// count, failing closed if either addition overflows.
+@(private = "file")
+_span_sectors :: proc(off, size: u64) -> (sectors: u64, ok: bool) {
+	end, end_ok := _checked_add(off, size)
+	if !end_ok {
+		return 0, false
+	}
+
+	padded, pad_ok := _checked_add(end, u64(fs.SECTOR_SIZE - 1))
+	if !pad_ok {
+		return 0, false
+	}
+	return padded / fs.SECTOR_SIZE, true
+}
 
 // fused_write writes data to a file at a given offset.
 fused_write :: proc "c" (
@@ -30,7 +59,11 @@ fused_write :: proc "c" (
 		return fs_error_to_errno(rerr)
 	}
 
-	total_sectors := (u64(off) + u64(size) + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
+	total_sectors, sok := _span_sectors(u64(off), u64(size))
+	if !sok {
+		return fuse3.nix(.EOVERFLOW)
+	}
+
 	runs: []fs.Extent_Run
 	cerr: fs.FS_Error
 	data_cluster, data_offset, runs, _, cerr = ensure_chain_covers(
@@ -54,7 +87,8 @@ fused_write :: proc "c" (
 	// (journal_commit); no extra fsync needed here.
 	log.debugf("write: %s → enter write loop (runs=%d)", path, len(runs))
 	write_off := u64(off)
-	new_size := max(u64(entry.file_size), write_off + u64(size))
+	end, _ := _checked_add(write_off, u64(size)) // cannot wrap: span checked above
+	new_size := max(u64(entry.file_size), end)
 	mem_src := Mem_Source {
 		fsys      = fsys,
 		buf       = ([^]u8)(buf),
@@ -124,12 +158,20 @@ fused_write_buf :: proc "c" (
 
 	total_size: u64
 	bufs := slice.from_ptr(&buf._buf[0], int(buf.count))
+	size_ok := true
 	for i in 0 ..< buf.count {
 		b := bufs[i]
-		total_size += u64(b.size)
+		total_size, size_ok = _checked_add(total_size, u64(b.size))
+		if !size_ok {
+			break
+		}
 	}
 
-	total_sectors := (u64(off) + total_size + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
+	total_sectors, sok := _span_sectors(u64(off), total_size)
+	if !size_ok || !sok {
+		return fuse3.nix(.EOVERFLOW)
+	}
+
 	runs: []fs.Extent_Run
 	cerr: fs.FS_Error
 	data_cluster, data_offset, runs, _, cerr = ensure_chain_covers(
@@ -301,14 +343,15 @@ fused_fallocate :: proc "c" (
 
 	alloc_start := u64(off)
 	alloc_len := u64(length)
+	alloc_end, aok := _checked_add(alloc_start, alloc_len)
+	if !aok {
+		return fuse3.nix(.EOVERFLOW)
+	}
 	if mode & fuse3.FALLOC_FL_PUNCH_HOLE != 0 {
-		punch_start := alloc_start
-		punch_end := alloc_start + alloc_len
-		zok := zero_file_range(fsys, &entry, data_cluster, data_offset, punch_start, punch_end)
+		zok := zero_file_range(fsys, &entry, data_cluster, data_offset, alloc_start, alloc_end)
 		if !zok {
 			return fuse3.nix(.EIO)
 		}
-
 		// Update file_size if needed (PUNCH_HOLE implies KEEP_SIZE)
 		if werr := write_entry_at(fsys, fh_parts(fi.fh), &entry); werr != .None {
 			return fs_error_to_errno(werr)
@@ -318,7 +361,11 @@ fused_fallocate :: proc "c" (
 		return 0
 	}
 
-	total_sectors := (alloc_start + alloc_len + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
+	total_sectors, sok := _span_sectors(alloc_start, alloc_len)
+	if !sok {
+		return fuse3.nix(.EOVERFLOW)
+	}
+
 	extended: bool
 	cerr: fs.FS_Error
 	data_cluster, data_offset, _, extended, cerr = ensure_chain_covers(
@@ -336,7 +383,7 @@ fused_fallocate :: proc "c" (
 	}
 	if extended {
 		zero_start := u64(entry.file_size)
-		zero_end := max(alloc_start + alloc_len, zero_start)
+		zero_end := max(alloc_end, zero_start)
 		if zero_end > zero_start {
 			zok := zero_file_range(fsys, &entry, data_cluster, data_offset, zero_start, zero_end)
 			if !zok {
@@ -345,13 +392,12 @@ fused_fallocate :: proc "c" (
 		}
 	}
 	if mode & fuse3.FALLOC_FL_KEEP_SIZE == 0 {
-		new_size := max(u64(entry.file_size), alloc_start + alloc_len)
+		new_size := max(u64(entry.file_size), alloc_end)
 		if new_size != u64(entry.file_size) {
 			set_entry_time_to_now(&entry)
 			entry.file_size = new_size
 		}
 	}
-
 	if werr := write_entry_at(fsys, fh_parts(fi.fh), &entry); werr != .None {
 		return fs_error_to_errno(werr)
 	}
@@ -401,7 +447,11 @@ fused_copy_file_range :: proc "c" (
 
 	src_off := u64(off_in)
 	dst_off := u64(off_out)
-	dst_total_sectors := (dst_off + u64(size) + fs.SECTOR_SIZE - 1) / fs.SECTOR_SIZE
+	dst_total_sectors, sok := _span_sectors(dst_off, u64(size))
+	if !sok {
+		return c.ssize_t(fuse3.nix(.EOVERFLOW))
+	}
+
 	// Invalidate only the dst chain so the borrowed src_runs stay valid.
 	dst_runs: []fs.Extent_Run
 	derr: fs.FS_Error
@@ -453,6 +503,7 @@ fused_copy_file_range :: proc "c" (
 		run_cursor_advance(&dst_cur, take)
 	}
 
+	// Safe: dst_off + size did not overflow above and bytes_copied <= size.
 	new_size := max(u64(dst_entry.file_size), u64(off_out) + bytes_copied)
 	if new_size != u64(dst_entry.file_size) {
 		set_entry_time_to_now(&dst_entry)

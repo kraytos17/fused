@@ -7,10 +7,6 @@ package fuse3
 import "core:c"
 import "core:sys/posix"
 
-// Domain-specific distinct types for FUSE inode numbers.
-// libfuse3 uses fuse_ino_t = uint64_t internally.
-Inode :: distinct u64
-
 Libfuse_Version :: struct {
 	major:   c.uint,
 	minor:   c.uint,

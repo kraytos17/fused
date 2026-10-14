@@ -283,7 +283,10 @@ lost on unmount).
   blocking wait would deadlock the single-threaded callback.
 - **BSD flock** (`flock`): per-file holder list; any number of owners may hold
   LOCK_SH, LOCK_EX excludes all others. Conflicts always return EAGAIN (the
-  callback cannot sleep, so LOCK_NB is the only viable behavior).
+  callback cannot sleep, so LOCK_NB is the only viable behavior). The op word
+  is parsed once at the boundary into `Flock_Cmd` + `nonblock`
+  (`flock_parse_op`); the state machine switches on the enum. The `LOCK_*`
+  constants stay `c.int` ABI values (deliberately not a `bit_set`).
 - **Cleanup**: `fused_release` drops the releasing owner's locks (the kernel
   releases a process's locks when its last fd closes); `unlink`/`rmdir`
   drop all lock state for the removed entry. The kernel only forwards lock
@@ -388,6 +391,19 @@ Within `package fs`, `or_return`/`or_continue` propagates errors automatically.
 At the FUSE boundary, `fs_error_to_errno` translates `FS_Error` to negated
 errno via a `#partial switch`.
 
+### Conversions and casts
+
+`T(v)` for value conversions, `cast` for pointer casts only, `transmute`
+only for bit-pattern views (`u8`/`u64` reps of flag domains, so retired bits
+stay visible), `string`↔`[]u8` aliasing, and `u64`↔`File_Handle` packing.
+`auto_cast` is never used (prototyping-only per the language docs). All three
+forms are explicit by design (unlike C assignment conversion); `transmute`
+is additionally compiler size-checked, but same-size is not same-meaning —
+every transmute site carries a comment stating which invariant makes it
+sound. Untyped constants implicitly convert where lossless (e.g. `1 << 10`
+into `c.uint32_t` flag consts); narrowing conversions (`u16`, `u32`) must
+cite a domain bound or go through a saturating helper.
+
 ### Memory management
 
 Functions producing variable-length results return `[dynamic]T` allocated on
@@ -396,6 +412,15 @@ Functions producing variable-length results return `[dynamic]T` allocated on
 `begin_op`. `cmd/mount/main.odin` wraps the mount lifecycle in a
 `mem.Tracking_Allocator` guarded behind `when ODIN_DEBUG` — zero overhead in
 release builds. Leaked allocations are reported at unmount time.
+
+`context` assignments are frame-local: they propagate downward to callees,
+never upward to callers. A `context.allocator = ...` line inside `begin_op`
+therefore affects only that frame — callers keep their own allocator. So
+anything stored into shared structures (extent slices, path keys, LFN
+strings) must name `fsys.allocator` explicitly on **both** allocation and
+free; relying on `context` pairs heap allocs against tracking frees (or vice
+versa) and crashes teardown. LRU eviction callbacks receive `fsys` as
+`user_data` for exactly this reason.
 
 ## FUSE callbacks
 

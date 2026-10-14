@@ -571,3 +571,30 @@ test_mount_write_buf_fd_backed_partial_is_eio :: proc(t: ^testing.T) {
 	rc = mounter.fused_write_buf("/fdfile", &bv, 1, &fi)
 	expect_errno(t, rc, .EIO)
 }
+
+// test_mount_write_span_overflow_is_eoverflow — a write span whose end wraps
+// u64 must fail closed with EOVERFLOW instead of shrinking the allocation
+// (which would let the write run past it).
+@(test)
+test_mount_write_span_overflow_is_eoverflow :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	ok := setup_mounter(t, &fsys)
+	if !ok { return }
+	defer teardown_mounter(&fsys)
+	cleanup_root(&fsys, []string{"ovfile"})
+	defer cleanup_root(&fsys, []string{"ovfile"})
+
+	fi: fuse3.File_Info
+	rc := mounter.fused_create("/ovfile", posix.mode_t{.IRUSR, .IWUSR}, &fi)
+	testing.expect_value(t, rc, 0)
+
+	// off + size wraps u64: must not allocate, must report EOVERFLOW.
+	// buf is never touched (the span check runs first), so nil is fine.
+	rc = mounter.fused_write("/ovfile", nil, max(c.size_t), 512, &fi)
+	expect_errno(t, rc, .EOVERFLOW)
+
+	// Sanity: a normal write on the same handle still works.
+	data := "overflow-guard\n"
+	rc = mounter.fused_write("/ovfile", raw_data(data), c.size_t(len(data)), 0, &fi)
+	testing.expect_value(t, rc, c.int(len(data)))
+}
