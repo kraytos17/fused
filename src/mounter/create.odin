@@ -316,7 +316,8 @@ fused_rmdir :: proc "c" (path: cstring) -> c.int {
 
 	defer delete(dirs)
 	if dir_err != .None {
-		// Deliberately ignored: an unreadable listing scans as empty below.
+		log.debugf("rmdir: %s → %v", path, dir_err)
+		return fs_error_to_errno(dir_err)
 	}
 	for &w in dirs {
 		if .Exists in w.entry.flags {
