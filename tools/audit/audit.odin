@@ -444,7 +444,10 @@ audit_locking_file :: proc(path: string) -> (checked, failed: int) {
 	return
 }
 
-run_locking_audit :: proc() {
+// _audit_mounter_dir runs audit_file over every .odin file in src/mounter
+// and enforces zero failures. Shared by the locking and logger audits,
+// which differ only in per-file rule and label.
+_audit_mounter_dir :: proc(label: string, audit_file: proc(string) -> (int, int)) {
 	total_c, total_f := 0, 0
 	dh, derr := os.open("src/mounter")
 	if derr != nil {
@@ -464,13 +467,17 @@ run_locking_audit :: proc() {
 		if !strings.has_suffix(fi.name, ".odin") { continue }
 
 		path, _ := filepath.join([]string{"src/mounter", fi.name})
-		c, f := audit_locking_file(path)
+		c, f := audit_file(path)
 		total_c += c
 		total_f += f
 	}
 
-	fmt.printf("=== Locking audit: %d checked, %d failed ===\n", total_c, total_f)
+	fmt.printf("=== %s audit: %d checked, %d failed ===\n", label, total_c, total_f)
 	if total_f > 0 { os.exit(1) }
+}
+
+run_locking_audit :: proc() {
+	_audit_mounter_dir("Locking", audit_locking_file)
 }
 
 // audit_logger_lines (rule g): every top-level fsys := begin_op() /
@@ -505,29 +512,7 @@ audit_logger_lines :: proc(path: string) -> (checked, failed: int) {
 }
 
 run_logger_audit :: proc() {
-	total_c, total_f := 0, 0
-	dh, derr := os.open("src/mounter")
-	if derr != nil {
-		fmt.eprintf("cannot open src/mounter: %v\n", derr)
-		os.exit(1)
-	}
-	defer os.close(dh)
-	fis, ferr := os.read_dir(dh, 0, context.allocator)
-	if ferr != nil {
-		fmt.eprintf("cannot list src/mounter: %v\n", ferr)
-		os.exit(1)
-	}
-	defer os.file_info_slice_delete(fis, context.allocator)
-	for fi in fis {
-		if !strings.has_suffix(fi.name, ".odin") { continue }
-		path, _ := filepath.join([]string{"src/mounter", fi.name})
-		c, f := audit_logger_lines(path)
-		total_c += c
-		total_f += f
-	}
-
-	fmt.printf("=== Logger audit: %d checked, %d failed ===\n", total_c, total_f)
-	if total_f > 0 { os.exit(1) }
+	_audit_mounter_dir("Logger", audit_logger_lines)
 }
 
 // Hygiene audit (rules b/c/d/e/f): line scans over src/{fs,fuse3,mounter}.
