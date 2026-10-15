@@ -227,6 +227,14 @@ read lock per entry and fills the kernel buffer unlocked; `fused_release`
 takes the write lock (it mutates the lock tables); `statfs` takes the read
 lock. Disk I/O itself needs no lock (pread/pwrite).
 
+**Logger discipline.** `context` passes by value, so the
+`context.logger = fsys.logger` assignment inside `begin_op()` /
+`begin_read_op()` is callee-local and never reaches the caller: every
+callback repeats the assignment itself after acquiring the lock, or its
+`debugf` output goes nowhere (enforced by audit rule (g)). Callbacks
+that bypass the lock helpers (`get_fs` + manual locking) set it the
+same way.
+
 **Stack-local scratch buffers.** All procedures use stack-local `[SECTOR_SIZE]u8`
 arrays and fixed-capacity stack buffers (`[32]Extent_Run`) instead of
 heap-backed dynamic arrays for the common case. Falls back to
