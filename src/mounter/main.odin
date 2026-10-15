@@ -86,6 +86,68 @@ build_operations :: proc() -> fuse3.Operations {
 	}
 }
 
+// _run_setup_logger builds the run-scoped logger: file-backed multi logger
+// when log_file_path is set, console logger otherwise. Returns the logger
+// to install, the file logger (destroyed by the caller), and ok=false when
+// the log file cannot be opened. Destroys must be deferred in run()'s own
+// scope (see below), so they are NOT deferred here.
+@(private = "file")
+_run_setup_logger :: proc(log_file_path: string, log_level: log.Level, log_opts: log.Options) -> (logger, file_logger: log.Logger, file_log: bool, ok: bool) {
+	file_log = log_file_path != ""
+	if file_log {
+		log_fd, log_open_err := os.open(log_file_path, {.Create, .Write, .Append})
+		if log_open_err != nil {
+			log.errorf("cannot open log file %s: %v", log_file_path, log_open_err)
+			return {}, {}, true, false
+		}
+
+		file_logger = log.create_file_logger(log_fd, log_level, log.Default_File_Logger_Opts)
+		logger = log.create_multi_logger(file_logger)
+	} else {
+		logger = log.create_console_logger(log_level, log_opts)
+	}
+	return logger, file_logger, file_log, true
+}
+
+// _run_build_argv builds the fuse_main argv (program name + borrowed FUSE
+// args + ensured -f foreground flag). Only entries 1..<1+n_cloned are
+// cloned (index 0 "fused" and a possible trailing "-f" are static);
+// the caller frees exactly those (see below) plus the backing.
+@(private = "file")
+_run_build_argv :: proc(fuse_args: []string) -> (argv: [dynamic]cstring, n_cloned: int) {
+	// Plain dynamic (not SVO): this nightly has no delete overload for
+	// [dynamic; N]T, and the backing must be freed explicitly below.
+	append(&argv, "fused")
+	for arg in fuse_args {
+		append(&argv, strings.clone_to_cstring(arg, context.allocator))
+	}
+
+	n_cloned = len(fuse_args)
+	has_f := false
+	for a in argv {
+		if a == "-f" {
+			has_f = true
+		}
+	}
+	if !has_f {
+		append(&argv, "-f")
+	}
+	return argv, n_cloned
+}
+
+// _run_dump_leaks logs any allocations still live at unmount (debug only).
+@(private = "file")
+_run_dump_leaks :: proc(track: ^mem.Tracking_Allocator) {
+	when ODIN_DEBUG {
+		if len(track.allocation_map) > 0 {
+			log.warnf("--- leaked allocations ---")
+			for _, leak in track.allocation_map {
+				log.warnf("  %v bytes at %v", leak.size, leak.location)
+			}
+		}
+	}
+}
+
 run :: proc(opts: Mount_Options) -> bool {
 	context = runtime.default_context()
 
@@ -100,33 +162,20 @@ run :: proc(opts: Mount_Options) -> bool {
 		_ = track
 	}
 
-	log_file_path := opts.log_file_path
-	log_level := opts.log_level
-	log_opts := opts.log_opts
-	fuse_args := opts.fuse_args
-
 	fsys := new(FS)
 	// Loggers live until run() returns (after unmount): their destroys must
-	// be function-scoped. A defer inside either branch below would fire at
-	// BRANCH exit (Odin defers run at scope end, unlike Go), freeing logger
-	// state while mounted callbacks still use it — use-after-free.
-	file_log := log_file_path != ""
-	file_logger: log.Logger
-	if file_log {
-		log_fd, log_open_err := os.open(log_file_path, {.Create, .Write, .Append})
-		if log_open_err != nil {
-			log.errorf("cannot open log file %s: %v", log_file_path, log_open_err)
-			free(fsys)
-			return false
-		}
-
-		file_logger = log.create_file_logger(log_fd, log_level, log.Default_File_Logger_Opts)
-		context.logger = log.create_multi_logger(file_logger)
-		fsys.logger = context.logger
-	} else {
-		context.logger = log.create_console_logger(log_level, log_opts)
-		fsys.logger = context.logger
+	// be function-scoped. A defer inside the setup helper's branches would
+	// fire at helper exit (Odin defers run at scope end, unlike Go), freeing
+	// logger state while mounted callbacks still use it — use-after-free.
+	// _run_setup_logger therefore returns without deferring; the destroys
+	// below fire at run() exit.
+	logger, file_logger, file_log, lok := _run_setup_logger(opts.log_file_path, opts.log_level, opts.log_opts)
+	if !lok {
+		free(fsys)
+		return false
 	}
+	context.logger = logger
+	fsys.logger = logger
 	defer if file_log {
 		log.destroy_file_logger(file_logger)
 	} else {
@@ -157,24 +206,7 @@ run :: proc(opts: Mount_Options) -> bool {
 
 	ops := build_operations()
 
-	// Plain dynamic (not SVO): this nightly has no delete overload for
-	// [dynamic; N]T, and the backing must be freed explicitly below.
-	dynamic_argv: [dynamic]cstring
-	append(&dynamic_argv, "fused")
-	for arg in fuse_args {
-		append(&dynamic_argv, strings.clone_to_cstring(arg, context.allocator))
-	}
-
-	n_cloned := len(fuse_args)
-	has_f := false
-	for a in dynamic_argv {
-		if a == "-f" {
-			has_f = true
-		}
-	}
-	if !has_f {
-		append(&dynamic_argv, "-f")
-	}
+	dynamic_argv, n_cloned := _run_build_argv(opts.fuse_args)
 
 	rc := fuse3.run(c.int(len(dynamic_argv)), raw_data(dynamic_argv[:]), &ops, fsys)
 	// Session over: argv is no longer needed. Free exactly the cloned
@@ -195,13 +227,6 @@ run :: proc(opts: Mount_Options) -> bool {
 	}
 
 	log.infof("unmounted")
-	when ODIN_DEBUG {
-		if len(track.allocation_map) > 0 {
-			log.warnf("--- leaked allocations ---")
-			for _, leak in track.allocation_map {
-				log.warnf("  %v bytes at %v", leak.size, leak.location)
-			}
-		}
-	}
+	_run_dump_leaks(&track)
 	return true
 }
