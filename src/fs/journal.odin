@@ -111,10 +111,10 @@ journal_commit :: proc(vol: ^Volume, txn: ^Journal_Txn) -> bool {
 	}
 
 	hdr_buf: [SECTOR_SIZE]u8
-	(^Journal_Header)(raw_data(hdr_buf[:]))^ = hdr
+	hdr_ptr := (^Journal_Header)(raw_data(hdr_buf[:]))
+	hdr_ptr^ = hdr
 	hdr.header_crc = hash.crc32(hdr_buf[:24])
-
-	(^Journal_Header)(raw_data(hdr_buf[:]))^ = hdr
+	hdr_ptr^ = hdr
 	if sector_write(vol, pos, hdr_buf[:]) != .None {
 		return false
 	}

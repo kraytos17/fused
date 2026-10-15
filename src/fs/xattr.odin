@@ -225,18 +225,20 @@ _xattr_serialize :: proc(attrs: []XAttr) -> (data: []u8) {
 	}
 
 	data = make([]u8, size_of(XAttr_Blob_Header) + total)
-	hdr := (^XAttr_Blob_Header)(raw_data(data))^
+	hdr_ptr := (^XAttr_Blob_Header)(raw_data(data))
+	hdr := hdr_ptr^
 	hdr.magic = XATTR_MAGIC
 	hdr.count = u16(len(attrs))
 	hdr.total = u32(total)
-	(^XAttr_Blob_Header)(raw_data(data))^ = hdr
+	hdr_ptr^ = hdr
 
 	pos := size_of(XAttr_Blob_Header)
 	for a in attrs {
-		rh := (^XAttr_Record_Header)(raw_data(data[pos:]))^
+		rh_ptr := (^XAttr_Record_Header)(raw_data(data[pos:]))
+		rh := rh_ptr^
 		rh.name_len = u16(len(a.name))
 		rh.value_len = u32(len(a.value))
-		(^XAttr_Record_Header)(raw_data(data[pos:]))^ = rh
+		rh_ptr^ = rh
 		pos += size_of(XAttr_Record_Header)
 
 		copy(data[pos:], a.name)
