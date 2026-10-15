@@ -29,6 +29,26 @@ open_test_volume :: proc() -> (vol: fs.Volume, ok: bool) {
 	return vol, true
 }
 
+// open_volume_on_fd builds a test Volume around an already-open fd,
+// mirroring open_test_volume without opening the image itself. Used by
+// fault-injection tests to control the open mode (read-only) or content
+// (truncated copy).
+open_volume_on_fd :: proc(fd: ^os.File) -> (vol: fs.Volume, ok: bool) {
+	master, merr := fs.read_master_record(fd)
+	if merr != .None {
+		return {}, false
+	}
+
+	vol = fs.Volume {
+		disk   = fd,
+		master = master,
+	}
+
+	fs.alloc_cache_init(&vol.cache, &vol.master)
+	fs.dir_cache_init(&vol.dir_cache)
+	return vol, true
+}
+
 // close_test_volume — closes a test Volume (destroys cache, closes fd)
 close_test_volume :: proc(vol: ^fs.Volume) {
 	fs.alloc_cache_destroy(&vol.cache)
