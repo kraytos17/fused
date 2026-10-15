@@ -10,6 +10,27 @@ import "core:strings"
 import "src:fs"
 import "src:fuse3"
 
+// _xattr_upsert replaces the value of the named attr or appends a new one.
+// The caller has already enforced Create/Replace preconditions and owns
+// attrs (loaded by xattr_load, freed by the caller's deferred destroy).
+@(private = "file")
+_xattr_upsert :: proc(attrs: ^[dynamic]fs.XAttr, attr_name: string, value: [^]c.char, size: c.size_t) {
+	for &a in attrs^ {
+		if a.name == attr_name {
+			delete(a.value)
+			a.value = make([]u8, int(size))
+			if size > 0 {
+				mem.copy(raw_data(a.value), value, int(size))
+			}
+			return
+		}
+	}
+	append(attrs, fs.XAttr{name = strings.clone(attr_name), value = make([]u8, int(size))})
+	if size > 0 {
+		mem.copy(raw_data(attrs^[len(attrs^) - 1].value), value, int(size))
+	}
+}
+
 // fused_setxattr sets an extended attribute on a file or directory.
 fused_setxattr :: proc "c" (
 	path: cstring,
@@ -63,23 +84,7 @@ fused_setxattr :: proc "c" (
 	if .Replace in xflags && !exists {
 		return fuse3.nix(.ENODATA)
 	}
-	if exists {
-		for &a in attrs {
-			if a.name == attr_name {
-				delete(a.value)
-				a.value = make([]u8, int(size))
-				if size > 0 {
-					mem.copy(raw_data(a.value), value, int(size))
-				}
-				break
-			}
-		}
-	} else {
-		append(&attrs, fs.XAttr{name = strings.clone(attr_name), value = make([]u8, int(size))})
-		if size > 0 {
-			mem.copy(raw_data(attrs[len(attrs) - 1].value), value, int(size))
-		}
-	}
+	_xattr_upsert(&attrs, attr_name, value, size)
 
 	if serr := fs.xattr_store(&fsys.vol, &entry, attrs[:]); serr != .None {
 		return fuse3.nix(.EIO)
