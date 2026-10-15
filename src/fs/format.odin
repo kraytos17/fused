@@ -52,83 +52,80 @@ format_geometry :: proc(size, cluster_size: u64) -> Format_Geometry {
 	}
 }
 
-// format_image formats the open (empty) file fd as a fused image. The file
-// is truncated to size and written from sector 0.
-@(optimization_mode = "favor_size")
-format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
-	if terr := os.truncate(fd, i64(p.size)); terr != nil {
-		return .Sector_Write_Error
-	}
-
-	g := format_geometry(p.size, p.cluster_size)
-	total_clusters := g.total_clusters
-	cm_sectors := g.cm_sectors
-	journal_sectors := g.journal_sectors
-	reserved_clusters := g.reserved_clusters
-	root_cluster := g.root_cluster
-
+// _format_write_master builds the master record and writes sector 0.
+@(private = "file")
+_format_write_master :: proc(vol: ^Volume, p: Format_Params, g: Format_Geometry) -> FS_Error {
 	master: Master_Record
 	master.sig = FUSED_SIG
 	master.rev_min = p.rev_min
 	master.rev_max = p.rev_max
 	master.features = p.features
 	master.cluster_map_offset = 1
-	master.cluster_map_size = total_clusters
+	master.cluster_map_size = g.total_clusters
 	master.cluster_size = p.cluster_size
 	master.root_sector_index = 1
-	master.root_cluster = root_cluster
+	master.root_cluster = g.root_cluster
 	master.end_sig = END_SIG
 	// Journal region size and initial seq are part of every image; the v2
 	// WAL reads both at commit/recovery time.
-	journal_set_region_size(&master, journal_sectors)
+	journal_set_region_size(&master, g.journal_sectors)
 	journal_seq_init(&master)
 
-	vol := Volume {
-		disk = fd,
+	master_buf: [SECTOR_SIZE]u8
+	(^Master_Record)(raw_data(master_buf[:]))^ = master
+	if sector_write(vol, 0, master_buf[:]) != .None {
+		return .Sector_Write_Error
 	}
-	{
-		master_buf: [SECTOR_SIZE]u8
-		(^Master_Record)(raw_data(master_buf[:]))^ = master
-		if sector_write(&vol, 0, master_buf[:]) != .None {
-			return .Sector_Write_Error
-		}
-	}
+	return .None
+}
 
-	// Cluster map: reserved clusters + the root cluster are in use.
+// _format_write_cluster_map writes the cluster-map table: reserved clusters
+// and the root cluster are in use, everything else is free.
+@(private = "file")
+_format_write_cluster_map :: proc(vol: ^Volume, g: Format_Geometry) -> FS_Error {
 	cm_buf: [SECTOR_SIZE]u8
 	entries := (^[CLUSTER_MAP_ENTRIES_PER_SECTOR]Cluster_Map_Entry)(raw_data(cm_buf[:]))
-	for sec_idx in 0 ..< cm_sectors {
+	for sec_idx in 0 ..< g.cm_sectors {
 		cm_buf = {}
 		base := int(sec_idx) * CLUSTER_MAP_ENTRIES_PER_SECTOR
 		for ei in 0 ..< CLUSTER_MAP_ENTRIES_PER_SECTOR {
 			ci := base + ei
-			if u64(ci) >= total_clusters { break }
+			if u64(ci) >= g.total_clusters { break }
 			switch {
-			case u64(ci) < reserved_clusters:
+			case u64(ci) < g.reserved_clusters:
 				entries[ei] = {
 					flags = {.Reserved, .Full},
 				}
-			case u64(ci) == reserved_clusters:
+			case u64(ci) == g.reserved_clusters:
 				entries[ei] = {
 					flags = {.Allocated},
 				}
 			}
 		}
-		if sector_write(&vol, Sector(1 + sec_idx), cm_buf[:]) != .None {
+		if sector_write(vol, Sector(1 + sec_idx), cm_buf[:]) != .None {
 			return .Sector_Write_Error
 		}
 	}
+	return .None
+}
 
-	// Zero the journal region (right after the CME table).
+// _format_zero_journal zeroes the journal region (right after the CME table).
+@(private = "file")
+_format_zero_journal :: proc(vol: ^Volume, g: Format_Geometry) -> FS_Error {
 	zero: [SECTOR_SIZE]u8
-	for i: u64; i < journal_sectors; i += 1 {
-		if sector_write(&vol, Sector(1 + cm_sectors + i), zero[:]) != .None {
+	for i: u64; i < g.journal_sectors; i += 1 {
+		if sector_write(vol, Sector(1 + g.cm_sectors + i), zero[:]) != .None {
 			return .Sector_Write_Error
 		}
 	}
+	return .None
+}
 
-	// Root cluster: CE table with root dir entry and optional demo file.
-	root_sector := root_cluster * p.cluster_size
+// _format_write_root writes the root cluster: CE table with root dir entry
+// and optional demo file, then the root directory sector and demo content.
+@(private = "file")
+_format_write_root :: proc(vol: ^Volume, p: Format_Params, g: Format_Geometry) -> FS_Error {
+	root_sector := g.root_cluster * p.cluster_size
 	ce_buf: [SECTOR_SIZE]u8
 	ce_table := (^[CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry)(raw_data(ce_buf[:]))
 	ce_table[0] = {
@@ -149,7 +146,7 @@ format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 			sector_start    = 2,
 		}
 	}
-	if sector_write(&vol, Sector(root_sector), ce_buf[:]) != .None {
+	if sector_write(vol, Sector(root_sector), ce_buf[:]) != .None {
 		return .Sector_Write_Error
 	}
 
@@ -161,7 +158,7 @@ format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 		entry := Directory_Entry {
 			flags = {.Allocated, .Exists},
 			sector_index = 2,
-			stored_cluster = root_cluster,
+			stored_cluster = g.root_cluster,
 			year = u16(y),
 			date_time = {
 				month = u32(int(mo)),
@@ -184,24 +181,44 @@ format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 		copy(entry.file_name[:], "Kernel")
 		(^Directory_Entry)(raw_data(dir_buf[:]))^ = entry
 	}
-	if sector_write(&vol, Sector(root_sector + 1), dir_buf[:]) != .None {
+	if sector_write(vol, Sector(root_sector + 1), dir_buf[:]) != .None {
 		return .Sector_Write_Error
 	}
 	if len(p.demo_data) > 0 {
 		content_buf: [SECTOR_SIZE]u8
 		copy(content_buf[:], p.demo_data)
-		if sector_write(&vol, Sector(root_sector + 2), content_buf[:]) != .None {
+		if sector_write(vol, Sector(root_sector + 2), content_buf[:]) != .None {
 			return .Sector_Write_Error
 		}
 	}
+	return .None
+}
+
+// format_image formats the open (empty) file fd as a fused image. The file
+// is truncated to size and written from sector 0.
+@(optimization_mode = "favor_size")
+format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
+	if terr := os.truncate(fd, i64(p.size)); terr != nil {
+		return .Sector_Write_Error
+	}
+
+	g := format_geometry(p.size, p.cluster_size)
+
+	vol := Volume {
+		disk = fd,
+	}
+	_format_write_master(&vol, p, g) or_return
+	_format_write_cluster_map(&vol, g) or_return
+	_format_zero_journal(&vol, g) or_return
+	_format_write_root(&vol, p, g) or_return
 
 	log.debugf(
 		"format: size=%d cluster_size=%d clusters=%d reserved=%d root=%d",
 		p.size,
 		p.cluster_size,
-		total_clusters,
-		reserved_clusters,
-		root_cluster,
+		g.total_clusters,
+		g.reserved_clusters,
+		g.root_cluster,
 	)
 	return .None
 }
