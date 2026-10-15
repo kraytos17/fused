@@ -436,6 +436,7 @@ test_mount_fs_error_to_errno :: proc(t: ^testing.T) {
 		{fs.FS_Error.None, c.int(0)},
 		{fs.FS_Error.Entry_Not_Found, c.int(-int(posix.ENOENT))},
 		{fs.FS_Error.Not_A_Directory, c.int(-int(posix.ENOTDIR))},
+		{fs.FS_Error.Not_A_File, c.int(-int(posix.EISDIR))},
 		{fs.FS_Error.Name_Too_Long, c.int(-int(posix.ENAMETOOLONG))},
 		{fs.FS_Error.No_Space, c.int(-int(posix.ENOSPC))},
 		{fs.FS_Error.Sector_Read_Error, c.int(-int(posix.EIO))},
