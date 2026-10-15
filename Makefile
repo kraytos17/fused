@@ -25,7 +25,7 @@ FULL_BUILD    := -debug -o:none -warnings-as-errors \
                  -no-threaded-checker \
                  -thread-count:$(THREAD_COUNT)
 TEST_FLAGS    := $(BASE_DEBUG) -define:ODIN_TEST_THREADS=1 -define:ODIN_MOUNTER_TEST=true
-VET_FLAGS     := -vet -vet-shadowing -strict-style
+VET_FLAGS     := -vet -vet-shadowing -strict-style -vet-tabs -disallow-do
 SHOW_TIMINGS  := $(or $(SHOW_TIMINGS),)
 TIMING_FLAG   := $(if $(SHOW_TIMINGS),-show-timings,)
 ODIN_VERSION  := $(shell $(ODIN) version 2>&1 | head -1)
