@@ -348,6 +348,63 @@ zero_file_range :: proc(
 	return .None
 }
 
+// _fallocate_punch_hole zeroes span without changing the chain or size.
+// Self-contained: entry writeback and cache invalidation included.
+@(private = "file")
+_fallocate_punch_hole :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, fh: u64, loc: fs.Chain_Location, span: Byte_Range) -> c.int {
+	zerr := zero_file_range(fsys, entry, loc, span)
+	if zerr != .None {
+		return fs_error_to_errno(zerr)
+	}
+	// Update file_size if needed (PUNCH_HOLE implies KEEP_SIZE)
+	if werr := write_entry_at(fsys, fh_parts(fh), entry); werr != .None {
+		return fs_error_to_errno(werr)
+	}
+
+	path_cache_invalidate_all(fsys)
+	return 0
+}
+
+// _fallocate_grow ensures the chain covers span, zeroes the extended gap,
+// and grows file_size unless KEEP_SIZE. Entry writeback is included;
+// cache invalidation and logging stay with the caller.
+@(private = "file")
+_fallocate_grow :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, fh: u64, loc: fs.Chain_Location, span: Byte_Range, fmode: fuse3.Falloc_Flags) -> c.int {
+	total_sectors, sok := _span_sectors(span.start, byte_range_len(span))
+	if !sok {
+		return fuse3.nix(.EOVERFLOW)
+	}
+
+	new_cluster, new_offset, _, extended, cerr := ensure_chain_covers(fsys, entry, loc, total_sectors)
+	if cerr != .None {
+		if cerr == .No_Space {
+			return fuse3.nix(.ENOSPC)
+		}
+		return fuse3.nix(.ENOENT)
+	}
+	if extended {
+		zero_start := u64(entry.file_size)
+		zero_end := max(span.end, zero_start)
+		if zero_end > zero_start {
+			zerr := zero_file_range(fsys, entry, {new_cluster, new_offset}, Byte_Range{zero_start, zero_end})
+			if zerr != .None {
+				return fs_error_to_errno(zerr)
+			}
+		}
+	}
+	if .Keep_Size not_in fmode {
+		new_size := max(u64(entry.file_size), span.end)
+		if new_size != u64(entry.file_size) {
+			set_entry_time_to_now(entry)
+			entry.file_size = new_size
+		}
+	}
+	if werr := write_entry_at(fsys, fh_parts(fh), entry); werr != .None {
+		return fs_error_to_errno(werr)
+	}
+	return 0
+}
+
 // fused_fallocate pre-allocates space for a file (supports PUNCH_HOLE and
 // KEEP_SIZE).
 fused_fallocate :: proc "c" (
@@ -387,58 +444,12 @@ fused_fallocate :: proc "c" (
 		return fuse3.nix(.EOVERFLOW)
 	}
 	span := Byte_Range{span_start, span_end}
+	loc := fs.Chain_Location{data_cluster, data_offset}
 	if .Punch_Hole in fmode {
-		zerr := zero_file_range(fsys, &entry, fs.Chain_Location{data_cluster, data_offset}, span)
-		if zerr != .None {
-			return fs_error_to_errno(zerr)
-		}
-		// Update file_size if needed (PUNCH_HOLE implies KEEP_SIZE)
-		if werr := write_entry_at(fsys, fh_parts(fi.fh), &entry); werr != .None {
-			return fs_error_to_errno(werr)
-		}
-
-		path_cache_invalidate_all(fsys)
-		return 0
+		return _fallocate_punch_hole(fsys, &entry, fi.fh, loc, span)
 	}
-
-	total_sectors, sok := _span_sectors(span.start, byte_range_len(span))
-	if !sok {
-		return fuse3.nix(.EOVERFLOW)
-	}
-
-	extended: bool
-	cerr: fs.FS_Error
-	data_cluster, data_offset, _, extended, cerr = ensure_chain_covers(
-		fsys,
-		&entry,
-		fs.Chain_Location{data_cluster, data_offset},
-		total_sectors,
-	)
-	if cerr != .None {
-		if cerr == .No_Space {
-			return fuse3.nix(.ENOSPC)
-		}
-		return fuse3.nix(.ENOENT)
-	}
-	if extended {
-		zero_start := u64(entry.file_size)
-		zero_end := max(span.end, zero_start)
-		if zero_end > zero_start {
-			zerr := zero_file_range(fsys, &entry, fs.Chain_Location{data_cluster, data_offset}, Byte_Range{zero_start, zero_end})
-			if zerr != .None {
-				return fs_error_to_errno(zerr)
-			}
-		}
-	}
-	if .Keep_Size not_in fmode {
-		new_size := max(u64(entry.file_size), span.end)
-		if new_size != u64(entry.file_size) {
-			set_entry_time_to_now(&entry)
-			entry.file_size = new_size
-		}
-	}
-	if werr := write_entry_at(fsys, fh_parts(fi.fh), &entry); werr != .None {
-		return fs_error_to_errno(werr)
+	if gerr := _fallocate_grow(fsys, &entry, fi.fh, loc, span, fmode); gerr != 0 {
+		return gerr
 	}
 
 	path_cache_invalidate_all(fsys)
