@@ -97,6 +97,67 @@ fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Inf
 	return 0
 }
 
+// _readdir_fill emits "." / ".." and every snapshot entry through filler.
+// FUSE resume cookies: "." is 1, ".." is 2, entries are 3+position. The
+// kernel re-requests with off set to the last consumed cookie when a listing
+// overflows its buffer; items with cookie <= off are skipped. LFN names go
+// through lfn_lookup_shared under the read lock (it upgrades to exclusive
+// internally on a miss); short names come straight from the snapshot, and
+// the borrowed LFN string is copied to temp before unlocking, so fill_dir
+// below runs lock-free without stalling writers. Returns the emitted entry
+// count and filler's stop code (nonzero when the kernel buffer is full —
+// not an error).
+@(private = "file")
+_readdir_fill :: proc(fsys: ^FS, snapshot: [dynamic]fs.Indexed_Entry, dir: fs.Chain_Location, buf: rawptr, filler: fuse3.Fill_Dir_Proc, off: posix.off_t) -> (count: int, rc: c.int) {
+	if off <= 0 {
+		if stop := fuse3.fill_dir(filler, buf, ".", nil, 1); stop != 0 {
+			return count, stop
+		}
+	}
+	if off <= 1 {
+		if stop := fuse3.fill_dir(filler, buf, "..", nil, 2); stop != 0 {
+			return count, stop
+		}
+	}
+
+	for w, pos in snapshot {
+		cookie := posix.off_t(pos + 3)
+		if cookie <= off { continue }
+		ent := w.entry
+		name := fs.entry_short_name(&ent)
+		if .LFN in ent.flags {
+			// Look up under the read lock; the helper upgrades to
+			// exclusive internally on a miss. The borrowed string is
+			// copied to temp before unlocking so fill_dir below runs
+			// lock-free without stalling writers.
+			cache_k := lfn_cache_key(dir, w.index)
+			sync.rw_mutex_shared_lock(&fsys.mu)
+			lfn, l_ok := lfn_lookup_shared(fsys, cache_k, &fsys.vol, &ent)
+			lfn_cstr: cstring
+			if l_ok {
+				lfn_cstr, _ = strings.clone_to_cstring(lfn, context.temp_allocator)
+			}
+
+			sync.rw_mutex_shared_unlock(&fsys.mu)
+			if l_ok {
+				if stop := fuse3.fill_dir(filler, buf, lfn_cstr, nil, cookie); stop != 0 {
+					return count, stop
+				}
+			}
+
+			count += 1
+			continue
+		}
+
+		name_cstr := strings.clone_to_cstring(name, context.temp_allocator) or_continue
+		if stop := fuse3.fill_dir(filler, buf, name_cstr, nil, cookie); stop != 0 {
+			return count, stop
+		}
+		count += 1
+	}
+	return count, 0
+}
+
 // fused_readdir fills a directory listing using the FUSE filler callback.
 fused_readdir :: proc "c" (
 	path: cstring,
@@ -128,69 +189,22 @@ fused_readdir :: proc "c" (
 		return fuse3.nix(.ENOENT)
 	}
 
-	dir_cluster := fs.Cluster(entry.stored_cluster)
-	dir_offset := fs.Sector_Offset(entry.sector_index)
+	dir := fs.Chain_Location{fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index)}
 	// Snapshot the listing while holding the write lock: the array is an
 	// owned heap clone, safe to consume after unlock. On a warm dir cache
 	// the fill below becomes pure memory scans — no sector I/O, no walk.
-	snapshot, serr := fs.read_directory_entries(&fsys.vol, dir_cluster, dir_offset)
+	snapshot, serr := fs.read_directory_entries(&fsys.vol, dir.cluster, dir.offset)
 	sync.rw_mutex_unlock(&fsys.mu)
 	if serr != .None {
 		log.debugf("readdir: %s → entries failed", path)
 		return fs_error_to_errno(serr)
 	}
 	defer delete(snapshot)
-	// FUSE resume cookies: "." is 1, ".." is 2, entries are 3+position.
-	// The kernel re-requests with off set to the last consumed cookie when
-	// a listing overflows its buffer; items with cookie <= off are skipped.
-	if off <= 0 {
-		if rc := fuse3.fill_dir(filler, buf, ".", nil, 1); rc != 0 {
-			return rc
-		}
+	count, rc := _readdir_fill(fsys, snapshot, dir, buf, filler, off)
+	if rc != 0 {
+		return rc
 	}
-	if off <= 1 {
-		if rc := fuse3.fill_dir(filler, buf, "..", nil, 2); rc != 0 {
-			return rc
-		}
-	}
-
-	e := 0
-	for w, pos in snapshot {
-		cookie := posix.off_t(pos + 3)
-		if cookie <= off { continue }
-		ent := w.entry
-		name := fs.entry_short_name(&ent)
-		if .LFN in ent.flags {
-			// Look up under the read lock; the helper upgrades to
-			// exclusive internally on a miss. The borrowed string is
-			// copied to temp before unlocking so fill_dir below runs
-			// lock-free without stalling writers.
-			cache_k := lfn_cache_key(fs.Chain_Location{dir_cluster, dir_offset}, w.index)
-			sync.rw_mutex_shared_lock(&fsys.mu)
-			lfn, l_ok := lfn_lookup_shared(fsys, cache_k, &fsys.vol, &ent)
-			lfn_cstr: cstring
-			if l_ok {
-				lfn_cstr, _ = strings.clone_to_cstring(lfn, context.temp_allocator)
-			}
-
-			sync.rw_mutex_shared_unlock(&fsys.mu)
-			if l_ok {
-				if rc := fuse3.fill_dir(filler, buf, lfn_cstr, nil, cookie); rc != 0 {
-					return rc
-				}
-			}
-
-			e += 1
-			continue
-		}
-
-		name_cstr := strings.clone_to_cstring(name, context.temp_allocator) or_continue
-		if rc := fuse3.fill_dir(filler, buf, name_cstr, nil, cookie); rc != 0 {
-			return rc
-		}
-		e += 1
-	}
-	log.debugf("readdir: %s → ok %d entries", path, e)
+	log.debugf("readdir: %s → ok %d entries", path, count)
 	return 0
 }
 
