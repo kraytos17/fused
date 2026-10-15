@@ -108,7 +108,17 @@ fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Inf
 // count and filler's stop code (nonzero when the kernel buffer is full —
 // not an error).
 @(private = "file")
-_readdir_fill :: proc(fsys: ^FS, snapshot: []fs.Indexed_Entry, dir: fs.Chain_Location, buf: rawptr, filler: fuse3.Fill_Dir_Proc, off: posix.off_t) -> (count: int, rc: c.int) {
+_readdir_fill :: proc(
+	fsys: ^FS,
+	snapshot: []fs.Indexed_Entry,
+	dir: fs.Chain_Location,
+	buf: rawptr,
+	filler: fuse3.Fill_Dir_Proc,
+	off: posix.off_t,
+) -> (
+	count: int,
+	rc: c.int,
+) {
 	if off <= 0 {
 		if stop := fuse3.fill_dir(filler, buf, ".", nil, 1); stop != 0 {
 			return count, stop
@@ -189,7 +199,10 @@ fused_readdir :: proc "c" (
 		return fuse3.nix(.ENOENT)
 	}
 
-	dir := fs.Chain_Location{fs.Cluster(entry.stored_cluster), fs.Sector_Offset(entry.sector_index)}
+	dir := fs.Chain_Location {
+		fs.Cluster(entry.stored_cluster),
+		fs.Sector_Offset(entry.sector_index),
+	}
 	// Snapshot the listing while holding the write lock: the array is an
 	// owned heap clone, safe to consume after unlock. On a warm dir cache
 	// the fill below becomes pure memory scans — no sector I/O, no walk.
@@ -199,11 +212,13 @@ fused_readdir :: proc "c" (
 		log.debugf("readdir: %s → entries failed", path)
 		return fs_error_to_errno(serr)
 	}
+
 	defer delete(snapshot)
 	count, rc := _readdir_fill(fsys, snapshot[:], dir, buf, filler, off)
 	if rc != 0 {
 		return rc
 	}
+
 	log.debugf("readdir: %s → ok %d entries", path, count)
 	return 0
 }
@@ -229,7 +244,7 @@ fused_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 		return fuse3.nix(.EISDIR)
 	}
 
-	open_flags := transmute(posix.O_Flags)(fi.flags) // TRANSMUTE: ABI word bit-view as flag set
+	open_flags := transmute(posix.O_Flags)(fi.flags)
 	wants_write := .WRONLY in open_flags || .RDWR in open_flags
 	if wants_write && (.No_Write in entry.flags || .Read_Only in entry.flags) {
 		return fuse3.nix(.EACCES)
@@ -294,8 +309,6 @@ fused_read :: proc "c" (
 		bytes_read,
 		time.since(read_start),
 	)
-	// Saturate: bytes_read cannot exceed the requested size, but the u64 →
-	// c.int narrowing must be total on 64-bit.
 	return c.int(min(bytes_read, u64(max(c.int))))
 }
 
@@ -329,12 +342,7 @@ fused_read_buf :: proc "c" (
 		return fuse3.nix(.ENOENT)
 	}
 
-	slices, total_provided := collect_read_slices(
-		runs,
-		uoff,
-		u64(size),
-		context.temp_allocator,
-	)
+	slices, total_provided := collect_read_slices(runs, uoff, u64(size), context.temp_allocator)
 
 	defer delete(slices)
 	if len(slices) == 0 {
@@ -371,8 +379,6 @@ fused_read_buf :: proc "c" (
 		buf_count,
 		time.since(read_start),
 	)
-	// Saturate the u64 → c.int narrowing (total_provided ≤ requested size,
-	// but the conversion must be total regardless).
 	return c.int(min(total_provided, u64(max(c.int))))
 }
 
@@ -394,10 +400,7 @@ fused_readlink :: proc "c" (path: cstring, buf: [^]c.char, size: c.size_t) -> c.
 		return fuse3.nix(.EIO)
 	}
 
-	runs, xerr := resolve_extents_cached(
-		fsys,
-		fs.data_chain_of(entry),
-	)
+	runs, xerr := resolve_extents_cached(fsys, fs.data_chain_of(entry))
 	if xerr != .None {
 		return fuse3.nix(.EIO)
 	}

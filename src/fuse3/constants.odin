@@ -44,7 +44,6 @@ Xattr_Flag :: enum c.int {
 
 Xattr_Flags :: bit_set[Xattr_Flag;c.int]
 
-
 // Seek_Whence restricts lseek to the supported hole/data modes (SEEK_* from
 // <fcntl.h>). Converted from the c.int ABI word at the fused_lseek boundary;
 // anything else is ENOSYS (closed world).

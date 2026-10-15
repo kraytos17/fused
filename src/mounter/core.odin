@@ -105,6 +105,7 @@ get_fs :: #force_inline proc "contextless" () -> ^FS {
 begin_op :: proc() -> ^FS {
 	fsys := get_fs()
 	free_all(context.temp_allocator)
+
 	context.logger = fsys.logger
 	sync.rw_mutex_lock(&fsys.mu)
 	return fsys
@@ -128,6 +129,7 @@ end_op :: proc(fsys: ^FS) {
 begin_read_op :: proc() -> ^FS {
 	fsys := get_fs()
 	free_all(context.temp_allocator)
+
 	context.logger = fsys.logger
 	sync.rw_mutex_shared_lock(&fsys.mu)
 	return fsys
@@ -250,7 +252,7 @@ _set_time_fields_now :: proc(year: ^u16, dt: ^fs.Packed_Date_Time) {
 // entry it refers to.
 @(require_results)
 fh_parts :: proc "contextless" (fh: u64) -> (id: fs.File_Identity) {
-	f := transmute(fs.File_Handle)(fh) // TRANSMUTE: u64 unpack into bit_field File_Handle
+	f := transmute(fs.File_Handle)(fh)
 	return fs.File_Identity {
 		fs.Cluster(f.dir_cluster),
 		fs.Sector_Offset(f.dir_offset),
@@ -263,7 +265,7 @@ fh_parts :: proc "contextless" (fh: u64) -> (id: fs.File_Identity) {
 // the pack transmute has a single home beside its unpack twin.
 @(require_results)
 fh_pack :: proc "contextless" (id: fs.File_Identity) -> u64 {
-	return transmute(u64)fs.make_file_handle(id.dir_cluster, id.dir_offset, id.entry_index) // TRANSMUTE: bit_field File_Handle pack into u64 fh
+	return transmute(u64)fs.make_file_handle(id.dir_cluster, id.dir_offset, id.entry_index)
 }
 
 // Mutate_Request bundles the inputs to mutate_entry_at: the target path,
@@ -408,8 +410,6 @@ lfn_lookup_shared :: proc(
 
 	lfn, l_ok := fs.resolve_lfn(vol, entry, context.temp_allocator)
 	if l_ok {
-		// Explicit fsys.allocator: cache-owned; freed in
-		// lfn_cache_on_remove with the same allocator.
 		c, _ := strings.clone(lfn, fsys.allocator)
 		if c != "" {
 			if lru.set(&fsys.lfn_cache, key, c) != nil {
@@ -530,7 +530,6 @@ init_fs_for_test :: proc(
 	if fi, err := os.fstat(vol.disk, context.temp_allocator); err == nil {
 		fsys.vol.image_size = fs.Byte_Offset(u64(fi.size))
 	}
-
 	init_fs_state(fsys, allocator, cache)
 }
 
@@ -572,8 +571,6 @@ destroy_fs_for_test :: proc(fsys: ^FS) {
 
 	delete(fsys.locks)
 	delete(fsys.flock_locks)
-	// Run on_remove so cached key/value strings (owned via fsys.allocator)
-	// are freed with the same allocator instead of leaking.
 	lru.destroy(&fsys.path_cache, true)
 	lru.destroy(&fsys.lfn_cache, true)
 	fsys^ = {}
@@ -599,12 +596,9 @@ resolve_extents_cached :: proc(
 	}
 
 	r := fs.resolve_extents(&fsys.vol, loc) or_return
-
-	// Explicit fsys.allocator: `context` does not propagate upward to
-	// callers, so the op frame's allocator is NOT visible here. Cache-owned
-	// slices must name their allocator to pair with teardown frees.
 	slice_copy, _ := slice.clone(r[:], fsys.allocator)
 	delete(r)
+
 	fsys.extents[key] = slice_copy
 	return slice_copy, .None
 }
@@ -646,7 +640,6 @@ resolve_extents_shared :: proc(
 		return nil, rerr
 	}
 
-	// Explicit fsys.allocator: see resolve_extents_cached.
 	slice_copy, _ := slice.clone(r[:], fsys.allocator)
 	delete(r)
 

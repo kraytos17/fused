@@ -16,29 +16,32 @@ fused_utimens :: proc "c" (path: cstring, tv: [^]posix.timespec, fi: ^fuse3.File
 	fsys := begin_op()
 	context.logger = fsys.logger
 	defer end_op(fsys)
-	return mutate_entry_at(fsys, Mutate_Request{path, fi, proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool {
-			tv := ([^]posix.timespec)(user)
-			if tv == nil {
-				set_entry_time_to_now(entry)
-			} else {
-				nsec1 := int(tv[1].tv_nsec)
-				if nsec1 == UTIME_OMIT {
-				} else if nsec1 == UTIME_NOW {
-					set_entry_mtime_to_now(entry)
+	return mutate_entry_at(
+		fsys,
+		Mutate_Request{path, fi, proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool {
+				tv := ([^]posix.timespec)(user)
+				if tv == nil {
+					set_entry_time_to_now(entry)
 				} else {
-					set_entry_mtime_from_unix(entry, i64(tv[1].tv_sec))
-				}
+					nsec1 := int(tv[1].tv_nsec)
+					if nsec1 == UTIME_OMIT {
+					} else if nsec1 == UTIME_NOW {
+						set_entry_mtime_to_now(entry)
+					} else {
+						set_entry_mtime_from_unix(entry, i64(tv[1].tv_sec))
+					}
 
-				nsec0 := int(tv[0].tv_nsec)
-				if nsec0 == UTIME_OMIT {
-				} else if nsec0 == UTIME_NOW {
-					set_entry_atime_to_now(entry)
-				} else {
-					set_entry_atime_from_unix(entry, i64(tv[0].tv_sec))
+					nsec0 := int(tv[0].tv_nsec)
+					if nsec0 == UTIME_OMIT {
+					} else if nsec0 == UTIME_NOW {
+						set_entry_atime_to_now(entry)
+					} else {
+						set_entry_atime_from_unix(entry, i64(tv[0].tv_sec))
+					}
 				}
-			}
-			return true
-		}, rawptr(tv), false})
+				return true
+			}, rawptr(tv), false},
+	)
 }
 
 // fused_access checks file access permissions.
@@ -53,7 +56,7 @@ fused_access :: proc "c" (path: cstring, mask: c.int) -> c.int {
 		return fs_error_to_errno(rerr)
 	}
 
-	m := transmute(posix.Mode_Flags)(mask) // TRANSMUTE: c.int ABI word bit-view as flag set
+	m := transmute(posix.Mode_Flags)(mask)
 	if (posix.Mode_Flag_Bits.R_OK in m) && .No_Read in entry.flags {
 		return fuse3.nix(.EACCES)
 	}
@@ -86,20 +89,23 @@ fused_chmod :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Info
 		mode = mode,
 	}
 
-	rc := mutate_entry_at(fsys, Mutate_Request{path, fi, proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool {
-			m := (^Chmod_Ctx)(user).mode
-			mr := posix.mode_t{.IRUSR, .IRGRP, .IROTH} & m
-			has_read := mr != {}
-			mw := posix.mode_t{.IWUSR, .IWGRP, .IWOTH} & m
-			has_write := mw != {}
-			mx := posix.mode_t{.IXUSR, .IXGRP, .IXOTH} & m
-			has_exec := mx != {}
+	rc := mutate_entry_at(
+		fsys,
+		Mutate_Request{path, fi, proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool {
+				m := (^Chmod_Ctx)(user).mode
+				mr := posix.mode_t{.IRUSR, .IRGRP, .IROTH} & m
+				has_read := mr != {}
+				mw := posix.mode_t{.IWUSR, .IWGRP, .IWOTH} & m
+				has_write := mw != {}
+				mx := posix.mode_t{.IXUSR, .IXGRP, .IXOTH} & m
+				has_exec := mx != {}
 
-			if has_read { entry.flags -= {.No_Read} } else { entry.flags += {.No_Read} }
-			if has_write { entry.flags -= {.No_Write, .Read_Only} } else { entry.flags += {.No_Write, .Read_Only} }
-			if has_exec { entry.flags -= {.No_Execute} } else { entry.flags += {.No_Execute} }
-			return true
-		}, &ctx, true})
+				if has_read { entry.flags -= {.No_Read} } else { entry.flags += {.No_Read} }
+				if has_write { entry.flags -= {.No_Write, .Read_Only} } else { entry.flags += {.No_Write, .Read_Only} }
+				if has_exec { entry.flags -= {.No_Execute} } else { entry.flags += {.No_Execute} }
+				return true
+			}, &ctx, true},
+	)
 	if rc == 0 {
 		log.debugf("chmod: %s → mode=%v", path, mode)
 	}
@@ -128,14 +134,17 @@ fused_chown :: proc "c" (
 		gid = gid,
 	}
 
-	rc := mutate_entry_at(fsys, Mutate_Request{path, fi, proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool {
-			c := (^Chown_Ctx)(user)
-			uid_t_max :: posix.uid_t(0xFFFFFFFF)
-			gid_t_max :: posix.gid_t(0xFFFFFFFF)
-			if c.uid != uid_t_max { entry.uid = u32(c.uid) }
-			if c.gid != gid_t_max { entry.gid = u32(c.gid) }
-			return true
-		}, &ctx, true})
+	rc := mutate_entry_at(
+		fsys,
+		Mutate_Request{path, fi, proc(entry: ^fs.Directory_Entry, user: rawptr) -> bool {
+				c := (^Chown_Ctx)(user)
+				uid_t_max :: posix.uid_t(0xFFFFFFFF)
+				gid_t_max :: posix.gid_t(0xFFFFFFFF)
+				if c.uid != uid_t_max { entry.uid = u32(c.uid) }
+				if c.gid != gid_t_max { entry.gid = u32(c.gid) }
+				return true
+			}, &ctx, true},
+	)
 	if rc == 0 {
 		log.debugf("chown: %s → uid=%d gid=%d", path, uid, gid)
 	}

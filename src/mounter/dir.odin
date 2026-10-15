@@ -35,7 +35,11 @@ Check_Name_Ctx :: struct {
 
 // write_entry_at writes a Directory_Entry back to its location on disk,
 // propagating the underlying error instead of collapsing it to bool.
-write_entry_at :: proc(fsys: ^FS, loc: fs.File_Identity, entry: ^fs.Directory_Entry) -> fs.FS_Error {
+write_entry_at :: proc(
+	fsys: ^FS,
+	loc: fs.File_Identity,
+	entry: ^fs.Directory_Entry,
+) -> fs.FS_Error {
 	return fs.write_entry_at_index(&fsys.vol, loc, entry)
 }
 
@@ -110,18 +114,12 @@ find_or_extend_dir :: proc(
 	// Cached resolve: counting only needs the slice read-only, and the
 	// caller holds the write lock, so the borrowed slice is valid here.
 	current_runs := resolve_extents_cached(fsys, dir) or_return
-
 	current_count: u64
 	for r in current_runs {
 		current_count += u64(r.count)
 	}
 
-	_, _, ext_err := fs.allocate_sectors(
-		&fsys.vol,
-		dir,
-		current_count + 1,
-		.Directory,
-	)
+	_, _, ext_err := fs.allocate_sectors(&fsys.vol, dir, current_count + 1, .Directory)
 	if ext_err != .None {
 		return {}, ext_err
 	}
@@ -130,7 +128,6 @@ find_or_extend_dir :: proc(
 	// re-resolving, or the lookup below would hit the pre-extend chain and
 	// name a slot in the wrong sector.
 	extent_cache_invalidate(fsys, dir.cluster, dir.offset)
-
 	fsys.free_sectors -= 1
 	dir_runs := resolve_extents_cached(fsys, dir) or_return
 
@@ -145,6 +142,7 @@ find_or_extend_dir :: proc(
 	if fs.sector_write(&fsys.vol, last_sec, zero[:]) != .None {
 		return {}, .Sector_Write_Error
 	}
+
 	dlc := u64(last_sec) / fsys.vol.master.cluster_size
 	return fs.File_Identity {
 			fs.Cluster(dlc),
@@ -155,11 +153,7 @@ find_or_extend_dir :: proc(
 }
 
 // check_name_exists checks whether a name already exists in the directory.
-check_name_exists :: proc(
-	fsys: ^FS,
-	dir: fs.Chain_Location,
-	name: string,
-) -> bool {
+check_name_exists :: proc(fsys: ^FS, dir: fs.Chain_Location, name: string) -> bool {
 	depc := dir_entries_per_buf(fsys.vol.master.features)
 	visit := proc(sec: fs.Sector, user: rawptr) -> bool {
 		ctx := (^Check_Name_Ctx)(user)

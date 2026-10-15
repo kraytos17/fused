@@ -96,5 +96,5 @@ log_format_opts :: proc(fmt: Log_Format) -> log.Options {
 	case .Full:
 		return log.Default_Console_Logger_Opts + {.Thread_Id}
 	}
-	unreachable() // Log_Format is closed; the switch is exhaustive.
+	unreachable()
 }

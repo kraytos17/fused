@@ -14,7 +14,12 @@ import "src:fuse3"
 // The caller has already enforced Create/Replace preconditions and owns
 // attrs (loaded by xattr_load, freed by the caller's deferred destroy).
 @(private = "file")
-_xattr_upsert :: proc(attrs: ^[dynamic]fs.XAttr, attr_name: string, value: [^]c.char, size: c.size_t) {
+_xattr_upsert :: proc(
+	attrs: ^[dynamic]fs.XAttr,
+	attr_name: string,
+	value: [^]c.char,
+	size: c.size_t,
+) {
 	for &a in attrs^ {
 		if a.name == attr_name {
 			delete(a.value)
@@ -25,6 +30,7 @@ _xattr_upsert :: proc(attrs: ^[dynamic]fs.XAttr, attr_name: string, value: [^]c.
 			return
 		}
 	}
+
 	append(attrs, fs.XAttr{name = strings.clone(attr_name), value = make([]u8, int(size))})
 	if size > 0 {
 		mem.copy(raw_data(attrs^[len(attrs^) - 1].value), value, int(size))
@@ -77,22 +83,25 @@ fused_setxattr :: proc "c" (
 		}
 	}
 	// Parse the ABI word once; downstream switches on set membership.
-	xflags := transmute(fuse3.Xattr_Flags)(flags) // TRANSMUTE: c.int ABI word bit-view as flag set
+	xflags := transmute(fuse3.Xattr_Flags)(flags)
 	if .Create in xflags && exists {
 		return fuse3.nix(.EEXIST)
 	}
 	if .Replace in xflags && !exists {
 		return fuse3.nix(.ENODATA)
 	}
-	_xattr_upsert(&attrs, attr_name, value, size)
 
+	_xattr_upsert(&attrs, attr_name, value, size)
 	if serr := fs.xattr_store(&fsys.vol, &entry, attrs[:]); serr != .None {
 		return fuse3.nix(.EIO)
 	}
 
 	reinit_free_sectors(fsys)
-	if werr := write_entry_at(fsys, fs.File_Identity{entry_cluster, entry_offset, entry_idx}, &entry);
-	   werr != .None {
+	if werr := write_entry_at(
+		fsys,
+		fs.File_Identity{entry_cluster, entry_offset, entry_idx},
+		&entry,
+	); werr != .None {
 		return fs_error_to_errno(werr)
 	}
 
@@ -210,8 +219,11 @@ fused_removexattr :: proc "c" (path: cstring, name: cstring) -> c.int {
 	}
 
 	reinit_free_sectors(fsys)
-	if werr := write_entry_at(fsys, fs.File_Identity{entry_cluster, entry_offset, entry_idx}, &entry);
-	   werr != .None {
+	if werr := write_entry_at(
+		fsys,
+		fs.File_Identity{entry_cluster, entry_offset, entry_idx},
+		&entry,
+	); werr != .None {
 		return fs_error_to_errno(werr)
 	}
 

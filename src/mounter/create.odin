@@ -315,7 +315,9 @@ fused_rmdir :: proc "c" (path: cstring) -> c.int {
 	)
 
 	defer delete(dirs)
-	if dir_err != .None {  }
+	if dir_err != .None {
+		// Deliberately ignored: an unreadable listing scans as empty below.
+	}
 	for &w in dirs {
 		if .Exists in w.entry.flags {
 			log.debugf("rmdir: %s → ENOTEMPTY", path)
@@ -340,7 +342,7 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	defer end_op(fsys)
 
 	// Parse the ABI word once; downstream switches on set membership.
-	rflags := transmute(fuse3.Rename_Flags)(flags) // TRANSMUTE: c.uint ABI word bit-view as flag set
+	rflags := transmute(fuse3.Rename_Flags)(flags)
 	if .No_Replace in rflags {
 		log.debugf("rename: RENAME_NOREPLACE not supported")
 		return fuse3.nix(.ENOSYS)
@@ -399,8 +401,11 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 		if nerr := set_entry_name(fsys, &entry, new_name); nerr != .None {
 			return fs_error_to_errno(nerr)
 		}
-		if werr := write_entry_at(fsys, fs.File_Identity{old_cluster, old_offset, old_idx}, &entry);
-		   werr != .None {
+		if werr := write_entry_at(
+			fsys,
+			fs.File_Identity{old_cluster, old_offset, old_idx},
+			&entry,
+		); werr != .None {
 			return fs_error_to_errno(werr)
 		}
 
@@ -471,7 +476,8 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	if nerr := set_entry_name(fsys, &entry, new_name); nerr != .None {
 		return fs_error_to_errno(nerr)
 	}
-	if write_entry_at(fsys, fs.File_Identity{dst_cluster, dst_sec, dst_slot_idx}, &entry) != .None {
+	if write_entry_at(fsys, fs.File_Identity{dst_cluster, dst_sec, dst_slot_idx}, &entry) !=
+	   .None {
 		return fuse3.nix(.EIO)
 	}
 

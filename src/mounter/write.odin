@@ -138,8 +138,6 @@ write_finish :: proc(
 	}
 
 	path_cache_invalidate_all(fsys)
-	// Saturate the u64 → c.int narrowing (bytes_written ≤ requested size,
-	// but the conversion must be total regardless).
 	return c.int(min(bytes_written, u64(max(c.int))))
 }
 
@@ -183,7 +181,6 @@ fused_write_buf :: proc "c" (
 	}
 
 	bufs, total_size, size_ok := _bufvec_parts(buf)
-
 	total_sectors, sok := _span_sectors(uoff, total_size)
 	if !size_ok || !sok {
 		return fuse3.nix(.EOVERFLOW)
@@ -254,6 +251,7 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 	if !sok {
 		return fuse3.nix(.EINVAL)
 	}
+
 	entry, entry_cluster, entry_offset, entry_idx, data_cluster, data_offset, rerr :=
 		resolve_entry(fsys, path, fi)
 	if rerr != .None {
@@ -283,7 +281,8 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 
 	current_sectors := fs.chain_sector_count(runs)
 	if new_sectors < current_sectors {
-		if terr := fs.truncate_chain_at(&fsys.vol, fs.data_chain_of(entry), new_sectors); terr != .None {
+		if terr := fs.truncate_chain_at(&fsys.vol, fs.data_chain_of(entry), new_sectors);
+		   terr != .None {
 			return fs_error_to_errno(terr)
 		}
 		fsys.free_sectors += current_sectors - new_sectors
@@ -291,8 +290,11 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 
 	set_entry_time_to_now(&entry)
 	entry.file_size = usize
-	if werr := write_entry_at(fsys, fs.File_Identity{entry_cluster, entry_offset, entry_idx}, &entry);
-	   werr != .None {
+	if werr := write_entry_at(
+		fsys,
+		fs.File_Identity{entry_cluster, entry_offset, entry_idx},
+		&entry,
+	); werr != .None {
 		return fs_error_to_errno(werr)
 	}
 
@@ -356,7 +358,13 @@ zero_file_range :: proc(
 // _fallocate_punch_hole zeroes span without changing the chain or size.
 // Self-contained: entry writeback and cache invalidation included.
 @(private = "file")
-_fallocate_punch_hole :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, fh: u64, loc: fs.Chain_Location, span: Byte_Range) -> c.int {
+_fallocate_punch_hole :: proc(
+	fsys: ^FS,
+	entry: ^fs.Directory_Entry,
+	fh: u64,
+	loc: fs.Chain_Location,
+	span: Byte_Range,
+) -> c.int {
 	zerr := zero_file_range(fsys, entry, loc, span)
 	if zerr != .None {
 		return fs_error_to_errno(zerr)
@@ -374,13 +382,25 @@ _fallocate_punch_hole :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, fh: u64, lo
 // and grows file_size unless KEEP_SIZE. Entry writeback is included;
 // cache invalidation and logging stay with the caller.
 @(private = "file")
-_fallocate_grow :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, fh: u64, loc: fs.Chain_Location, span: Byte_Range, fmode: fuse3.Falloc_Flags) -> c.int {
+_fallocate_grow :: proc(
+	fsys: ^FS,
+	entry: ^fs.Directory_Entry,
+	fh: u64,
+	loc: fs.Chain_Location,
+	span: Byte_Range,
+	fmode: fuse3.Falloc_Flags,
+) -> c.int {
 	total_sectors, sok := _span_sectors(span.start, byte_range_len(span))
 	if !sok {
 		return fuse3.nix(.EOVERFLOW)
 	}
 
-	new_cluster, new_offset, _, extended, cerr := ensure_chain_covers(fsys, entry, loc, total_sectors)
+	new_cluster, new_offset, _, extended, cerr := ensure_chain_covers(
+		fsys,
+		entry,
+		loc,
+		total_sectors,
+	)
 	if cerr != .None {
 		if cerr == .No_Space {
 			return fuse3.nix(.ENOSPC)
@@ -391,7 +411,12 @@ _fallocate_grow :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, fh: u64, loc: fs.
 		zero_start := u64(entry.file_size)
 		zero_end := max(span.end, zero_start)
 		if zero_end > zero_start {
-			zerr := zero_file_range(fsys, entry, {new_cluster, new_offset}, Byte_Range{zero_start, zero_end})
+			zerr := zero_file_range(
+				fsys,
+				entry,
+				{new_cluster, new_offset},
+				Byte_Range{zero_start, zero_end},
+			)
 			if zerr != .None {
 				return fs_error_to_errno(zerr)
 			}
@@ -424,7 +449,7 @@ fused_fallocate :: proc "c" (
 	context.logger = fsys.logger
 	defer end_op(fsys)
 	// Parse the ABI word once; downstream switches on set membership.
-	fmode := transmute(fuse3.Falloc_Flags)(mode) // TRANSMUTE: c.int ABI word bit-view as flag set
+	fmode := transmute(fuse3.Falloc_Flags)(mode)
 	if .Collapse_Range in fmode || .Insert_Range in fmode {
 		return fuse3.nix(.EOPNOTSUPP)
 	}
@@ -448,6 +473,7 @@ fused_fallocate :: proc "c" (
 	if !aok {
 		return fuse3.nix(.EOVERFLOW)
 	}
+
 	span := Byte_Range{span_start, span_end}
 	loc := fs.Chain_Location{data_cluster, data_offset}
 	if .Punch_Hole in fmode {
@@ -468,7 +494,12 @@ fused_fallocate :: proc "c" (
 // read-modify-write. Short I/O ends the copy early. Returns the bytes
 // actually copied.
 @(private = "file")
-_copy_runs_to_runs :: proc(fsys: ^FS, src_runs: []fs.Extent_Run, dst_runs: []fs.Extent_Run, src_off, dst_off, size: u64) -> u64 {
+_copy_runs_to_runs :: proc(
+	fsys: ^FS,
+	src_runs: []fs.Extent_Run,
+	dst_runs: []fs.Extent_Run,
+	src_off, dst_off, size: u64,
+) -> u64 {
 	read_sector: [fs.SECTOR_SIZE]u8
 	bytes_copied: u64 = 0
 	remaining := size
@@ -572,7 +603,6 @@ fused_copy_file_range :: proc "c" (
 	}
 
 	bytes_copied := _copy_runs_to_runs(fsys, src_runs, dst_runs, src_off, dst_off, u64(size))
-
 	// Safe: dst_off + size did not overflow above and bytes_copied <= size.
 	new_size := max(u64(dst_entry.file_size), u64(off_out) + bytes_copied)
 	if new_size != u64(dst_entry.file_size) {

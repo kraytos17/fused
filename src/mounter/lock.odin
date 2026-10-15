@@ -173,6 +173,7 @@ lock_mutate :: proc(fsys: ^FS, id: fs.File_Identity, owner: u64, fl: ^posix.floc
 			if r.owner == owner && r.start == start && r.len == length {
 				continue
 			}
+
 			recs[kept] = r
 			kept += 1
 		}
