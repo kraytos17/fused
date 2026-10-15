@@ -99,7 +99,7 @@ fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 		return fuse3.nix(.EIO)
 	}
 
-	fi.fh = transmute(u64)fs.make_file_handle(dcluster, dsec, didx) // TRANSMUTE: bit_field File_Handle pack into u64 fh
+	fi.fh = fh_pack(fs.File_Identity{dcluster, dsec, didx})
 	path_cache_invalidate_all(fsys)
 	log.debugf("create: %s → ok", path)
 	return 0

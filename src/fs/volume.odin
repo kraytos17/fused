@@ -91,7 +91,7 @@ File_Handle :: bit_field u64 {
 // The u16 narrowings are lossless by domain (Sector_Offset is u16-based;
 // entry indices are < entries-per-sector); this is the single site where
 // identity triples are packed, so the invariant has one home.
-make_file_handle :: proc(cluster: Cluster, offset: Sector_Offset, idx: int) -> File_Handle {
+make_file_handle :: proc "contextless" (cluster: Cluster, offset: Sector_Offset, idx: int) -> File_Handle {
 	return {dir_cluster = u64(cluster), dir_offset = u16(offset), entry_index = u16(idx)}
 }
 

@@ -238,7 +238,7 @@ fused_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 		return fuse3.nix(.EACCES)
 	}
 
-	fi.fh = transmute(u64)fs.make_file_handle(parent_cluster, parent_offset, entry_idx) // TRANSMUTE: bit_field File_Handle pack into u64 fh
+	fi.fh = fh_pack(fs.File_Identity{parent_cluster, parent_offset, entry_idx})
 	log.debugf("open: %s → ok", path)
 	return 0
 }

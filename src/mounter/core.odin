@@ -258,6 +258,14 @@ fh_parts :: proc "contextless" (fh: u64) -> (id: fs.File_Identity) {
 	}
 }
 
+// fh_pack packs a file identity into the u64 FUSE handle (inverse of
+// fh_parts). Sound: File_Handle is bit_field u64, exactly 64 bits, so
+// the pack transmute has a single home beside its unpack twin.
+@(require_results)
+fh_pack :: proc "contextless" (id: fs.File_Identity) -> u64 {
+	return transmute(u64)fs.make_file_handle(id.dir_cluster, id.dir_offset, id.entry_index) // TRANSMUTE: bit_field File_Handle pack into u64 fh
+}
+
 // Mutate_Request bundles the inputs to mutate_entry_at: the target path,
 // the FUSE file info, the caller-provided mutation with its user context,
 // and whether caches invalidate wholesale. Callers spell every field
