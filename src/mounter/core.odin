@@ -162,6 +162,8 @@ fs_error_to_errno :: proc(err: fs.FS_Error) -> c.int {
 		return -c.int(posix.ENOENT)
 	case .Not_A_Directory:
 		return -c.int(posix.ENOTDIR)
+	case .Not_A_File:
+		return -c.int(posix.EISDIR)
 	case .Name_Too_Long:
 		return -c.int(posix.ENAMETOOLONG)
 	case .No_Space:
@@ -277,15 +279,23 @@ Mutate_Request :: struct {
 // invalidate_all is false only the single path is removed (used by utimens,
 // where the directory structure hasn't changed).
 mutate_entry_at :: proc(fsys: ^FS, req: Mutate_Request) -> c.int {
-	entry, entry_cluster, entry_offset, entry_idx, _, _, rerr := resolve_entry(fsys, req.path, req.fi)
+	entry, entry_cluster, entry_offset, entry_idx, _, _, rerr := resolve_entry(
+		fsys,
+		req.path,
+		req.fi,
+	)
+
 	if rerr != .None {
 		return fs_error_to_errno(rerr)
 	}
 	if !req.mutate(&entry, req.user) {
 		return 0
 	}
-	if werr := write_entry_at(fsys, fs.File_Identity{entry_cluster, entry_offset, entry_idx}, &entry);
-	   werr != .None {
+	if werr := write_entry_at(
+		fsys,
+		fs.File_Identity{entry_cluster, entry_offset, entry_idx},
+		&entry,
+	); werr != .None {
 		return fs_error_to_errno(werr)
 	}
 	if req.invalidate_all {
