@@ -69,6 +69,18 @@ Buf_Source :: struct {
 	remaining: proc(user: rawptr) -> u64,
 }
 
+// _run_sector_pos maps an absolute file offset onto a run, given the file
+// offset of the run's first byte. The caller must have skipped runs ending
+// at or before abs_off, so the subtraction cannot underflow.
+@(private = "file")
+_run_sector_pos :: proc(run: fs.Extent_Run, run_start_file_off: u64, abs_off: u64) -> (start_sec: u64, byte_off: u64, remaining_in_run: u64) {
+	skip := abs_off - run_start_file_off
+	start_sec = u64(run.sector) + skip / fs.SECTOR_SIZE
+	byte_off = skip % fs.SECTOR_SIZE
+	remaining_in_run = u64(run.sector) + u64(run.count) - start_sec
+	return
+}
+
 // write_range_to_runs writes a byte range across an extent run list starting
 // at file offset write_off, consuming from src.
 write_range_to_runs :: proc(
@@ -89,10 +101,7 @@ write_range_to_runs :: proc(
 			continue
 		}
 
-		skip := (write_off + bytes_written) - pos_in_file
-		start_sec := u64(run.sector) + skip / fs.SECTOR_SIZE
-		byte_off := skip % fs.SECTOR_SIZE
-		remaining_in_run := u64(run.sector) + u64(run.count) - start_sec
+		start_sec, byte_off, remaining_in_run := _run_sector_pos(run, pos_in_file, write_off + bytes_written)
 		for (byte_off > 0 || remaining_in_run > 0) && src.remaining(src.user) > 0 {
 			if byte_off > 0 {
 				take := min(u64(len(sector_rw[byte_off:])), src.remaining(src.user))
@@ -359,10 +368,7 @@ read_range_from_runs :: proc(
 			continue
 		}
 
-		skip := (read_off + bytes_read) - pos_in_file
-		start_sec := u64(run.sector) + skip / fs.SECTOR_SIZE
-		byte_off := skip % fs.SECTOR_SIZE
-		remaining_in_run := u64(run.sector) + u64(run.count) - start_sec
+		start_sec, byte_off, remaining_in_run := _run_sector_pos(run, pos_in_file, read_off + bytes_read)
 		for (byte_off > 0 || remaining_in_run > 0) && sink.remaining(sink.user) > 0 {
 			if byte_off > 0 {
 				if fs.sector_read(&fsys.vol, fs.Sector(start_sec), sector_buf[:]) != .None {
