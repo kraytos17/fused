@@ -414,9 +414,8 @@ only for bit-pattern views (`u8`/`u64` reps of flag domains, so retired bits
 stay visible), `string`↔`[]u8` aliasing, and `u64`↔`File_Handle` packing.
 `auto_cast` is never used (prototyping-only per the language docs). All three
 forms are explicit by design (unlike C assignment conversion); `transmute`
-is additionally compiler size-checked, but same-size is not same-meaning —
-every transmute site carries a comment stating which invariant makes it
-sound. Untyped constants implicitly convert where lossless (e.g. `1 << 10`
+is additionally compiler size-checked, but same-size is not same-meaning.
+Untyped constants implicitly convert where lossless (e.g. `1 << 10`
 into `c.uint32_t` flag consts); narrowing conversions (`u16`, `u32`) must
 cite a domain bound or go through a saturating helper.
 

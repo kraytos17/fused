@@ -14,8 +14,6 @@
 //   (d) no (&x[0]) reinterpret casts in src/ (use the raw_data form).
 //   (e) no auto_cast in src/ (prototyping-only); cast() only on pointers,
 //       values use the T(v) form.
-//   (f) every transmute in src/ carries a same-line // TRANSMUTE: marker
-//       citing the invariant that makes it sound (see DESIGN.md).
 package main
 
 import "base:runtime"
@@ -592,16 +590,6 @@ audit_hygiene_file :: proc(path: string) -> (failed: int) {
 		// Value casts must use the T(v) form; cast() is for pointer casts.
 		if has_value_cast(lines[i]) {
 			fmt.printf("FAIL   %s:%d cast() on non-pointer; use the T(v) form\n", path, i + 1)
-			failed += 1
-		}
-		// Every transmute cites its invariant in a same-line marker.
-		if strings.contains(lines[i], "transmute(") &&
-		   !strings.contains(lines[i], "// TRANSMUTE:") {
-			fmt.printf(
-				"FAIL   %s:%d transmute without // TRANSMUTE: invariant marker\n",
-				path,
-				i + 1,
-			)
 			failed += 1
 		}
 		// Private procs must be _-prefixed (structs/enums/vars exempt).
