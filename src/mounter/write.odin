@@ -143,6 +143,20 @@ write_finish :: proc(
 	return c.int(min(bytes_written, u64(max(c.int))))
 }
 
+// _bufvec_parts exposes a bufvec's buffers as a slice and sums their sizes,
+// failing closed on overflow. The slice borrows buf.
+@(private = "file")
+_bufvec_parts :: proc(buf: ^fuse3.Bufvec) -> (bufs: []fuse3.Buf, total: u64, ok: bool) {
+	bufs = slice.from_ptr(&buf._buf[0], int(buf.count))
+	for i in 0 ..< buf.count {
+		total, ok = _checked_add(total, u64(bufs[i].size))
+		if !ok {
+			return bufs, 0, false
+		}
+	}
+	return bufs, total, true
+}
+
 // fused_write_buf writes data with bufvec/splice support (FUSE write_buf
 // callback).
 fused_write_buf :: proc "c" (
@@ -168,16 +182,7 @@ fused_write_buf :: proc "c" (
 		return fs_error_to_errno(rerr)
 	}
 
-	total_size: u64
-	bufs := slice.from_ptr(&buf._buf[0], int(buf.count))
-	size_ok := true
-	for i in 0 ..< buf.count {
-		b := bufs[i]
-		total_size, size_ok = _checked_add(total_size, u64(b.size))
-		if !size_ok {
-			break
-		}
-	}
+	bufs, total_size, size_ok := _bufvec_parts(buf)
 
 	total_sectors, sok := _span_sectors(uoff, total_size)
 	if !size_ok || !sok {
