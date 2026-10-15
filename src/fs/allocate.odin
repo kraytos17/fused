@@ -199,10 +199,7 @@ allocate_sectors :: proc(
 		return start.cluster, start.offset, .None
 	}
 
-	additional_needed, covered, cerr := _allocate_additional_needed(vol, start, sectors_needed)
-	if cerr != .None {
-		return 0, 0, cerr
-	}
+	additional_needed, covered := _allocate_additional_needed(vol, start, sectors_needed) or_return
 	if covered {
 		return start.cluster, start.offset, .None
 	}

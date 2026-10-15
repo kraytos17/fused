@@ -109,10 +109,7 @@ find_or_extend_dir :: proc(
 
 	// Cached resolve: counting only needs the slice read-only, and the
 	// caller holds the write lock, so the borrowed slice is valid here.
-	current_runs, cr_err := resolve_extents_cached(fsys, dir)
-	if cr_err != .None {
-		return {}, cr_err
-	}
+	current_runs := resolve_extents_cached(fsys, dir) or_return
 
 	current_count: u64
 	for r in current_runs {
@@ -135,10 +132,7 @@ find_or_extend_dir :: proc(
 	extent_cache_invalidate(fsys, dir.cluster, dir.offset)
 
 	fsys.free_sectors -= 1
-	dir_runs, dir_err := resolve_extents_cached(fsys, dir)
-	if dir_err != .None {
-		return {}, dir_err
-	}
+	dir_runs := resolve_extents_cached(fsys, dir) or_return
 
 	last_run := dir_runs[len(dir_runs) - 1]
 	last_sec := fs.Sector(u64(last_run.sector) + u64(last_run.count) - 1)

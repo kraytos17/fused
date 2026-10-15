@@ -598,10 +598,7 @@ resolve_extents_cached :: proc(
 		return cached, .None
 	}
 
-	r, rerr := fs.resolve_extents(&fsys.vol, loc)
-	if rerr != .None {
-		return nil, rerr
-	}
+	r := fs.resolve_extents(&fsys.vol, loc) or_return
 
 	// Explicit fsys.allocator: `context` does not propagate upward to
 	// callers, so the op frame's allocator is NOT visible here. Cache-owned

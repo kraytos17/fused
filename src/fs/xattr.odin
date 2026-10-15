@@ -170,10 +170,7 @@ xattr_remove :: proc(
 	removed: bool,
 	err: FS_Error,
 ) {
-	attrs, lerr := xattr_load(vol, entry, allocator)
-	if lerr != .None {
-		return false, lerr
-	}
+	attrs := xattr_load(vol, entry, allocator) or_return
 
 	defer delete(attrs)
 	removed = false
