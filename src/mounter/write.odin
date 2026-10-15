@@ -457,6 +457,52 @@ fused_fallocate :: proc "c" (
 	return 0
 }
 
+// _copy_runs_to_runs copies up to size bytes from src_off in src_runs to
+// dst_off in dst_runs, sector by sector through a stack staging buffer.
+// Aligned full sectors write straight through; partial edge sectors
+// read-modify-write. Short I/O ends the copy early. Returns the bytes
+// actually copied.
+@(private = "file")
+_copy_runs_to_runs :: proc(fsys: ^FS, src_runs: []fs.Extent_Run, dst_runs: []fs.Extent_Run, src_off, dst_off, size: u64) -> u64 {
+	read_sector: [fs.SECTOR_SIZE]u8
+	bytes_copied: u64 = 0
+	remaining := size
+	src_cur := run_cursor_init(src_runs, src_off)
+	dst_cur := run_cursor_init(dst_runs, dst_off)
+	for remaining > 0 && src_cur.ok && dst_cur.ok {
+		take := min(
+			remaining,
+			fs.SECTOR_SIZE - src_cur.off_in_sec,
+			fs.SECTOR_SIZE - dst_cur.off_in_sec,
+		)
+		if fs.sector_read(&fsys.vol, src_cur.sec, read_sector[:]) != .None {
+			break
+		}
+		if dst_cur.off_in_sec != 0 || take < fs.SECTOR_SIZE {
+			dst_buf: [fs.SECTOR_SIZE]u8
+			if fs.sector_read(&fsys.vol, dst_cur.sec, dst_buf[:]) != .None {
+				break
+			}
+
+			copy(dst_buf[dst_cur.off_in_sec:], read_sector[src_cur.off_in_sec:][:take])
+			if fs.sector_write(&fsys.vol, dst_cur.sec, dst_buf[:]) != .None {
+				break
+			}
+		} else {
+			if fs.sector_write(&fsys.vol, dst_cur.sec, read_sector[src_cur.off_in_sec:][:take]) !=
+			   .None {
+				break
+			}
+		}
+
+		bytes_copied += take
+		remaining -= take
+		run_cursor_advance(&src_cur, take)
+		run_cursor_advance(&dst_cur, take)
+	}
+	return bytes_copied
+}
+
 // fused_copy_file_range copies data between two files (FUSE copy_file_range
 // callback).
 fused_copy_file_range :: proc "c" (
@@ -520,42 +566,7 @@ fused_copy_file_range :: proc "c" (
 		return c.ssize_t(fs_error_to_errno(derr))
 	}
 
-	read_sector: [fs.SECTOR_SIZE]u8
-	bytes_copied: u64 = 0
-	remaining := u64(size)
-	src_cur := run_cursor_init(src_runs, src_off)
-	dst_cur := run_cursor_init(dst_runs, dst_off)
-	for remaining > 0 && src_cur.ok && dst_cur.ok {
-		take := min(
-			remaining,
-			fs.SECTOR_SIZE - src_cur.off_in_sec,
-			fs.SECTOR_SIZE - dst_cur.off_in_sec,
-		)
-		if fs.sector_read(&fsys.vol, src_cur.sec, read_sector[:]) != .None {
-			break
-		}
-		if dst_cur.off_in_sec != 0 || take < fs.SECTOR_SIZE {
-			dst_buf: [fs.SECTOR_SIZE]u8
-			if fs.sector_read(&fsys.vol, dst_cur.sec, dst_buf[:]) != .None {
-				break
-			}
-
-			copy(dst_buf[dst_cur.off_in_sec:], read_sector[src_cur.off_in_sec:][:take])
-			if fs.sector_write(&fsys.vol, dst_cur.sec, dst_buf[:]) != .None {
-				break
-			}
-		} else {
-			if fs.sector_write(&fsys.vol, dst_cur.sec, read_sector[src_cur.off_in_sec:][:take]) !=
-			   .None {
-				break
-			}
-		}
-
-		bytes_copied += take
-		remaining -= take
-		run_cursor_advance(&src_cur, take)
-		run_cursor_advance(&dst_cur, take)
-	}
+	bytes_copied := _copy_runs_to_runs(fsys, src_runs, dst_runs, src_off, dst_off, u64(size))
 
 	// Safe: dst_off + size did not overflow above and bytes_copied <= size.
 	new_size := max(u64(dst_entry.file_size), u64(off_out) + bytes_copied)
