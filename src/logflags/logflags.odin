@@ -46,13 +46,12 @@ set_log_level :: proc(
 	data: rawptr,
 	data_type: typeid,
 	unparsed_value: string,
-	args_tag: string,
+	_: string,
 ) -> (
 	error: string,
 	handled: bool,
 	alloc_error: runtime.Allocator_Error,
 ) {
-	_ = args_tag
 	if data_type != log.Level {
 		return "", false, .None
 	}
