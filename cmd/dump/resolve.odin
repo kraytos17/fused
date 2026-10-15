@@ -54,3 +54,28 @@ resolve_symlink_target :: proc(
 	}
 	return strings.to_string(sb)
 }
+
+// dir_entry_at returns the entry at index idx in a sector buffer with
+// per-entry stride des.
+dir_entry_at :: #force_inline proc(buf: []u8, idx: int, des: int) -> ^fs.Directory_Entry {
+	return (^fs.Directory_Entry)(&buf[idx * des])
+}
+
+// entry_kind classifies an entry for display.
+entry_kind :: proc(e: ^fs.Directory_Entry) -> string {
+	if .Directory in e.flags { return "DIR" }
+	if .Link in e.flags { return "LINK" }
+	return "FILE"
+}
+
+// entry_display_name returns the LFN when present, else the short name.
+// Borrowed: valid while the sector buffer lives; clone to keep.
+entry_display_name :: proc(vol: ^fs.Volume, e: ^fs.Directory_Entry) -> string {
+	name := fs.entry_short_name(e)
+	if .LFN in e.flags {
+		if lfn, lfn_ok := fs.resolve_lfn(vol, e); lfn_ok {
+			name = lfn
+		}
+	}
+	return name
+}

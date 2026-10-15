@@ -164,28 +164,16 @@ print_directory :: proc(
 			des := int(fs.dir_entry_size(features))
 			depc := int(fs.dir_entries_per_sector(features))
 
-			get_ent :: #force_inline proc(buf: []u8, idx: int, des: int) -> ^fs.Directory_Entry {
-				return (^fs.Directory_Entry)(&buf[idx * des])
-			}
-
 			last_in_sector := -1
 			for i in 0 ..< depc {
-				if .Exists in get_ent(buf[:], i, des).flags { last_in_sector = i }
+				if .Exists in dir_entry_at(buf[:], i, des).flags { last_in_sector = i }
 			}
 			for i in 0 ..< depc {
-				e := get_ent(buf[:], i, des)^
+				e := dir_entry_at(buf[:], i, des)^
 				if .Exists not_in e.flags { continue }
 
-				name := fs.entry_short_name(&e)
-				if .LFN in e.flags {
-					if lfn, lfn_ok := fs.resolve_lfn(vol, &e); lfn_ok {
-						name = lfn
-					}
-				}
-
-				kind: string
-				if .Directory in
-				   e.flags { kind = "DIR" } else if .Link in e.flags { kind = "LINK" } else { kind = "FILE" }
+				name := entry_display_name(vol, &e)
+				kind := entry_kind(&e)
 
 				target: string
 				if .Link in e.flags {

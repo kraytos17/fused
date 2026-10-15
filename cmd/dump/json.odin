@@ -115,26 +115,14 @@ build_directory :: proc(
 			des := int(fs.dir_entry_size(features))
 			depc := int(fs.dir_entries_per_sector(features))
 
-			get_ent :: #force_inline proc(buf: []u8, idx: int, des: int) -> ^fs.Directory_Entry {
-				return (^fs.Directory_Entry)(&buf[idx * des])
-			}
-
 			for i in 0 ..< depc {
-				e := get_ent(buf[:], i, des)^
+				e := dir_entry_at(buf[:], i, des)^
 				if .Exists not_in e.flags { continue }
 
-				name := strings.clone(fs.entry_short_name(&e))
-				if .LFN in e.flags {
-					if lfn, lfn_ok := fs.resolve_lfn(vol, &e); lfn_ok {
-						delete(name)
-						name = strings.clone(lfn)
-					}
-				}
+				name := strings.clone(entry_display_name(vol, &e))
 				if name == "" { continue }
 
-				kind: string
-				if .Directory in
-				   e.flags { kind = "DIR" } else if .Link in e.flags { kind = "LINK" } else { kind = "FILE" }
+				kind := entry_kind(&e)
 
 				dt_buf: [32]u8
 				dt_str := strings.clone(
