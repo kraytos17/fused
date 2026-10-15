@@ -90,6 +90,78 @@ _cluster_entry_state_for :: proc(kind: Allocation_Kind) -> Cluster_Entry_State {
 	return {}
 }
 
+// _allocate_additional_needed subtracts existing coverage from sectors_needed.
+// Returns covered=true when the chain already spans the request (caller
+// returns start unchanged). Lookup failures propagate as FS_Error.
+@(private = "file")
+_allocate_additional_needed :: proc(vol: ^Volume, start: Chain_Location, sectors_needed: u64) -> (additional: u64, covered: bool, err: FS_Error) {
+	if start.cluster == 0 {
+		return sectors_needed, false, .None
+	}
+	existing := resolve_extents(vol, start) or_return
+	defer delete(existing)
+
+	existing_sectors: u64
+	for r in existing {
+		existing_sectors += u64(r.count)
+	}
+	if sectors_needed <= existing_sectors {
+		return 0, true, .None
+	}
+	return sectors_needed - existing_sectors, false, .None
+}
+
+// _allocate_init_fresh marks a never-allocated cluster live and zeroes its
+// entry table sector. I/O failures propagate as FS_Error.
+@(private = "file")
+_allocate_init_fresh :: proc(vol: ^Volume, cluster_idx: u64, cme: ^Cluster_Map_Entry) -> FS_Error {
+	cme.flags += {.Allocated}
+	cme.sector_index = 0
+	write_cluster_map_entry(vol, Cluster(cluster_idx), cme) or_return
+
+	zero_buf: [SECTOR_SIZE]u8
+	table_sector := Sector(cluster_idx * vol.master.cluster_size + u64(cme.sector_index))
+	if sector_write(vol, table_sector, zero_buf[:]) != .None {
+		return .Sector_Write_Error
+	}
+	return .None
+}
+
+// _allocate_note_full sets .Full on a cluster-map entry that has no free
+// run left. Already-full entries are left untouched. Write failures
+// propagate as FS_Error.
+@(private = "file")
+_allocate_note_full :: proc(vol: ^Volume, cluster_idx: u64, cme: ^Cluster_Map_Entry) -> FS_Error {
+	if .Full not_in cme.flags {
+		cme.flags += {.Full}
+		write_cluster_map_entry(vol, Cluster(cluster_idx), cme) or_return
+	}
+	return .None
+}
+
+// _allocate_append_link patches the previously allocated entry (already
+// pointing at the new slot) into its table and journals the patch.
+// A failed predecessor-table read is skipped silently (matches the inline
+// path it replaces); write failures propagate as FS_Error.
+@(private = "file")
+_allocate_append_link :: proc(vol: ^Volume, jrnl: ^Journal_Txn_Handle, prev_cluster: Cluster, prev_offset: Sector_Offset, prev_entry: Cluster_Entry) -> FS_Error {
+	prev_table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
+	if read_cluster_entry_table(vol, prev_cluster, &prev_table) == .None {
+		if pidx, pok := ce_find_by_offset(prev_table, prev_offset);
+		   pok && .Allocated in prev_table[pidx].state {
+			prev_table[pidx] = prev_entry
+		}
+
+		write_cluster_entry_table(vol, prev_cluster, &prev_table) or_return
+		JOURNAL_BACKEND.add(
+			vol,
+			jrnl,
+			journal_entry_from_cluster_entry(prev_entry, u64(prev_cluster), u8(prev_offset)),
+		)
+	}
+	return .None
+}
+
 // allocate_sectors allocates contiguous sectors on a volume.
 //
 // Extension logic: if start.cluster != 0, existing extents are resolved and
@@ -127,19 +199,12 @@ allocate_sectors :: proc(
 		return start.cluster, start.offset, .None
 	}
 
-	additional_needed: u64 = sectors_needed
-	if start.cluster != 0 {
-		existing := resolve_extents(vol, start) or_return
-		defer delete(existing)
-
-		existing_sectors: u64
-		for r in existing {
-			existing_sectors += u64(r.count)
-		}
-		if sectors_needed <= existing_sectors {
-			return start.cluster, start.offset, .None
-		}
-		additional_needed = sectors_needed - existing_sectors
+	additional_needed, covered, cerr := _allocate_additional_needed(vol, start, sectors_needed)
+	if cerr != .None {
+		return 0, 0, cerr
+	}
+	if covered {
+		return start.cluster, start.offset, .None
 	}
 
 	remaining: u64 = additional_needed
@@ -165,17 +230,8 @@ allocate_sectors :: proc(
 			continue
 		}
 
-		is_fresh := .Allocated not_in cme.flags
-		if is_fresh {
-			cme.flags += {.Allocated}
-			cme.sector_index = 0
-			write_cluster_map_entry(vol, Cluster(cluster_idx), &cme) or_return
-
-			zero_buf: [SECTOR_SIZE]u8
-			table_sector := Sector(cluster_idx * vol.master.cluster_size + u64(cme.sector_index))
-			if sector_write(vol, table_sector, zero_buf[:]) != .None {
-				return 0, 0, .Sector_Write_Error
-			}
+		if .Allocated not_in cme.flags {
+			_allocate_init_fresh(vol, cluster_idx, &cme) or_return
 		}
 
 		bitmap, used, var_err := alloc_cache_ensure(&vol.cache, vol, cluster_idx)
@@ -189,10 +245,7 @@ allocate_sectors :: proc(
 			u16(min(remaining, 65535)),
 		)
 		if !free_ok {
-			if .Full not_in cme.flags {
-				cme.flags += {.Full}
-				write_cluster_map_entry(vol, Cluster(cluster_idx), &cme) or_return
-			}
+			_allocate_note_full(vol, cluster_idx, &cme) or_return
 			continue
 		}
 
@@ -235,24 +288,7 @@ allocate_sectors :: proc(
 		} else if prev_has_prev {
 			prev_entry.next_cluster = u64(cluster_idx)
 			prev_entry.next_sector_index = u16(free_start)
-			prev_table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-			if read_cluster_entry_table(vol, prev_cluster, &prev_table) == .None {
-				if pidx, pok := ce_find_by_offset(prev_table, prev_offset);
-				   pok && .Allocated in prev_table[pidx].state {
-					prev_table[pidx] = prev_entry
-				}
-
-				write_cluster_entry_table(vol, prev_cluster, &prev_table) or_return
-				backend.add(
-					vol,
-					&jrnl,
-					journal_entry_from_cluster_entry(
-						prev_entry,
-						u64(prev_cluster),
-						u8(prev_offset),
-					),
-				)
-			}
+			_allocate_append_link(vol, &jrnl, prev_cluster, prev_offset, prev_entry) or_return
 		}
 
 		prev_cluster = Cluster(cluster_idx)
@@ -261,10 +297,7 @@ allocate_sectors :: proc(
 		prev_has_prev = true
 		remaining -= u64(take)
 		if used + take >= u16(vol.master.cluster_size) {
-			if .Full not_in cme.flags {
-				cme.flags += {.Full}
-				write_cluster_map_entry(vol, Cluster(cluster_idx), &cme) or_return
-			}
+			_allocate_note_full(vol, cluster_idx, &cme) or_return
 		}
 		if remaining == 0 {
 			break
