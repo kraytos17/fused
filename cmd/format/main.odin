@@ -177,7 +177,6 @@ main :: proc() {
 		log.errorf("format failed: %v", ferr)
 		os.exit(1)
 	}
-
 	if f.verbose {
 		image_mb := f64(size) / (1024.0 * 1024.0)
 		g := fs.format_geometry(size, cluster_size)

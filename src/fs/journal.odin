@@ -173,12 +173,12 @@ _replay_slot :: proc(vol: ^Volume, s: Slot_Entry) -> (replayed: int, completed: 
 			}
 
 			ce := table[je.ce_index]
-			if .Allocated in ce.state && transmute(u8)ce.state == je.state { // TRANSMUTE: retired-bit-visible skip-if-identical
+			if .Allocated in ce.state && transmute(u8)ce.state == je.state {
 				continue
 			}
 
 			table[je.ce_index] = Cluster_Entry {
-				state             = transmute(Cluster_Entry_State)je.state, // TRANSMUTE: u8 wire value pack into bit_set
+				state             = transmute(Cluster_Entry_State)je.state,
 				allocation_size   = je.alloc_size,
 				sector_start      = je.sector_start,
 				next_cluster      = je.next_cluster,
@@ -189,7 +189,10 @@ _replay_slot :: proc(vol: ^Volume, s: Slot_Entry) -> (replayed: int, completed: 
 			// sector: the watermark does not advance, so a later recover
 			// retries instead of skipping a half-applied transaction.
 			if werr := write_cluster_entry_table(vol, Cluster(je.cluster), &table); werr != .None {
-				log.warnf("journal: can't write table for cluster %d — aborting replay", je.cluster)
+				log.warnf(
+					"journal: can't write table for cluster %d — aborting replay",
+					je.cluster,
+				)
 				return replayed, false
 			}
 			replayed += 1
@@ -234,7 +237,6 @@ journal_recover :: proc(vol: ^Volume) {
 	// Sort by sequence number ascending so older transactions are replayed
 	// before newer ones that may overwrite the same Cluster_Entry.
 	sort.quick_sort_proc(valid[:], _slot_seq_cmp)
-
 	replayed: int
 	for s in valid {
 		log.infof(
@@ -276,7 +278,7 @@ journal_entry_from_cluster_entry :: proc(
 	return Journal_Entry {
 		cluster = cluster,
 		ce_index = ce_index,
-		state = transmute(u8)ce.state, // TRANSMUTE: bit_set unpack into u8 journal record
+		state = transmute(u8)ce.state,
 		sector_start = ce.sector_start,
 		alloc_size = ce.allocation_size,
 		next_cluster = ce.next_cluster,
@@ -321,6 +323,7 @@ _j_commit :: proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool {
 	if !journal_commit(vol, &h.v2) {
 		return false
 	}
+
 	journal_finish(vol, h.v2.seq)
 	return true
 }

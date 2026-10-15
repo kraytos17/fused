@@ -61,7 +61,8 @@ main :: proc() {
 		prefix: string, // includes trailing "="
 		dst:    ^int,
 	}
-	cap_specs := [?]Cache_Cap_Spec{
+
+	cap_specs := [?]Cache_Cap_Spec {
 		{"--path-cache-cap=", &cache.path_cap},
 		{"--lfn-cache-cap=", &cache.lfn_cap},
 		{"--alloc-cache-cap=", &cache.alloc_cap},
@@ -80,6 +81,7 @@ main :: proc() {
 					)
 					return true, false
 				}
+
 				s.dst^ = int(n)
 				return true, true
 			}

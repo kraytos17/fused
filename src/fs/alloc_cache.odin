@@ -92,13 +92,12 @@ alloc_cache_ensure :: proc(
 	if entry, hit := lru.get(&cache.lru, cluster); hit {
 		return entry.bitmap, entry.used, .None
 	}
-
 	if berr := _alloc_cache_build(cache, vol, Cluster(cluster)); berr != .None {
 		return {}, 0, berr
 	}
+
 	entry, hit := lru.get(&cache.lru, cluster)
 	if !hit {
-		// Unreachable: a successful build always inserts. Defensive.
 		return {}, 0, .No_Space
 	}
 	return entry.bitmap, entry.used, .None
@@ -178,6 +177,7 @@ alloc_cache_count_free :: proc(vol: ^Volume) -> u64 {
 	for ci in 0 ..< int(vol.master.cluster_map_size) {
 		bm, _, berr := alloc_cache_ensure(&vol.cache, vol, u64(ci))
 		if berr != .None { continue }
+
 		it := bit_array.make_iterator(&bm)
 		for set, _ in bit_array.iterate_by_all(&it) {
 			if !set {

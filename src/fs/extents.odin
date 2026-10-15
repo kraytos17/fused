@@ -99,11 +99,7 @@ read_chain :: proc(
 // write_chain writes a byte buffer across the extent chain starting at
 // (cluster, offset). The final sector is zero-padded when the buffer is not
 // sector-aligned. The chain must be large enough to hold len(data).
-write_chain :: proc(
-	vol: ^Volume,
-	loc: Chain_Location,
-	data: []u8,
-) -> FS_Error {
+write_chain :: proc(vol: ^Volume, loc: Chain_Location, data: []u8) -> FS_Error {
 	runs, rerr := resolve_extents(vol, loc)
 	defer delete(runs)
 	if rerr != .None {

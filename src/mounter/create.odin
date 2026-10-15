@@ -200,7 +200,7 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 		}
 
 		buf: [fs.SECTOR_SIZE]u8
-		copy(buf[:], transmute([]u8)(target_str)) // TRANSMUTE: string->bytes alias, no copy
+		copy(buf[:], transmute([]u8)(target_str))
 		if fs.sector_write(&fsys.vol, runs[0].sector, buf[:]) != .None {
 			return fuse3.nix(.EIO)
 		}

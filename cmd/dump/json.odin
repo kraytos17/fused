@@ -114,7 +114,6 @@ build_directory :: proc(
 			features := vol.master.features
 			des := int(fs.dir_entry_size(features))
 			depc := int(fs.dir_entries_per_sector(features))
-
 			for i in 0 ..< depc {
 				e := dir_entry_at(buf[:], i, des)^
 				if .Exists not_in e.flags { continue }
@@ -123,7 +122,6 @@ build_directory :: proc(
 				if name == "" { continue }
 
 				kind := entry_kind(&e)
-
 				dt_buf: [32]u8
 				dt_str := strings.clone(
 					fmt.bprintf(
@@ -144,7 +142,6 @@ build_directory :: proc(
 					sector  = e.sector_index,
 					dt      = dt_str,
 				}
-
 				if .Link in e.flags {
 					target := resolve_symlink_target(vol, &e, context.temp_allocator)
 					if target != "" {

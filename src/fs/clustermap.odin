@@ -201,11 +201,7 @@ write_cluster_entry_at :: proc(
 @(cold)
 _truncate_io_err :: proc() -> FS_Error { return .Sector_Write_Error }
 
-truncate_chain_at :: proc(
-	vol: ^Volume,
-	loc: Chain_Location,
-	new_sectors: u64,
-) -> FS_Error {
+truncate_chain_at :: proc(vol: ^Volume, loc: Chain_Location, new_sectors: u64) -> FS_Error {
 	cntr: u64
 	current_c := loc.cluster
 	current_o := loc.offset
@@ -223,7 +219,8 @@ truncate_chain_at :: proc(
 			if needed == 0 {
 				nc := Cluster(ce.next_cluster)
 				no := Sector_Offset(ce.next_sector_index)
-				if derr := deallocate_sectors(vol, Chain_Location{current_c, current_o}); derr != .None {
+				if derr := deallocate_sectors(vol, Chain_Location{current_c, current_o});
+				   derr != .None {
 					return derr
 				}
 				if nc != 0 {
@@ -343,14 +340,15 @@ _chain_step :: proc(
 	if walk.guard >= walk.limit {
 		return {}, {}, .Corrupted
 	}
-
 	if !walk.table_valid || walk.table_cluster != walk.cursor.cluster {
 		if read_cluster_entry_table(vol, walk.cursor.cluster, &walk.table) != .None {
 			return {}, {}, .Corrupted
 		}
+
 		walk.table_cluster = walk.cursor.cluster
 		walk.table_valid = true
 	}
+
 	found := false
 	for e in walk.table {
 		if e.sector_start == u16(walk.cursor.offset) && .Allocated in e.state {

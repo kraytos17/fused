@@ -52,7 +52,10 @@ _xattr_chain_free :: proc(vol: ^Volume, cluster: u64) -> FS_Error {
 		return .Entry_Not_Found
 	}
 	if idx, found := ce_find_by_state(ce_buf, {.XAttr, .Allocated}); found {
-		return deallocate_sectors(vol, Chain_Location{Cluster(cluster), Sector_Offset(ce_buf[idx].sector_start)})
+		return deallocate_sectors(
+			vol,
+			Chain_Location{Cluster(cluster), Sector_Offset(ce_buf[idx].sector_start)},
+		)
 	}
 	return .Entry_Not_Found
 }
@@ -137,6 +140,7 @@ xattr_store :: proc(vol: ^Volume, entry: ^Directory_Entry, attrs: []XAttr) -> FS
 				return cerr
 			}
 		}
+
 		entry.xattr_cluster = 0
 		return .None
 	}
@@ -171,8 +175,8 @@ xattr_remove :: proc(
 	err: FS_Error,
 ) {
 	attrs := xattr_load(vol, entry, allocator) or_return
-
 	defer delete(attrs)
+
 	removed = false
 	for a, i in attrs {
 		if a.name == name {
@@ -231,7 +235,6 @@ _xattr_serialize :: proc(attrs: []XAttr) -> (data: []u8) {
 	hdr.count = u16(len(attrs))
 	hdr.total = u32(total)
 	hdr_ptr^ = hdr
-
 	pos := size_of(XAttr_Blob_Header)
 	for a in attrs {
 		rh_ptr := (^XAttr_Record_Header)(raw_data(data[pos:]))
@@ -283,6 +286,7 @@ _xattr_deserialize_into :: proc(
 		name := strings.clone(string(data[pos:pos + name_len]), allocator)
 		pos += name_len
 		value := make([]u8, value_len, allocator)
+
 		copy(value, data[pos:pos + value_len])
 		pos += value_len
 		append(attrs, XAttr{name = name, value = value})

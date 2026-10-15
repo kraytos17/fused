@@ -202,14 +202,7 @@ data_chain_of :: proc(entry: Directory_Entry) -> Chain_Location {
 // within that sector for a directory entry addressed by a chain-relative
 // index. Returns Entry_Not_Found when the index falls outside the chain;
 // resolve I/O errors propagate unchanged.
-entry_sector_for_index :: proc(
-	vol: ^Volume,
-	id: File_Identity,
-) -> (
-	Sector,
-	int,
-	FS_Error,
-) {
+entry_sector_for_index :: proc(vol: ^Volume, id: File_Identity) -> (Sector, int, FS_Error) {
 	runs, err := resolve_extents(vol, Chain_Location{id.dir_cluster, id.dir_offset})
 	defer delete(runs)
 	if err != .None {

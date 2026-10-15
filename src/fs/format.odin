@@ -203,15 +203,14 @@ format_image :: proc(fd: ^os.File, p: Format_Params) -> FS_Error {
 	}
 
 	g := format_geometry(p.size, p.cluster_size)
-
 	vol := Volume {
 		disk = fd,
 	}
+
 	_format_write_master(&vol, p, g) or_return
 	_format_write_cluster_map(&vol, g) or_return
 	_format_zero_journal(&vol, g) or_return
 	_format_write_root(&vol, p, g) or_return
-
 	log.debugf(
 		"format: size=%d cluster_size=%d clusters=%d reserved=%d root=%d",
 		p.size,

@@ -163,7 +163,6 @@ print_directory :: proc(
 			features := vol.master.features
 			des := int(fs.dir_entry_size(features))
 			depc := int(fs.dir_entries_per_sector(features))
-
 			last_in_sector := -1
 			for i in 0 ..< depc {
 				if .Exists in dir_entry_at(buf[:], i, des).flags { last_in_sector = i }
@@ -174,7 +173,6 @@ print_directory :: proc(
 
 				name := entry_display_name(vol, &e)
 				kind := entry_kind(&e)
-
 				target: string
 				if .Link in e.flags {
 					target = resolve_symlink_target(vol, &e, context.temp_allocator)
@@ -238,6 +236,7 @@ print_directory :: proc(
 						flags_suffix,
 					)
 				}
+
 				if .Directory in e.flags {
 					sb3: strings.Builder
 					strings.builder_init(&sb3, context.temp_allocator)

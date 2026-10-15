@@ -94,10 +94,19 @@ _cluster_entry_state_for :: proc(kind: Allocation_Kind) -> Cluster_Entry_State {
 // Returns covered=true when the chain already spans the request (caller
 // returns start unchanged). Lookup failures propagate as FS_Error.
 @(private = "file")
-_allocate_additional_needed :: proc(vol: ^Volume, start: Chain_Location, sectors_needed: u64) -> (additional: u64, covered: bool, err: FS_Error) {
+_allocate_additional_needed :: proc(
+	vol: ^Volume,
+	start: Chain_Location,
+	sectors_needed: u64,
+) -> (
+	additional: u64,
+	covered: bool,
+	err: FS_Error,
+) {
 	if start.cluster == 0 {
 		return sectors_needed, false, .None
 	}
+
 	existing := resolve_extents(vol, start) or_return
 	defer delete(existing)
 
@@ -144,7 +153,13 @@ _allocate_note_full :: proc(vol: ^Volume, cluster_idx: u64, cme: ^Cluster_Map_En
 // A failed predecessor-table read is skipped silently (matches the inline
 // path it replaces); write failures propagate as FS_Error.
 @(private = "file")
-_allocate_append_link :: proc(vol: ^Volume, jrnl: ^Journal_Txn_Handle, prev_cluster: Cluster, prev_offset: Sector_Offset, prev_entry: Cluster_Entry) -> FS_Error {
+_allocate_append_link :: proc(
+	vol: ^Volume,
+	jrnl: ^Journal_Txn_Handle,
+	prev_cluster: Cluster,
+	prev_offset: Sector_Offset,
+	prev_entry: Cluster_Entry,
+) -> FS_Error {
 	prev_table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 	if read_cluster_entry_table(vol, prev_cluster, &prev_table) == .None {
 		if pidx, pok := ce_find_by_offset(prev_table, prev_offset);
@@ -226,7 +241,6 @@ allocate_sectors :: proc(
 		if .Reserved in cme.flags || .Full in cme.flags {
 			continue
 		}
-
 		if .Allocated not_in cme.flags {
 			_allocate_init_fresh(vol, cluster_idx, &cme) or_return
 		}
@@ -305,7 +319,8 @@ allocate_sectors :: proc(
 		return 0, 0, .No_Space
 	}
 	if start.cluster != 0 && !is_first {
-		if lerr := _link_tail_to_new(vol, start, Chain_Location{first_cluster, first_offset}); lerr != .None {
+		if lerr := _link_tail_to_new(vol, start, Chain_Location{first_cluster, first_offset});
+		   lerr != .None {
 			return 0, 0, lerr
 		}
 

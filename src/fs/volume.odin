@@ -65,6 +65,7 @@ volume_open :: proc(path: string, cache := DEFAULT_CACHE_CONFIG) -> (vol: Volume
 	vol.master = master
 	alloc_cap := cache.alloc_cap if cache.alloc_cap > 0 else DEFAULT_CACHE_CONFIG.alloc_cap
 	alloc_cache_init(&vol.cache, &vol.master, alloc_cap)
+
 	dir_cap := cache.dir_cap if cache.dir_cap > 0 else DEFAULT_CACHE_CONFIG.dir_cap
 	dir_cache_init(&vol.dir_cache, dir_cap)
 	JOURNAL_BACKEND.recover(&vol)
@@ -91,7 +92,11 @@ File_Handle :: bit_field u64 {
 // The u16 narrowings are lossless by domain (Sector_Offset is u16-based;
 // entry indices are < entries-per-sector); this is the single site where
 // identity triples are packed, so the invariant has one home.
-make_file_handle :: proc "contextless" (cluster: Cluster, offset: Sector_Offset, idx: int) -> File_Handle {
+make_file_handle :: proc "contextless" (
+	cluster: Cluster,
+	offset: Sector_Offset,
+	idx: int,
+) -> File_Handle {
 	return {dir_cluster = u64(cluster), dir_offset = u16(offset), entry_index = u16(idx)}
 }
 
@@ -133,7 +138,7 @@ lfn_bump_write :: proc(
 	buf: [SECTOR_SIZE]u8
 	if sector_read(vol, s.sector, buf[:]) != .None { return {}, .Sector_Read_Error }
 
-	copy(buf[s.next_byte:], transmute([]u8)name) // TRANSMUTE: string->bytes alias, no copy
+	copy(buf[s.next_byte:], transmute([]u8)name)
 	if sector_write(vol, s.sector, buf[:]) != .None { return {}, .Sector_Write_Error }
 
 	ptr = {
