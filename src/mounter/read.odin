@@ -108,7 +108,7 @@ fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Inf
 // count and filler's stop code (nonzero when the kernel buffer is full —
 // not an error).
 @(private = "file")
-_readdir_fill :: proc(fsys: ^FS, snapshot: [dynamic]fs.Indexed_Entry, dir: fs.Chain_Location, buf: rawptr, filler: fuse3.Fill_Dir_Proc, off: posix.off_t) -> (count: int, rc: c.int) {
+_readdir_fill :: proc(fsys: ^FS, snapshot: []fs.Indexed_Entry, dir: fs.Chain_Location, buf: rawptr, filler: fuse3.Fill_Dir_Proc, off: posix.off_t) -> (count: int, rc: c.int) {
 	if off <= 0 {
 		if stop := fuse3.fill_dir(filler, buf, ".", nil, 1); stop != 0 {
 			return count, stop
@@ -200,7 +200,7 @@ fused_readdir :: proc "c" (
 		return fs_error_to_errno(serr)
 	}
 	defer delete(snapshot)
-	count, rc := _readdir_fill(fsys, snapshot, dir, buf, filler, off)
+	count, rc := _readdir_fill(fsys, snapshot[:], dir, buf, filler, off)
 	if rc != 0 {
 		return rc
 	}
