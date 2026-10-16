@@ -100,11 +100,12 @@ make_file_handle :: proc "contextless" (
 	return {dir_cluster = u64(cluster), dir_offset = u16(offset), entry_index = u16(idx)}
 }
 
-// lfn_bump_write allocates space for a long file name using the bump
-// allocator embedded in Volume.  If the current bump sector is full (or
-// no sector has been allocated yet) a new .LFN sector is allocated and
-// the bump is reset.  Returns a packed LFN_Pointer referencing the
-// on-disk copy, or (!ok) on I/O / space failure.
+// lfn_bump_write stores one long file name in a freshly allocated .LFN
+// sector and returns a packed LFN_Pointer to it. Each name takes its
+// own sector (no bump packing): an entry freed by rename or unlink owns
+// its storage exclusively, so freeing one name can never invalidate
+// another. The bump state is retained but no longer accumulates multiple
+// names per sector. Returns (!ok) on I/O / space failure.
 lfn_bump_write :: proc(
 	vol: ^Volume,
 	bump: ^LFN_Bump,
@@ -113,47 +114,26 @@ lfn_bump_write :: proc(
 	ptr: LFN_Pointer,
 	err: FS_Error,
 ) {
-	needed := u16(len(name))
-	s, has_state := bump.state.?
-	if !has_state || s.next_byte + needed > SECTOR_SIZE {
-		new_c, new_o, lerr := allocate_sectors(vol, {}, 1, .LFN)
-		if lerr != .None { return {}, lerr }
+	_ = bump
+	new_c, new_o, lerr := allocate_sectors(vol, {}, 1, .LFN)
+	if lerr != .None { return {}, lerr }
 
-		runs, rok := resolve_extents(vol, Chain_Location{new_c, new_o})
-		defer delete(runs)
-		if rok != .None { return {}, rok }
-		if len(runs) == 0 { return {}, .Entry_Not_Found }
+	runs, rok := resolve_extents(vol, Chain_Location{new_c, new_o})
+	defer delete(runs)
+	if rok != .None { return {}, rok }
+	if len(runs) == 0 { return {}, .Entry_Not_Found }
 
-		new_state := LFN_Bump_State {
-			cluster   = new_c,
-			offset    = new_o,
-			sector    = runs[0].sector,
-			next_byte = 0,
-		}
-
-		bump.state = new_state
-		s = new_state
-	}
-
+	// The buffer starts zeroed and readers honor size, so no
+	// read-modify-write of stale sector bytes is needed.
 	buf: [SECTOR_SIZE]u8
-	if sector_read(vol, s.sector, buf[:]) != .None { return {}, .Sector_Read_Error }
-
-	copy(buf[s.next_byte:], transmute([]u8)name)
-	if sector_write(vol, s.sector, buf[:]) != .None { return {}, .Sector_Write_Error }
+	copy(buf[:], transmute([]u8)name)
+	if sector_write(vol, runs[0].sector, buf[:]) != .None { return {}, .Sector_Write_Error }
 
 	ptr = {
-		cluster = u64(s.cluster),
+		cluster = u64(new_c),
 		size    = u32(len(name)),
-		sector  = u16(s.offset),
-		_pad    = s.next_byte,
+		sector  = u16(new_o),
+		_pad    = 0,
 	}
-	new_state := LFN_Bump_State {
-		cluster   = s.cluster,
-		offset    = s.offset,
-		sector    = s.sector,
-		next_byte = s.next_byte + needed,
-	}
-
-	bump.state = new_state
 	return ptr, .None
 }

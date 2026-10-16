@@ -281,6 +281,9 @@ remove_directory_entry :: proc(
 			return derr
 		}
 	}
+	if ferr := free_entry_lfn(fsys, entry); ferr != .None {
+		return ferr
+	}
 	if xerr := fs.xattr_clear(&fsys.vol, entry); xerr != .None {
 		return xerr
 	}

@@ -212,16 +212,10 @@ write_entry_with_lfn :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string
 // ENOSPC at call sites.
 set_entry_name :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> fs.FS_Error {
 	if .LFN in entry.flags {
-		ptr := (^fs.LFN_Pointer)(&entry.file_name[0])
-		if ptr.cluster != 0 {
-			if derr := fs.deallocate_sectors(
-				&fsys.vol,
-				fs.Chain_Location{fs.Cluster(ptr.cluster), fs.Sector_Offset(ptr.sector)},
-			); derr != .None {
-				return derr
-			}
-			reinit_free_sectors(fsys)
+		if derr := free_entry_lfn(fsys, entry); derr != .None {
+			return derr
 		}
+		reinit_free_sectors(fsys)
 		entry.flags -= {.LFN}
 	}
 	if len(name) > len(entry.file_name) {
@@ -237,3 +231,17 @@ set_entry_name :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> f
 	}
 	return .None
 }
+
+// free_entry_lfn releases an entry's dedicated LFN sector, if any. Each
+// long name owns its sector exclusively (see lfn_bump_write), so freeing
+// on rename-replace and unlink cannot invalidate other names.
+free_entry_lfn :: proc(fsys: ^FS, entry: ^fs.Directory_Entry) -> fs.FS_Error {
+	if .LFN not_in entry.flags { return .None }
+	ptr := (^fs.LFN_Pointer)(&entry.file_name[0])
+	if ptr.cluster == 0 { return .None }
+	return fs.deallocate_sectors(
+		&fsys.vol,
+		fs.Chain_Location{fs.Cluster(ptr.cluster), fs.Sector_Offset(ptr.sector)},
+	)
+}
+
