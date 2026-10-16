@@ -135,3 +135,75 @@ def test_kill_after_unlink(fused_bin, disker_bin, check_bin, mount_dir,
             mnt.detach()
 
     _check_clean(check_bin, img)
+
+
+@pytest.mark.fuse
+def test_kill_after_truncate_shrink(fused_bin, disker_bin, check_bin, mount_dir,
+                                    logs_dir, tmp_path):
+    """A truncate-shrunk multi-extent chain survives kill -9 with content."""
+    img = str(tmp_path / "crash_shrink.img")
+    _fresh_image(disker_bin, img)
+    # Sector-tagged pattern: sector i holds byte (i % 256) throughout.
+    data = b"".join(bytes([i % 256]) * 512 for i in range(40))
+
+    with mount_fuse_killable(fused_bin, img, mount_dir, logs_dir,
+                             log_name="crashs1.log") as mnt:
+        p = os.path.join(mnt.mount, "shrink.bin")
+        _sync_file(p, data)
+        fd = os.open(p, os.O_WRONLY)
+        try:
+            os.ftruncate(fd, 20 * 512)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        mnt.kill9()
+        mnt.detach()
+
+    with mount_fuse_killable(fused_bin, img, mount_dir, logs_dir,
+                             log_name="crashs2.log") as mnt:
+        try:
+            p = os.path.join(mnt.mount, "shrink.bin")
+            assert os.stat(p).st_size == 20 * 512
+            with open(p, "rb") as fh:
+                assert fh.read() == data[:20 * 512]
+        finally:
+            mnt.kill9()
+            mnt.detach()
+
+    _check_clean(check_bin, img)
+
+
+@pytest.mark.fuse
+def test_kill_after_rename_long_names(fused_bin, disker_bin, check_bin,
+                                      mount_dir, logs_dir, tmp_path):
+    """Rename of a long name survives kill -9; the sibling name is intact."""
+    img = str(tmp_path / "crash_rename.img")
+    _fresh_image(disker_bin, img)
+    n1 = "a" * 60
+    n2 = "b" * 60
+    n3 = "c" * 60
+
+    with mount_fuse_killable(fused_bin, img, mount_dir, logs_dir,
+                             log_name="crashr1.log") as mnt:
+        _sync_file(os.path.join(mnt.mount, n1), b"first\n")
+        _sync_file(os.path.join(mnt.mount, n2), b"second\n")
+        os.rename(os.path.join(mnt.mount, n1), os.path.join(mnt.mount, n3))
+        dir_fd = os.open(mnt.mount, os.O_DIRECTORY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+        mnt.kill9()
+        mnt.detach()
+
+    with mount_fuse_killable(fused_bin, img, mount_dir, logs_dir,
+                             log_name="crashr2.log") as mnt:
+        try:
+            assert sorted(os.listdir(mnt.mount)) == ["Kernel", n2, n3]
+            assert open(os.path.join(mnt.mount, n2), "rb").read() == b"second\n"
+            assert open(os.path.join(mnt.mount, n3), "rb").read() == b"first\n"
+        finally:
+            mnt.kill9()
+            mnt.detach()
+
+    _check_clean(check_bin, img)

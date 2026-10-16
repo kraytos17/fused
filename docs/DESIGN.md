@@ -28,7 +28,7 @@ read-write FUSE mounting (all 43 `fuse_operations` callbacks implemented).
 | **`cmd/mount/`** | Binary entry point — `package main`, calls `mounter.run()`. | `src/mounter/` |
 | **`cmd/format/`** | Standalone image formatter. Produces valid disk images without libfuse3. | `src/fs/` |
 | **`cmd/dump/`** | Read-only image dumper. Walks the image structure and prints it in human-readable or JSON form. | `src/fs/` |
-| **`tests/`** | Odin unit tests (122), Python pytest integration (59), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
+| **`tests/`** | Odin unit tests (122), Python pytest integration (61), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
 
 ## On-disk format (rev 8)
 
@@ -478,7 +478,7 @@ tests/
 ├── conftest.py                    Pytest fixtures: mounted_fs, fused_bin, disker_bin, imgdump_bin
 ├── pyproject.toml                 Pytest markers: tool, fuse
 ├── test_basic.py                  7 FUSE smoke tests (pytest)
-├── test_crash.py                  3 kill -9 crash-consistency tests (pytest)
+├── test_crash.py                  5 kill -9 crash-consistency tests (pytest: data, truncate-extend/shrink, unlink, long-name rename)
 ├── test_disker.py                 7 format tool CLI tests (pytest)
 ├── test_errors.py                 6 FUSE error path tests (pytest)
 ├── test_imgdump.py                10 imgdump tool tests (pytest)
