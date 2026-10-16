@@ -66,6 +66,12 @@ fused_write :: proc "c" (
 		return fs_error_to_errno(rerr)
 	}
 
+	// A zero-byte write changes nothing: no allocation, no size or
+	// timestamp update (kernel parity: pwrite with count 0 is a no-op).
+	if size == 0 {
+		return 0
+	}
+
 	total_sectors, sok := _span_sectors(uoff, u64(size))
 	if !sok {
 		return fuse3.nix(.EOVERFLOW)
@@ -91,6 +97,20 @@ fused_write :: proc "c" (
 
 	// Metadata allocation is made durable by the journal's own sync
 	// (journal_commit); no extra fsync needed here.
+	// Zero the gap between old EOF and the write offset before the new
+	// bytes become visible; reused sectors may hold stale data.
+	old_size := u64(entry.file_size)
+	if uoff > old_size {
+		if zerr := zero_file_range(
+			fsys,
+			&entry,
+			{data_cluster, data_offset},
+			Byte_Range{old_size, uoff},
+		); zerr != .None {
+			return fs_error_to_errno(zerr)
+		}
+	}
+
 	log.debugf("write: %s → enter write loop (runs=%d)", path, len(runs))
 	write_off := uoff
 	end, _ := _checked_add(write_off, u64(size)) // cannot wrap: span checked above
@@ -181,8 +201,15 @@ fused_write_buf :: proc "c" (
 	}
 
 	bufs, total_size, size_ok := _bufvec_parts(buf)
+	if !size_ok {
+		return fuse3.nix(.EOVERFLOW)
+	}
+	// A zero-byte vector changes nothing (same no-op contract as write).
+	if total_size == 0 {
+		return 0
+	}
 	total_sectors, sok := _span_sectors(uoff, total_size)
-	if !size_ok || !sok {
+	if !sok {
 		return fuse3.nix(.EOVERFLOW)
 	}
 
@@ -202,6 +229,20 @@ fused_write_buf :: proc "c" (
 
 		log.errorf("write_buf: %s → extents failed", path)
 		return fuse3.nix(.ENOENT)
+	}
+
+	// Zero the gap between old EOF and the write offset (same stale-data
+	// hazard as the plain write path).
+	old_size := u64(entry.file_size)
+	if uoff > old_size {
+		if zerr := zero_file_range(
+			fsys,
+			&entry,
+			{data_cluster, data_offset},
+			Byte_Range{old_size, uoff},
+		); zerr != .None {
+			return fs_error_to_errno(zerr)
+		}
 	}
 
 	log.debugf("write_buf: %s → enter write loop (runs=%d, bufs=%d)", path, len(runs), buf.count)
@@ -277,6 +318,21 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 			return fuse3.nix(.ENOSPC)
 		}
 		return fuse3.nix(.ENOENT)
+	}
+
+	// An extending truncate exposes zeros, never stale reused bytes —
+	// even when the chain already covers the size (a shrunk-then-grown
+	// sector keeps its old bytes past EOF).
+	old_size := u64(entry.file_size)
+	if usize > old_size {
+		if zerr := zero_file_range(
+			fsys,
+			&entry,
+			{data_cluster, data_offset},
+			Byte_Range{old_size, usize},
+		); zerr != .None {
+			return fs_error_to_errno(zerr)
+		}
 	}
 
 	current_sectors := fs.chain_sector_count(runs)
@@ -395,7 +451,7 @@ _fallocate_grow :: proc(
 		return fuse3.nix(.EOVERFLOW)
 	}
 
-	new_cluster, new_offset, _, extended, cerr := ensure_chain_covers(
+	new_cluster, new_offset, _, _, cerr := ensure_chain_covers(
 		fsys,
 		entry,
 		loc,
@@ -407,19 +463,19 @@ _fallocate_grow :: proc(
 		}
 		return fuse3.nix(.ENOENT)
 	}
-	if extended {
-		zero_start := u64(entry.file_size)
-		zero_end := max(span.end, zero_start)
-		if zero_end > zero_start {
-			zerr := zero_file_range(
-				fsys,
-				entry,
-				{new_cluster, new_offset},
-				Byte_Range{zero_start, zero_end},
-			)
-			if zerr != .None {
-				return fs_error_to_errno(zerr)
-			}
+	// Zero whenever the size grows over the gap, even if the chain
+	// already covered the span (same shrunk-then-grown hazard).
+	zero_start := u64(entry.file_size)
+	zero_end := max(span.end, zero_start)
+	if zero_end > zero_start {
+		zerr := zero_file_range(
+			fsys,
+			entry,
+			{new_cluster, new_offset},
+			Byte_Range{zero_start, zero_end},
+		)
+		if zerr != .None {
+			return fs_error_to_errno(zerr)
 		}
 	}
 	if .Keep_Size not_in fmode {
