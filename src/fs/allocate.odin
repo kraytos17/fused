@@ -159,16 +159,17 @@ _allocate_init_fresh :: proc(vol: ^Volume, cluster_idx: u64, cme: ^Cluster_Map_E
 	return .None
 }
 
-// _allocate_note_full sets .Full on a cluster-map entry that has no free
-// run left. Already-full entries are left untouched. Write failures
-// propagate as FS_Error.
+// _note_full_deferred records a cluster whose fill completes in this op.
+// Full-marks apply only after the fills are durable (see the final flush
+// below): marking eagerly would strand free space and corrupt the free
+// count if the op later failed. The bitmaps stay authoritative, so an
+// unmarked full cluster only costs a re-scan.
 @(private = "file")
-_allocate_note_full :: proc(vol: ^Volume, cluster_idx: u64, cme: ^Cluster_Map_Entry) -> FS_Error {
-	if .Full not_in cme.flags {
-		cme.flags += {.Full}
-		write_cluster_map_entry(vol, Cluster(cluster_idx), cme) or_return
+_note_full_deferred :: proc(marks: ^[dynamic]u64, cluster_idx: u64) {
+	for m in marks^ {
+		if m == cluster_idx { return }
 	}
-	return .None
+	append(marks, cluster_idx)
 }
 
 // _allocate_append_link records the predecessor's link patch in the plan.
@@ -257,6 +258,8 @@ allocate_sectors :: proc(
 	// below drops the unflushed tail plan, persisting nothing new.
 	plan := make([dynamic]Journal_Entry, 0, MAX_JOURNAL_ENTRIES + 1)
 	defer delete(plan)
+	full_marks := make([dynamic]u64, 0, 8)
+	defer delete(full_marks)
 
 	start_hint := vol.cache.hint
 	for iter in 0 ..< vol.master.cluster_map_size {
@@ -266,7 +269,9 @@ allocate_sectors :: proc(
 			continue
 		}
 		if .Allocated not_in cme.flags {
-			_allocate_init_fresh(vol, cluster_idx, &cme) or_return
+			if ierr := _allocate_init_fresh(vol, cluster_idx, &cme); ierr != .None {
+				return 0, 0, ierr
+			}
 		}
 
 		bitmap, used, var_err := alloc_cache_ensure(&vol.cache, vol, cluster_idx)
@@ -280,7 +285,7 @@ allocate_sectors :: proc(
 			u16(min(remaining, 65535)),
 		)
 		if !free_ok {
-			_allocate_note_full(vol, cluster_idx, &cme) or_return
+			_note_full_deferred(&full_marks, cluster_idx)
 			continue
 		}
 
@@ -309,11 +314,13 @@ allocate_sectors :: proc(
 			next_sector_index = 0,
 		}
 
-		_plan_append(
+		if perr := _plan_append(
 			vol,
 			&plan,
 			journal_entry_from_cluster_entry(new_entry, cluster_idx, u8(free_idx)),
-		) or_return
+		); perr != .None {
+			return 0, 0, perr
+		}
 		if is_first {
 			first_cluster = Cluster(cluster_idx)
 			first_offset = Sector_Offset(free_start)
@@ -321,7 +328,9 @@ allocate_sectors :: proc(
 		} else if prev_has_prev {
 			prev_entry.next_cluster = u64(cluster_idx)
 			prev_entry.next_sector_index = u16(free_start)
-			_allocate_append_link(vol, &plan, prev_cluster, prev_idx, prev_entry) or_return
+			if lerr := _allocate_append_link(vol, &plan, prev_cluster, prev_idx, prev_entry); lerr != .None {
+				return 0, 0, lerr
+			}
 		}
 
 		prev_cluster = Cluster(cluster_idx)
@@ -330,7 +339,7 @@ allocate_sectors :: proc(
 		prev_has_prev = true
 		remaining -= u64(take)
 		if used + take >= u16(vol.master.cluster_size) {
-			_allocate_note_full(vol, cluster_idx, &cme) or_return
+			_note_full_deferred(&full_marks, cluster_idx)
 		}
 		if remaining == 0 {
 			break
@@ -351,6 +360,16 @@ allocate_sectors :: proc(
 	vol.cache.hint = (u64(first_cluster) + 1) % vol.master.cluster_map_size
 	if ferr := journal_flush_chunk(vol, plan[:]); ferr != .None {
 		return 0, 0, ferr
+	}
+	// The fills are durable now: publish deferred Full-marks best-effort.
+	// A failed mark only costs the next scan a re-walk (bitmaps rule).
+	for mc in full_marks {
+		if mcme, merr := read_cluster_map_entry(vol, Cluster(mc)); merr == .None {
+			if .Full not_in mcme.flags {
+				mcme.flags += {.Full}
+				_ = write_cluster_map_entry(vol, Cluster(mc), &mcme)
+			}
+		}
 	}
 	if start.cluster != 0 && !is_first {
 		return start.cluster, start.offset, .None

@@ -12,7 +12,6 @@ package fs
 import "core:hash"
 import "core:log"
 import "core:mem"
-import "core:os"
 import "core:sort"
 
 journal_region_base :: proc(master: ^Master_Record) -> Sector {
@@ -115,7 +114,7 @@ journal_commit :: proc(vol: ^Volume, txn: ^Journal_Txn) -> bool {
 		}
 	}
 
-	if os.sync(vol.disk) != nil { return false }
+	if !volume_sync(vol) { return false }
 	hdr := Journal_Header {
 		magic       = JOURNAL_WAL_MAGIC,
 		seq         = u64(txn.seq),
@@ -134,7 +133,7 @@ journal_commit :: proc(vol: ^Volume, txn: ^Journal_Txn) -> bool {
 		return false
 	}
 
-	if os.sync(vol.disk) != nil { return false }
+	if !volume_sync(vol) { return false }
 	return true
 }
 
@@ -464,7 +463,7 @@ journal_flush_chunk :: proc(vol: ^Volume, entries: []Journal_Entry) -> FS_Error 
 	}
 	// Home must be durable before the checkpoint below may persist: if
 	// this sync fails, hold the watermark so recovery completes the chunk.
-	if os.sync(vol.disk) != nil {
+	if !volume_sync(vol) {
 		backend.finish(vol, &h, false)
 		return .Sector_Write_Error
 	}

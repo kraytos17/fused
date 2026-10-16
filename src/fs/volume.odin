@@ -34,6 +34,7 @@ Volume :: struct {
 	dir_cache:  Dir_Entry_Cache,
 	image_size: Byte_Offset,
 	lfn_bump:   LFN_Bump,
+	fault:      IO_Fault,
 }
 
 // volume_open opens a fused disk image, reads and validates the
