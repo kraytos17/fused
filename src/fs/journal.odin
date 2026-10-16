@@ -141,14 +141,16 @@ journal_commit :: proc(vol: ^Volume, txn: ^Journal_Txn) -> bool {
 // journal_finish checkpoints a committed transaction: the sequence always
 // advances (preserving the slot even when home-apply failed), while the
 // watermark advances only when the home writes landed — recovery then
-// completes the chunk instead of skipping it (ADR-001).
+// completes the chunk instead of skipping it (ADR-001). The write itself
+// is unsynced: a lost checkpoint only causes (idempotent) re-replay.
+// Safety comes from the home sync BEFORE this write (see flush): the
+// watermark must never overtake undurable home tables.
 journal_finish :: proc(vol: ^Volume, seq: Journal_Seq, applied: bool) -> bool {
 	if applied {
 		journal_set_watermark(&vol.master, u64(seq))
 	}
 	journal_seq_set(&vol.master, Journal_Seq(u64(seq) + 1))
 	if write_master_record(vol) != .None { return false }
-	if os.sync(vol.disk) != nil { return false }
 	return true
 }
 
@@ -459,6 +461,12 @@ journal_flush_chunk :: proc(vol: ^Volume, entries: []Journal_Entry) -> FS_Error 
 	if aerr := journal_apply_entries(vol, entries); aerr != .None {
 		backend.finish(vol, &h, false)
 		return aerr
+	}
+	// Home must be durable before the checkpoint below may persist: if
+	// this sync fails, hold the watermark so recovery completes the chunk.
+	if os.sync(vol.disk) != nil {
+		backend.finish(vol, &h, false)
+		return .Sector_Write_Error
 	}
 	if !backend.finish(vol, &h, true) { return .Sector_Write_Error }
 	return .None

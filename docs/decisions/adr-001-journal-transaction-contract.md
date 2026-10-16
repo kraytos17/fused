@@ -40,9 +40,10 @@ watermark — can double-own sectors or walk into stale links.
    shared table sector (see `alloc_cache.odin`); the Full heuristic is
    calibrated for that lag.
 6. **Sync policy.** `sync` after journal records, after the commit
-   header, after home-apply, and after the checkpoint write. Home must
-   be durable before the checkpoint advances; a lost checkpoint only
-   causes (idempotent) re-replay.
+   header, and after home-apply — in that order. The checkpoint write
+   itself is unsynced: home is already durable when it persists, and a
+   lost checkpoint only causes (idempotent) re-replay. What must never
+   happen is the watermark overtaking undurable home tables.
 
 ## Scope (explicit non-goals)
 
