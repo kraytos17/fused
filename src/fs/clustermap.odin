@@ -269,7 +269,8 @@ truncate_chain_at :: proc(vol: ^Volume, loc: Chain_Location, new_sectors: u64) -
 					return _truncate_io_err()
 				}
 				if tail_c != 0 {
-					if derr := deallocate_sectors(vol, Chain_Location{tail_c, tail_o}); derr != .None {
+					if derr := deallocate_sectors(vol, Chain_Location{tail_c, tail_o});
+					   derr != .None {
 						return _truncate_io_err()
 					}
 				}

@@ -78,7 +78,8 @@ journal_add_entry :: proc(txn: ^Journal_Txn, entry: Journal_Entry) -> bool {
 	return true
 }
 
-JOURNAL_SLOT_STRIDE :: (MAX_JOURNAL_ENTRIES + JOURNAL_ENTRIES_PER_RECORD - 1) / JOURNAL_ENTRIES_PER_RECORD + 1
+JOURNAL_SLOT_STRIDE ::
+	(MAX_JOURNAL_ENTRIES + JOURNAL_ENTRIES_PER_RECORD - 1) / JOURNAL_ENTRIES_PER_RECORD + 1
 
 journal_commit :: proc(vol: ^Volume, txn: ^Journal_Txn) -> bool {
 	if txn.count == 0 { return true }
@@ -98,6 +99,7 @@ journal_commit :: proc(vol: ^Volume, txn: ^Journal_Txn) -> bool {
 		log.errorf("journal: region too small (%d sectors)", M)
 		return false
 	}
+
 	pos := J + Sector((u64(txn.seq) % slot_count) * JOURNAL_SLOT_STRIDE)
 	rec_secs := u16((txn.count + JOURNAL_ENTRIES_PER_RECORD - 1) / JOURNAL_ENTRIES_PER_RECORD)
 	for ri in 0 ..< rec_secs {
@@ -132,7 +134,6 @@ journal_commit :: proc(vol: ^Volume, txn: ^Journal_Txn) -> bool {
 	if sector_write(vol, pos, hdr_buf[:]) != .None {
 		return false
 	}
-
 	if !volume_sync(vol) { return false }
 	return true
 }
@@ -148,6 +149,7 @@ journal_finish :: proc(vol: ^Volume, seq: Journal_Seq, applied: bool) -> bool {
 	if applied {
 		journal_set_watermark(&vol.master, u64(seq))
 	}
+
 	journal_seq_set(&vol.master, Journal_Seq(u64(seq) + 1))
 	if write_master_record(vol) != .None { return false }
 	return true
@@ -199,20 +201,23 @@ _replay_slot :: proc(vol: ^Volume, s: Slot_Entry) -> (replayed: int, completed: 
 
 			table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 			if read_cluster_entry_table(vol, Cluster(je.cluster), &table) != .None {
-				log.warnf("journal: can't read table for cluster %d — aborting replay", je.cluster)
+				log.warnf(
+					"journal: can't read table for cluster %d — aborting replay",
+					je.cluster,
+				)
 				return replayed, false
 			}
 			if int(je.ce_index) >= len(table) {
 				log.warnf("journal: bad ce_index %d — aborting replay", je.ce_index)
 				return replayed, false
-		}
-		// Idempotence compares the entire entry: matching only state bits
-		// could miss a size/start/link difference with identical flags.
-		if table[je.ce_index] == want {
-			continue
-		}
-		table[je.ce_index] = want
+			}
+			// Idempotence compares the entire entry: matching only state bits
+			// could miss a size/start/link difference with identical flags.
+			if table[je.ce_index] == want {
+				continue
+			}
 
+			table[je.ce_index] = want
 			// A failed table write aborts the slot like a torn record
 			// sector: the watermark does not advance, so a later recover
 			// retries instead of skipping a half-applied transaction.
@@ -258,13 +263,22 @@ journal_recover :: proc(vol: ^Volume) {
 			log.warnf("journal: bad rec_count %d at sector %d — discarding", hdr.rec_count, pos)
 			continue
 		}
-		want_secs := u16((u64(hdr.rec_count) + JOURNAL_ENTRIES_PER_RECORD - 1) / JOURNAL_ENTRIES_PER_RECORD)
+
+		want_secs := u16(
+			(u64(hdr.rec_count) + JOURNAL_ENTRIES_PER_RECORD - 1) / JOURNAL_ENTRIES_PER_RECORD,
+		)
 		if hdr.rec_sectors != want_secs {
-			log.warnf("journal: bad rec_sectors %d at sector %d — discarding", hdr.rec_sectors, pos)
+			log.warnf(
+				"journal: bad rec_sectors %d at sector %d — discarding",
+				hdr.rec_sectors,
+				pos,
+			)
 			continue
 		}
+
 		crc_buf: [24]u8
 		copy(crc_buf[:], hdr_buf[:24])
+
 		crc_buf[22] = 0
 		crc_buf[23] = 0
 		if hash.crc32(crc_buf[:]) != hdr.header_crc {
@@ -409,6 +423,7 @@ journal_apply_entries :: proc(vol: ^Volume, entries: []Journal_Entry) -> FS_Erro
 			if d == cl { skip = true; break }
 		}
 		if skip { continue }
+
 		append(&seen, cl)
 		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 		if read_cluster_entry_table(vol, Cluster(cl), &table) != .None {
@@ -417,7 +432,7 @@ journal_apply_entries :: proc(vol: ^Volume, entries: []Journal_Entry) -> FS_Erro
 		for e in entries {
 			if e.cluster != cl { continue }
 			if int(e.ce_index) >= len(table) { return .Sector_Write_Error }
-			table[e.ce_index] = Cluster_Entry{
+			table[e.ce_index] = Cluster_Entry {
 				state             = transmute(Cluster_Entry_State)e.state,
 				allocation_size   = e.alloc_size,
 				sector_start      = e.sector_start,
@@ -443,6 +458,7 @@ journal_flush_chunk :: proc(vol: ^Volume, entries: []Journal_Entry) -> FS_Error 
 		log.errorf("journal: chunk too large (%d entries)", len(entries))
 		return .Sector_Write_Error
 	}
+
 	backend := JOURNAL_BACKEND
 	h: Journal_Txn_Handle
 	if !backend.begin(vol, &h) { return .Sector_Write_Error }

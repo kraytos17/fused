@@ -328,7 +328,8 @@ allocate_sectors :: proc(
 		} else if prev_has_prev {
 			prev_entry.next_cluster = u64(cluster_idx)
 			prev_entry.next_sector_index = u16(free_start)
-			if lerr := _allocate_append_link(vol, &plan, prev_cluster, prev_idx, prev_entry); lerr != .None {
+			if lerr := _allocate_append_link(vol, &plan, prev_cluster, prev_idx, prev_entry);
+			   lerr != .None {
 				return 0, 0, lerr
 			}
 		}
@@ -350,8 +351,12 @@ allocate_sectors :: proc(
 		return 0, 0, .No_Space
 	}
 	if start.cluster != 0 && !is_first {
-		if lerr := _link_tail_to_new(vol, &plan, start, Chain_Location{first_cluster, first_offset});
-		   lerr != .None {
+		if lerr := _link_tail_to_new(
+			vol,
+			&plan,
+			start,
+			Chain_Location{first_cluster, first_offset},
+		); lerr != .None {
 			return 0, 0, lerr
 		}
 	}
@@ -402,14 +407,20 @@ deallocate_sectors :: proc(vol: ^Volume, start: Chain_Location) -> FS_Error {
 		// stale duplicate offset can never divert the write to the wrong slot.
 		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 		freed_idx := -1
-		entry := find_cluster_entry(vol, current_cluster, current_offset, &table, &freed_idx) or_return
+		entry := find_cluster_entry(
+			vol,
+			current_cluster,
+			current_offset,
+			&table,
+			&freed_idx,
+		) or_return
+
 		entry.state -= {.Allocated}
 		cme, cme_err := read_cluster_map_entry(vol, current_cluster)
 		if cme_err == .None && .Full in cme.flags {
 			cme.flags -= {.Full}
 			write_cluster_map_entry(vol, current_cluster, &cme) or_return
 		}
-
 		if perr := _plan_append(
 			vol,
 			&plan,
@@ -430,14 +441,18 @@ deallocate_sectors :: proc(vol: ^Volume, start: Chain_Location) -> FS_Error {
 
 	log.debugf("deallocate: ok — cluster=%d offset=%d", start.cluster, start.offset)
 	return .None
-	}
+}
 
 // _link_tail_to_new walks the existing chain from start to its final
 // entry and records the next_cluster / next_sector_index patch in the
 // plan, effectively appending the newly allocated cluster(s). A missing
 // tail entry fails the allocation. Nothing is written home here.
 @(private = "file")
-_link_tail_to_new :: proc(vol: ^Volume, plan: ^[dynamic]Journal_Entry, start, first: Chain_Location) -> FS_Error {
+_link_tail_to_new :: proc(
+	vol: ^Volume,
+	plan: ^[dynamic]Journal_Entry,
+	start, first: Chain_Location,
+) -> FS_Error {
 	walk := _chain_walk_start(vol, start.cluster, start.offset)
 	for walk.guard < walk.limit {
 		tail, tc, step := _chain_next(vol, &walk)
@@ -452,12 +467,17 @@ _link_tail_to_new :: proc(vol: ^Volume, plan: ^[dynamic]Journal_Entry, start, fi
 			if rerr := read_cluster_entry_table(vol, tc, &tail_table); rerr != .None {
 				return rerr
 			}
+
 			tidx, tok := ce_find_by_offset(tail_table, walk.cursor.offset)
 			if !tok || .Allocated not_in tail_table[tidx].state {
 				log.errorf("allocate: tail entry not found (corrupted)")
 				return .Entry_Not_Found
 			}
-			if perr := _plan_append(vol, plan, journal_entry_from_cluster_entry(tail, u64(tc), u8(tidx))); perr != .None {
+			if perr := _plan_append(
+				vol,
+				plan,
+				journal_entry_from_cluster_entry(tail, u64(tc), u8(tidx)),
+			); perr != .None {
 				return perr
 			}
 			break

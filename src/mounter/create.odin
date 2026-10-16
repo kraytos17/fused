@@ -216,7 +216,8 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 		runs, r_err := fs.resolve_extents(&fsys.vol, fs.Chain_Location{new_c, new_o})
 		defer delete(runs)
 		if r_err != .None || len(runs) == 0 {
-			if derr := fs.deallocate_sectors(&fsys.vol, fs.Chain_Location{new_c, new_o}); derr == .None {
+			if derr := fs.deallocate_sectors(&fsys.vol, fs.Chain_Location{new_c, new_o});
+			   derr == .None {
 				fsys.free_sectors += sectors_needed
 			}
 			return fuse3.nix(.EIO)
@@ -225,20 +226,22 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 		// Write the whole target across every run (a multi-sector target
 		// does not fit the old single-sector buffer).
 		tbytes := transmute([]u8)target_str
-		mem_src := Mem_Source{
+		mem_src := Mem_Source {
 			fsys      = fsys,
 			buf       = raw_data(tbytes),
 			size      = u64(len(tbytes)),
 			remaining = u64(len(tbytes)),
 		}
-		bytes_src := Buf_Source{
+		bytes_src := Buf_Source {
 			user      = &mem_src,
 			copy      = _mem_copy,
 			bulk      = _mem_bulk,
 			remaining = _mem_remaining,
 		}
-		if written := write_range_to_runs(fsys, runs[:], 0, &bytes_src); written != u64(len(tbytes)) {
-			if derr := fs.deallocate_sectors(&fsys.vol, fs.Chain_Location{new_c, new_o}); derr == .None {
+		if written := write_range_to_runs(fsys, runs[:], 0, &bytes_src);
+		   written != u64(len(tbytes)) {
+			if derr := fs.deallocate_sectors(&fsys.vol, fs.Chain_Location{new_c, new_o});
+			   derr == .None {
 				fsys.free_sectors += sectors_needed
 			}
 			return fuse3.nix(.EIO)

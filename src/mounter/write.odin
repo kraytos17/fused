@@ -451,12 +451,7 @@ _fallocate_grow :: proc(
 		return fuse3.nix(.EOVERFLOW)
 	}
 
-	new_cluster, new_offset, _, _, cerr := ensure_chain_covers(
-		fsys,
-		entry,
-		loc,
-		total_sectors,
-	)
+	new_cluster, new_offset, _, _, cerr := ensure_chain_covers(fsys, entry, loc, total_sectors)
 	if cerr != .None {
 		if cerr == .No_Space {
 			return fuse3.nix(.ENOSPC)

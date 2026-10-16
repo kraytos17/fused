@@ -244,4 +244,3 @@ free_entry_lfn :: proc(fsys: ^FS, entry: ^fs.Directory_Entry) -> fs.FS_Error {
 		fs.Chain_Location{fs.Cluster(ptr.cluster), fs.Sector_Offset(ptr.sector)},
 	)
 }
-
