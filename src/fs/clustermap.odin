@@ -205,15 +205,19 @@ write_cluster_entry_at :: proc(
 _truncate_io_err :: proc() -> FS_Error { return .Sector_Write_Error }
 
 // _truncate_detach ends a chain at (cluster, offset) by clearing its
-// next-link. The entry must still be allocated; used after freeing a
-// truncated tail so the predecessor does not dangle into freed sectors.
+// next-link through a flushed journal chunk (log-before-home per
+// ADR-001). The entry must still be allocated. Callers detach the
+// retained prefix BEFORE freeing the tail: a crash between then leaks
+// the tail (safe) instead of dangling into it.
 @(private = "file")
 _truncate_detach :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset) -> FS_Error {
 	idx := -1
 	entry := find_cluster_entry(vol, cluster, offset, nil, &idx) or_return
 	entry.next_cluster = 0
 	entry.next_sector_index = 0
-	if write_cluster_entry_at(vol, cluster, idx, &entry) != .None {
+	rec := journal_entry_from_cluster_entry(entry, u64(cluster), u8(idx))
+	recs := [1]Journal_Entry{rec}
+	if ferr := journal_flush_chunk(vol, recs[:]); ferr != .None {
 		return _truncate_io_err()
 	}
 	return .None
@@ -238,33 +242,36 @@ truncate_chain_at :: proc(vol: ^Volume, loc: Chain_Location, new_sectors: u64) -
 		if cntr > new_sectors {
 			needed := new_sectors - before
 			if needed == 0 {
-				// Boundary at this entry's start: one call frees it and its
-				// tail (deallocate follows next links), then detach the
-				// predecessor so the chain ends before the freed tail.
-				if derr := deallocate_sectors(vol, Chain_Location{current_c, current_o});
-				   derr != .None {
-					return derr
-				}
+				// Boundary at this entry's start: detach the predecessor first
+				// (a crash then leaks the still-live tail), then free this
+				// entry and its tail with one deallocation.
 				if has_prev {
 					if derr := _truncate_detach(vol, prev_c, prev_o); derr != .None {
 						return derr
 					}
 				}
+				if derr := deallocate_sectors(vol, Chain_Location{current_c, current_o});
+				   derr != .None {
+					return derr
+				}
 			} else {
-				if ce.next_cluster != 0 {
-					nc := Cluster(ce.next_cluster)
-					no := Sector_Offset(ce.next_sector_index)
-					if derr := deallocate_sectors(vol, Chain_Location{nc, no}); derr != .None {
+				// Publish the retained prefix first (a crash then leaks the
+				// still-live tail instead of dangling into a freed one), then
+				// free the severed tail.
+				tail_c := Cluster(ce.next_cluster)
+				tail_o := Sector_Offset(ce.next_sector_index)
+				ce.allocation_size = u16(needed)
+				ce.next_cluster = 0
+				ce.next_sector_index = 0
+				rec := journal_entry_from_cluster_entry(ce, u64(current_c), u8(ce_idx))
+				recs := [1]Journal_Entry{rec}
+				if ferr := journal_flush_chunk(vol, recs[:]); ferr != .None {
+					return _truncate_io_err()
+				}
+				if tail_c != 0 {
+					if derr := deallocate_sectors(vol, Chain_Location{tail_c, tail_o}); derr != .None {
 						return _truncate_io_err()
 					}
-
-					ce.next_cluster = 0
-					ce.next_sector_index = 0
-				}
-
-				ce.allocation_size = u16(needed)
-				if write_cluster_entry_at(vol, current_c, ce_idx, &ce) != .None {
-					return _truncate_io_err()
 				}
 			}
 			break
