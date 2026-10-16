@@ -79,12 +79,27 @@ journal_add_entry :: proc(txn: ^Journal_Txn, entry: Journal_Entry) -> bool {
 	return true
 }
 
+JOURNAL_SLOT_STRIDE :: (MAX_JOURNAL_ENTRIES + JOURNAL_ENTRIES_PER_RECORD - 1) / JOURNAL_ENTRIES_PER_RECORD + 1
+
 journal_commit :: proc(vol: ^Volume, txn: ^Journal_Txn) -> bool {
 	if txn.count == 0 { return true }
+	if txn.count > MAX_JOURNAL_ENTRIES {
+		log.errorf("journal: transaction too large (%d entries)", txn.count)
+		return false
+	}
 
 	J := journal_region_base(&vol.master)
 	M := journal_region_size(&vol.master)
-	pos := J + Sector(u64(txn.seq) % M)
+	// Each slot reserves one header sector plus the maximum record sectors,
+	// so adjacent transactions can never overlap. Recovery still scans every
+	// sector (not just slot starts), so journals written by older code stay
+	// readable.
+	slot_count := M / JOURNAL_SLOT_STRIDE
+	if slot_count == 0 {
+		log.errorf("journal: region too small (%d sectors)", M)
+		return false
+	}
+	pos := J + Sector((u64(txn.seq) % slot_count) * JOURNAL_SLOT_STRIDE)
 	rec_secs := u16((txn.count + JOURNAL_ENTRIES_PER_RECORD - 1) / JOURNAL_ENTRIES_PER_RECORD)
 	for ri in 0 ..< rec_secs {
 		rec_buf: [SECTOR_SIZE]u8
@@ -146,9 +161,10 @@ _slot_seq_cmp :: proc(a, b: Slot_Entry) -> int {
 }
 
 // _replay_slot replays one committed transaction slot, returning the entry
-// count and whether the slot completed. A torn record sector aborts the
-// slot (completed=false, watermark not advanced) without affecting other
-// slots; per-entry table I/O failures skip that entry.
+// count and whether the slot completed. A torn record sector, an invalid
+// entry, or any target table I/O failure aborts the slot (completed=false,
+// watermark not advanced); the caller must stop at the first incomplete
+// slot so later sequences cannot slip past it.
 @(private = "file")
 _replay_slot :: proc(vol: ^Volume, s: Slot_Entry) -> (replayed: int, completed: bool) {
 	for ri: u16; ri < s.hdr.rec_sectors; ri += 1 {
@@ -164,26 +180,29 @@ _replay_slot :: proc(vol: ^Volume, s: Slot_Entry) -> (replayed: int, completed: 
 			if idx >= int(s.hdr.rec_count) { break }
 
 			je := rec.entries[ei]
-			table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-			if read_cluster_entry_table(vol, Cluster(je.cluster), &table) != .None {
-				continue
-			}
-			if int(je.ce_index) >= len(table) {
-				continue
-			}
-
-			ce := table[je.ce_index]
-			if .Allocated in ce.state && transmute(u8)ce.state == je.state {
-				continue
-			}
-
-			table[je.ce_index] = Cluster_Entry {
+			want := Cluster_Entry {
 				state             = transmute(Cluster_Entry_State)je.state,
 				allocation_size   = je.alloc_size,
 				sector_start      = je.sector_start,
 				next_cluster      = je.next_cluster,
 				next_sector_index = je.next_sector_index,
 			}
+
+			table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
+			if read_cluster_entry_table(vol, Cluster(je.cluster), &table) != .None {
+				log.warnf("journal: can't read table for cluster %d — aborting replay", je.cluster)
+				return replayed, false
+			}
+			if int(je.ce_index) >= len(table) {
+				log.warnf("journal: bad ce_index %d — aborting replay", je.ce_index)
+				return replayed, false
+		}
+		// Idempotence compares the entire entry: matching only state bits
+		// could miss a size/start/link difference with identical flags.
+		if table[je.ce_index] == want {
+			continue
+		}
+		table[je.ce_index] = want
 
 			// A failed table write aborts the slot like a torn record
 			// sector: the watermark does not advance, so a later recover
@@ -226,6 +245,23 @@ journal_recover :: proc(vol: ^Volume) {
 			log.warnf("journal: torn header at sector %d — discarding", pos)
 			continue
 		}
+		if hdr.rec_count == 0 || hdr.rec_count > MAX_JOURNAL_ENTRIES {
+			log.warnf("journal: bad rec_count %d at sector %d — discarding", hdr.rec_count, pos)
+			continue
+		}
+		want_secs := u16((u64(hdr.rec_count) + JOURNAL_ENTRIES_PER_RECORD - 1) / JOURNAL_ENTRIES_PER_RECORD)
+		if hdr.rec_sectors != want_secs {
+			log.warnf("journal: bad rec_sectors %d at sector %d — discarding", hdr.rec_sectors, pos)
+			continue
+		}
+		crc_buf: [24]u8
+		copy(crc_buf[:], hdr_buf[:24])
+		crc_buf[22] = 0
+		crc_buf[23] = 0
+		if hash.crc32(crc_buf[:]) != hdr.header_crc {
+			log.warnf("journal: bad header crc at sector %d — discarding", pos)
+			continue
+		}
 		if hdr.seq < W { continue }
 		if hdr.committed != 1 {
 			log.warnf("journal: incomplete txn seq=%d at sector %d — discarding", hdr.seq, pos)
@@ -248,9 +284,11 @@ journal_recover :: proc(vol: ^Volume) {
 
 		n, completed := _replay_slot(vol, s)
 		replayed += n
-		if completed {
-			W = s.hdr.seq + 1
+		if !completed {
+			log.warnf("journal: seq=%d incomplete — stopping replay", s.hdr.seq)
+			break
 		}
+		W = s.hdr.seq + 1
 	}
 
 	old_W := journal_watermark(&vol.master)
@@ -295,8 +333,10 @@ journal_entry_from_cluster_entry :: proc(
 //   begin  — open a transaction (always succeeds; nothing is persisted yet).
 //   add    — record one CE-table write; returns false when the txn is full.
 //   commit — persist the transaction and advance the master journal state.
-//   abort  — discard the transaction. Nothing was persisted before commit,
-//            so it is a no-op. Discards on error.
+//   abort  — discard the uncommitted in-memory entries. Home-sector writes
+//            issued before commit are NOT rolled back; chunked commits plus
+//            idempotent replay keep them consistent (log-before-home
+//            ordering is future work).
 //   recover — replay leftover state from a previous crash, in seq order.
 Journal_Backend :: struct {
 	begin:   proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool,
@@ -330,7 +370,9 @@ _j_commit :: proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool {
 
 @(private = "file")
 _j_abort :: proc(vol: ^Volume, h: ^Journal_Txn_Handle) {
-	// Nothing was persisted before commit; discarding is a no-op.
+	// Discards only the uncommitted chunk; already-committed chunks persist
+	// and stay replayable. See the backend semantics above.
+	_ = h
 }
 
 // JOURNAL_BACKEND is the physical redo-log WAL: the only journal.

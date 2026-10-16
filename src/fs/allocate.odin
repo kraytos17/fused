@@ -13,6 +13,31 @@ _allocate_io_err :: proc() -> (Cluster, Sector_Offset, FS_Error) {
 	return 0, 0, .Sector_Write_Error
 }
 
+// _journal_checkpoint commits the in-progress chunk and begins a fresh
+// transaction, keeping every commit within MAX_JOURNAL_ENTRIES. Large
+// allocations span multiple bounded, idempotent chunks instead of
+// silently journaling a prefix of the transaction.
+@(private = "file")
+_journal_checkpoint :: proc(vol: ^Volume, jrnl: ^Journal_Txn_Handle) -> FS_Error {
+	backend := JOURNAL_BACKEND
+	if !backend.commit(vol, jrnl) { return .Sector_Write_Error }
+	if !backend.begin(vol, jrnl) { return .Sector_Write_Error }
+	return .None
+}
+
+// _journal_add records one CE-table write, checkpointing first when the
+// transaction is full (checked via count so the journal's error-logging
+// full path is never hit in normal operation). backend.add's result was
+// previously ignored, which let oversized transactions commit partially.
+@(private = "file")
+_journal_add :: proc(vol: ^Volume, jrnl: ^Journal_Txn_Handle, e: Journal_Entry) -> FS_Error {
+	if jrnl.v2.count >= MAX_JOURNAL_ENTRIES {
+		_journal_checkpoint(vol, jrnl) or_return
+	}
+	if !JOURNAL_BACKEND.add(vol, jrnl, e) { return .Sector_Write_Error }
+	return .None
+}
+
 @(private = "file")
 _find_contiguous_free :: proc(
 	bitmap: ^bit_array.Bit_Array,
@@ -168,11 +193,11 @@ _allocate_append_link :: proc(
 		}
 
 		write_cluster_entry_table(vol, prev_cluster, &prev_table) or_return
-		JOURNAL_BACKEND.add(
+		_journal_add(
 			vol,
 			jrnl,
 			journal_entry_from_cluster_entry(prev_entry, u64(prev_cluster), u8(prev_offset)),
-		)
+		) or_return
 	}
 	return .None
 }
@@ -287,11 +312,11 @@ allocate_sectors :: proc(
 
 		table[free_idx] = new_entry
 		write_cluster_entry_table(vol, Cluster(cluster_idx), &table) or_return
-		backend.add(
+		_journal_add(
 			vol,
 			&jrnl,
 			journal_entry_from_cluster_entry(new_entry, cluster_idx, u8(free_idx)),
-		)
+		) or_return
 		if is_first {
 			first_cluster = Cluster(cluster_idx)
 			first_offset = Sector_Offset(free_start)
@@ -319,7 +344,7 @@ allocate_sectors :: proc(
 		return 0, 0, .No_Space
 	}
 	if start.cluster != 0 && !is_first {
-		if lerr := _link_tail_to_new(vol, start, Chain_Location{first_cluster, first_offset});
+		if lerr := _link_tail_to_new(vol, &jrnl, start, Chain_Location{first_cluster, first_offset});
 		   lerr != .None {
 			return 0, 0, lerr
 		}
@@ -382,11 +407,11 @@ deallocate_sectors :: proc(vol: ^Volume, start: Chain_Location) -> FS_Error {
 
 		table[freed_idx] = entry
 		write_cluster_entry_table(vol, current_cluster, &table) or_return
-		backend.add(
+		_journal_add(
 			vol,
 			&jrnl,
 			journal_entry_from_cluster_entry(entry, u64(current_cluster), u8(freed_idx)),
-		)
+		) or_return
 		if entry.next_cluster == 0 {
 			break
 		}
@@ -407,7 +432,8 @@ deallocate_sectors :: proc(vol: ^Volume, start: Chain_Location) -> FS_Error {
 // its final entry and sets its next_cluster / next_sector_index to point at
 // first, effectively appending the newly allocated cluster(s).
 @(private = "file")
-_link_tail_to_new :: proc(vol: ^Volume, start, first: Chain_Location) -> FS_Error {
+// The tail patch is journaled like any other CE-table write.
+_link_tail_to_new :: proc(vol: ^Volume, jrnl: ^Journal_Txn_Handle, start, first: Chain_Location) -> FS_Error {
 	walk := _chain_walk_start(vol, start.cluster, start.offset)
 	for walk.guard < walk.limit {
 		tail, tc, step := _chain_next(vol, &walk)
@@ -422,12 +448,13 @@ _link_tail_to_new :: proc(vol: ^Volume, start, first: Chain_Location) -> FS_Erro
 			if rerr := read_cluster_entry_table(vol, tc, &tail_table); rerr != .None {
 				return rerr
 			}
-			if tidx, tok := ce_find_by_offset(tail_table, walk.cursor.offset);
-			   tok && .Allocated in tail_table[tidx].state {
+			tidx, tok := ce_find_by_offset(tail_table, walk.cursor.offset)
+			if tok && .Allocated in tail_table[tidx].state {
 				tail_table[tidx] = tail
-			}
-			if werr := write_cluster_entry_table(vol, tc, &tail_table); werr != .None {
-				return werr
+				if werr := write_cluster_entry_table(vol, tc, &tail_table); werr != .None {
+					return werr
+				}
+				_journal_add(vol, jrnl, journal_entry_from_cluster_entry(tail, u64(tc), u8(tidx))) or_return
 			}
 			break
 		}
