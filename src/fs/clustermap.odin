@@ -204,10 +204,28 @@ write_cluster_entry_at :: proc(
 @(cold)
 _truncate_io_err :: proc() -> FS_Error { return .Sector_Write_Error }
 
+// _truncate_detach ends a chain at (cluster, offset) by clearing its
+// next-link. The entry must still be allocated; used after freeing a
+// truncated tail so the predecessor does not dangle into freed sectors.
+@(private = "file")
+_truncate_detach :: proc(vol: ^Volume, cluster: Cluster, offset: Sector_Offset) -> FS_Error {
+	idx := -1
+	entry := find_cluster_entry(vol, cluster, offset, nil, &idx) or_return
+	entry.next_cluster = 0
+	entry.next_sector_index = 0
+	if write_cluster_entry_at(vol, cluster, idx, &entry) != .None {
+		return _truncate_io_err()
+	}
+	return .None
+}
+
 truncate_chain_at :: proc(vol: ^Volume, loc: Chain_Location, new_sectors: u64) -> FS_Error {
 	cntr: u64
 	current_c := loc.cluster
 	current_o := loc.offset
+	prev_c: Cluster
+	prev_o: Sector_Offset
+	has_prev := false
 	for {
 		ce_idx: int
 		ce, ce_err := find_cluster_entry(vol, current_c, current_o, nil, &ce_idx)
@@ -220,15 +238,16 @@ truncate_chain_at :: proc(vol: ^Volume, loc: Chain_Location, new_sectors: u64) -
 		if cntr > new_sectors {
 			needed := new_sectors - before
 			if needed == 0 {
-				nc := Cluster(ce.next_cluster)
-				no := Sector_Offset(ce.next_sector_index)
+				// Boundary at this entry's start: one call frees it and its
+				// tail (deallocate follows next links), then detach the
+				// predecessor so the chain ends before the freed tail.
 				if derr := deallocate_sectors(vol, Chain_Location{current_c, current_o});
 				   derr != .None {
 					return derr
 				}
-				if nc != 0 {
-					if derr := deallocate_sectors(vol, Chain_Location{nc, no}); derr != .None {
-						return _truncate_io_err()
+				if has_prev {
+					if derr := _truncate_detach(vol, prev_c, prev_o); derr != .None {
+						return derr
 					}
 				}
 			} else {
@@ -254,6 +273,7 @@ truncate_chain_at :: proc(vol: ^Volume, loc: Chain_Location, new_sectors: u64) -
 			break
 		}
 
+		prev_c, prev_o, has_prev = current_c, current_o, true
 		current_c = Cluster(ce.next_cluster)
 		current_o = Sector_Offset(ce.next_sector_index)
 	}
