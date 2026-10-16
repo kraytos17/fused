@@ -3,7 +3,8 @@
 A FUSE filesystem daemon written in Odin, backed by a cluster-based on-disk
 format (rev 8, feature flags, uid/gid support, journaling, extended
 attributes). All 43 `fuse_operations` callbacks are implemented.
-Multi-threaded by default, with a `sync.Mutex` guarding cache mutation.
+Multi-threaded by default, with a `sync.RW_Mutex` guarding shared state
+(exclusive for mutations, shared for reads).
 Zero-copy I/O via `splice(2)`.
 Long filenames (up to 255 characters) are supported through bump-allocated
 data sectors.
@@ -25,17 +26,20 @@ cmd/
   mount/main.odin     FUSE mounter binary (package main, calls mounter.run())
   format/main.odin    Image formatter binary (standalone, no libfuse3)
   dump/               Image dumper (read-only, JSON/text/hex output)
+  check/main.odin     Struct-size cross-check binary
 src/
-  fuse3/              FFI binding to libfuse3.so
+  fuse3/              FFI binding to libfuse3.so (api, types, constants, foreign)
+  logflags/           Shared --log-level/--log-format parsing for the CLI tools
   fs/                 On-disk format + all volume logic
     structure.odin      Packed on-disk structs (rev 8, feature flags)
-    volume.odin          Volume struct, volume_open/close
+    volume.odin          Volume struct, volume_open/close, File_Handle pack
     diskio.odin          Sector read/write
-    clustermap.odin       Cluster map reader/writer
+    clustermap.odin       Cluster map + entry table reader/writer, chain walk
     extents.odin          Extent chain walker
     directory.odin        Directory entry iteration, LFN resolution
     allocate.odin          Sector allocator/deallocator
-    alloc_cache.odin        LRU bitmap cache
+    alloc_cache.odin        Cache sizing + LRU bitmap cache
+    dir_cache.odin          LRU directory-listing cache
     path.odin                 Unified path resolution
     journal.odin                Journal WAL (crash consistency)
     xattr.odin                  Extended-attribute blob read/write
@@ -43,26 +47,38 @@ src/
     validate.odin                 MasterRecord validation
     display.odin                    Human-readable flag formatters
   mounter/            FUSE callbacks, package mounter
-    core.odin            FS struct, begin_op/end_op, resolve_path
+    main.odin            run() daemon lifecycle, build_operations table
+    core.odin            FS struct, locking, resolve + extent caches, fh pack/unpack
     dir.odin               Directory slot helpers
-    read.odin                 fused_getattr, fused_readdir, fused_read
+    read.odin                 fused_getattr, fused_readdir, fused_open,
+                              fused_read, fused_read_buf, fused_readlink
     write.odin                  fused_write, fused_write_buf, fused_truncate,
                                 fused_fallocate, fused_copy_file_range
-                                (single-pass RunCursor)
     write_data.odin               shared range engines (write_range_to_runs /
                                 read_range_from_runs) + Buf/Read sinks
                                 (Mem/Bufvec/Zero) + ensure_chain_covers +
                                 RunCursor + collect_read_slices
-    create.odin                    fused_create, fused_mkdir, fused_symlink, fused_rename
+    create.odin                    fused_create, fused_mkdir, fused_symlink,
+                                   fused_unlink, fused_rmdir, fused_rename,
+                                   remove_directory_entry
     xattr.odin                     fused_setxattr, fused_getxattr, fused_listxattr, fused_removexattr
     lock.odin                      fused_lock (POSIX), fused_flock (BSD)
-    misc.odin                        fused_utimens, fused_chmod, fused_lseek, fused_statfs
-tests/
+    misc.odin                        fused_utimens, fused_access, fused_chmod,
+                                     fused_chown, fused_flush, fused_release,
+                                     fused_opendir/releasedir, fused_fsync/fsyncdir,
+                                     fused_lseek, fused_statfs, fused_mknod,
+                                     fused_ioctl, fused_link, fused_statx,
+                                     fused_bmap, fused_poll, fused_init/destroy
+tools/
+  audit/              Callback locking/logger/hygiene/attribute audit
+demo/
+  hello_main.odin     Minimal FUSE hello-world example
+tests/                Odin unit tests (122) + Python pytest suite (59)
 ```
 
 ## Prerequisites
 
-- Odin dev-2026-07-nightly or later
+- Odin dev-2026-10-nightly or later
 - libfuse3 >= 3.18
 - Linux kernel with the fuse module loaded (`modprobe fuse`)
 
@@ -117,7 +133,7 @@ FUSE flags:
 | Flag | Purpose |
 |---|---|
 | `-f` | Foreground (default, added automatically) |
-| `-s` | Single-threaded mode (default: multi-threaded with mutex) |
+| `-s` | Single-threaded mode (default: multi-threaded) |
 | `-d` | FUSE protocol debug output (stderr) |
 | `--log-file=<path>` | Redirect Odin log messages to file (append) |
 | `--log-level=<level>` | Filter: debug (default), info, warn, error |
@@ -142,9 +158,9 @@ make smoke-errors               # error path tests
 make bench                      # throughput benchmark (write/read/statfs/readdir)
 ```
 
-Two test layers: Odin unit tests (`make test`) exercise the `fs` library and
+Two test layers: Odin unit tests (`make test`, 122 tests) exercise the `fs` library and
 the `mounter` callbacks directly in-process (errno mapping, xattr semantics,
-path resolution — no kernel). Python pytest tests (`make pytest`) mount the
+path resolution — no kernel). Python pytest tests (`make pytest`, 59 tests) mount the
 real filesystem via `/dev/fuse` and verify end-to-end behavior through the
 kernel, including errno translation on real syscalls.
 
@@ -177,13 +193,17 @@ logrotate, or pipe-based rotation:
 | `clean` | Remove `build/`, `logs/`, `mnt/`, `fused.img`; kill any running mount |
 | `test` | Odin unit tests |
 | `pytest` | Python integration tests |
-| `check` | Struct-size cross-check (Odin compile-time `#assert`s) |
-| `audit` | Callback locking, src hygiene, cast discipline (`--strict` gates; unknown flags rejected) |
+| `check` | Struct-size cross-check (12 FUSE structs vs C ground truth) |
+| `check-tool` | Struct-size cross-check binary → `build/check` |
+| `audit` | Callback context/locking, logger discipline, src hygiene, attributes (`--strict` gates; unknown flags rejected) |
+| `vet` | Build all binaries with vet, shadowing, strict-style, tabs, disallow-do |
 | `smoke` | Basic FUSE smoke test in an isolated namespace (pytest) |
 | `smoke-rw` | Read-write FUSE test (pytest) |
 | `smoke-mt` | Multi-threaded stress test |
 | `smoke-errors` | FUSE error-path tests (pytest) |
-| `bench` | Throughput benchmark (`bench.py`: write/read/statfs/readdir) |
+| `smoke-crash` | Kill -9 crash-consistency tests (pytest) |
+| `doctor` | Audit-strict + vet + image coherence check |
+| `bench` | Throughput benchmark (`bench.py`: write/read/statfs/readdir/create-storm) |
 | `ci` | build + check + audit + test + pytest + all smoke tests |
 
 The compiler defaults to `-thread-count:4` (override with `THREAD_COUNT=N`).
@@ -215,9 +235,11 @@ in `src/fs/structure.odin` carries a compile-time
   struct passed via `fuse_get_context().private_data`. `src/fs/` is fully
   stateless.
 
-- **Thread safety.** A `sync.Mutex` on `FS` serializes cache-mutating
-  callbacks. Multi-threaded FUSE dispatch is the default. Read-only
-  callbacks (`read`, `read_buf`, `statfs`, `lseek`) run lock-free.
+- **Thread safety.** A `sync.RW_Mutex` on `FS` guards shared state:
+  mutating callbacks take it exclusively (`begin_op()`/`end_op()`),
+  read-only callbacks share it (`begin_read_op()`/`end_read_op()`,
+  non-mutating cache access only). Multi-threaded FUSE dispatch is the
+  default. Disk I/O itself needs no lock (pread/pwrite).
 
 - **Zero-copy I/O.** `fused_read_buf` returns a `fuse_bufvec` with
   `FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK` pointing at the backing file; the
@@ -240,8 +262,9 @@ in `src/fs/structure.odin` carries a compile-time
   unmount; F_SETLKW treats a busy lock as a non-blocking conflict
   (`EAGAIN`) since FUSE callbacks cannot sleep.
 
-- **Two in-memory caches.** LRU bitmap cache (1024 cluster entries) and
-  LRU path-resolution cache (128 entries) — no filesystem-size-scaled
+- **In-memory caches.** LRU bitmap cache (1024 clusters), LRU
+  path-resolution cache (128 entries), LFN cache (256 entries), and LRU
+  directory-listing cache (128 directories) — no filesystem-size-scaled
   arrays.
 
 - **I/O error handling.** Every `src/fs` I/O procedure returns `FS_Error`
@@ -250,12 +273,12 @@ in `src/fs/structure.odin` carries a compile-time
 
 - **Extent cache.** File-data extent chains are cached in-process
   (`FS.extents`), so repeated reads/writes skip the per-cluster metadata
-  walk. Directory chains are never cached (they change under mutation);
-  invalidation is single-key at extend branches. `statfs` uses a cached
+  walk. Directory listings are cached separately with exact-remove plus
+  clear-all-fallback invalidation. `statfs` uses a cached
   free-sector count kept coherent via delta updates on
-  `allocate`/`truncate`/`remove`/`xattr` (not a stale scan). See
-  [`docs/PERF.md`](docs/PERF.md).
+  `allocate`/`truncate`/`remove`/`xattr` (not a stale scan).
 
 ## Remaining work
 
-2 of 43 `fuse_operations` callbacks remain unwired: `bmap`, `poll`.
+All 43 `fuse_operations` callbacks are wired. See
+[`docs/DESIGN.md`](docs/DESIGN.md) for deferred refactors.

@@ -28,7 +28,7 @@ read-write FUSE mounting (all 43 `fuse_operations` callbacks implemented).
 | **`cmd/mount/`** | Binary entry point — `package main`, calls `mounter.run()`. | `src/mounter/` |
 | **`cmd/format/`** | Standalone image formatter. Produces valid disk images without libfuse3. | `src/fs/` |
 | **`cmd/dump/`** | Read-only image dumper. Walks the image structure and prints it in human-readable or JSON form. | `src/fs/` |
-| **`tests/`** | Odin unit tests, Python pytest integration, struct-size cross-checks, context audit. | — |
+| **`tests/`** | Odin unit tests (122), Python pytest integration (59), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
 
 ## On-disk format (rev 8)
 
@@ -37,7 +37,7 @@ read-write FUSE mounting (all 43 `fuse_operations` callbacks implemented).
 | Offset | Field | Type | Description |
 |---|---|---|---|
 | 0 | `sig` | `[7]u8` | Filesystem identifier: `"FUSED\0\0"` |
-| 7 | `rev_min` | `u8` | Minimum compatible format version (6) |
+| 7 | `rev_min` | `u8` | Minimum compatible format version declared by the image (8 as written; 7 minimum mountable) |
 | 8 | `rev_max` | `u8` | Format version written by formatter (8) |
 | 9 | `features` | `Features` | `bit_set[Feature_Flag; u64]` — bit 0 = `.Uid_Gid`, bit 1 = retired (rev-7 journal selector, rejected), bit 2 = `.XAttr` |
 | 17–22 | reserved | — | Zero |
@@ -269,11 +269,12 @@ Shared call-site plumbing so FUSE callbacks stay thin:
   (`init_fs_for_test`), so the two can't drift.
 - `prepare_parent_slot` — the create/mkdir/symlink preamble (resolve parent
   → check name → find or extend a slot) returns a `Prepare_Slot_Result`
-  (Ok / Parent_Not_Found / Name_Exists / Dir_Full) so each caller maps the
-  exact errno.
+  (Ok / Parent_Not_Found / Name_Exists / Dir_Full / Not_A_Directory /
+  Io_Error) so each caller maps the exact errno.
 - `fh_parts` — unpacks the packed file handle into its identity fields
-  (dir cluster, offset, entry index); `remove_directory_entry` (see below)
-  and the lock table key off the same identity.
+  (dir cluster, offset, entry index); `fh_pack` is its pack twin, so the
+  `u64`↔`File_Handle` transmute has a single home. `remove_directory_entry`
+  (see below) and the lock table key off the same identity.
 - `ce_find_by_offset` / `ce_find_by_state` (`src/fs/clustermap.odin`) — the
   "scan a CE table for an entry" loop, shared by allocation, deallocation,
   LFN resolution, and xattr chain location.
@@ -349,17 +350,25 @@ two parallel `if` chains.
 
 Crash consistency comes from a single journal: the physical redo-log WAL
 in a dedicated journal region, exposed as the `JOURNAL_BACKEND` procedure
-table (`begin` / `add` / `commit` / `abort` / `recover`):
+table (`begin` / `add` / `commit` / `finish` / `abort` / `recover`).
+The full transaction contract lives in
+[`docs/decisions/adr-001-journal-transaction-contract.md`](decisions/adr-001-journal-transaction-contract.md):
 
 - `allocate_sectors`, `deallocate_sectors`, and `volume_open` call through
   the table. The table is kept (rather than direct calls) so a future
   journal format only adds a new backend value.
-- **Discard-on-error**: `abort` is the unified error path and a no-op
-  (nothing is persisted before commit).
+- **Log before home**: scans collect CE writes into a bounded plan;
+  chunks flush (records + header durable, then home tables, then
+  checkpoint). `commit` persists the log only; `finish` checkpoints
+  (sequence always advances, watermark only on applied success).
+  `abort` discards pre-commit entries only.
 - `Journal_Entry` construction from a `Cluster_Entry` write is centralized in
   `journal_entry_from_cluster_entry`.
 - Recovery collects valid ring slots, sorts by seq, and replays oldest-first
   so a wrapped-around older transaction can't overwrite a newer one.
+  It stops at the first incomplete slot without advancing past it.
+- Ring slots reserve header + maximum record sectors (non-overlapping);
+  headers carry CRC/count/shape validation.
 
 ### Write path (`src/mounter/write_data.odin` + `src/mounter/write.odin`)
 
@@ -381,7 +390,8 @@ near-identical loops:
   - `Bufvec_Source` — a FUSE bufvec with per-buf advance and splice to the
     raw disk fd for `FUSE_BUF_IS_FD` bufs (`fused_write_buf`);
     `fused_read_buf` now uses `collect_read_slices` to avoid the double walk.
-    fd-backed bufs at unaligned offsets panic (documented limitation).
+    fd-backed bufs at unaligned offsets set a sticky error flag mapped to
+    EIO (callbacks must never unwind through C).
   - `Zero_Source` — zero-fill (`zero_file_range`, used by fallocate).
 - `ensure_chain_covers` — the shared "resolve → count → extend if short →
   invalidate → re-resolve" preamble for write/write_buf/truncate/fallocate/
@@ -424,7 +434,7 @@ cite a domain bound or go through a saturating helper.
 Functions producing variable-length results return `[dynamic]T` allocated on
 `context.temp_allocator`. Callers own the allocation but don't need explicit
 `delete` — the temp allocator is reset per FUSE callback via `free_all` in
-`begin_op`. `cmd/mount/main.odin` wraps the mount lifecycle in a
+`begin_op`. `src/mounter/main.odin` wraps the mount lifecycle in a
 `mem.Tracking_Allocator` guarded behind `when ODIN_DEBUG` — zero overhead in
 release builds. Leaked allocations are reported at unmount time.
 
@@ -462,26 +472,43 @@ tests/
 ├── fused_test/                    Python test package
 │   ├── suites/
 │   │   ├── stress.py              Multi-threaded stress test (reader + writer workers)
-│   │   └── bench.py               Throughput benchmark (write/read/statfs/readdir)
+│   │   └── bench.py               Throughput benchmark (write/read/statfs/readdir/create-storm)
 │   ├── mount.py                   FUSE mount context manager (contextlib.contextmanager)
 │   └── io.py                      read/write helpers, run_cli, make_file/make_dir context managers
 ├── conftest.py                    Pytest fixtures: mounted_fs, fused_bin, disker_bin, imgdump_bin
 ├── pyproject.toml                 Pytest markers: tool, fuse
-├── test_errors.py                 6 FUSE error path tests (pytest)
-├── test_disker.py                 7 format tool CLI tests (pytest)
-├── test_imgdump.py                10 imgdump tool tests (pytest)
 ├── test_basic.py                  7 FUSE smoke tests (pytest)
-├── test_rw.py                     13 read-write tests (pytest)
-├── test_xattr.py                  xattr tests (pytest)
+├── test_crash.py                  3 kill -9 crash-consistency tests (pytest)
+├── test_disker.py                 7 format tool CLI tests (pytest)
+├── test_errors.py                 6 FUSE error path tests (pytest)
+├── test_imgdump.py                10 imgdump tool tests (pytest)
 ├── test_lock.py                   6 lock/flock tests (pytest, cross-process)
+├── test_rw.py                     13 read-write tests (pytest)
+├── test_xattr.py                  7 xattr tests (pytest)
 ├── ci.py                          CI orchestrator (calls make + pytest)
 ├── run_in_namespace.sh            Thin shell: exec unshare -rUm timeout "$@"
-├── test_common.odin               Shared Odin test helpers
-├── mounter_test.odin              13 mounter-callback unit tests
-├── lock_test.odin                 4 lock/flock unit tests (direct fused_lock/fused_flock calls)
-├── journal_test.odin              4 journal-backend tests (v6 image + unified table)
-└── *.odin                         66 Odin unit tests (allocation, cache, directory, write,
-                                    fs, validate, display, LFN, struct sizes, xattr)
+├── test_common.odin               Shared Odin test helpers (image open, scratch volumes)
+├── mounter_test.odin              25 mounter-callback unit tests
+├── rmdir_test.odin                1 rmdir-on-unreadable-listing test (isolated image)
+├── lock_test.odin                 5 lock/flock unit tests (direct fused_lock/fused_flock calls)
+├── journal_test.odin              3 journal-backend tests (rev-8 WAL image)
+├── journal_txn_test.odin          4 journal transaction-bounds tests (slots/replay/chunking/collapse, isolated images)
+├── io_error_test.odin             2 fault-injection tests (truncated + read-only images)
+├── invalidation_test.odin         6 cache-invalidation tests
+├── dir_op_test.odin               9 directory-operation tests
+├── dir_test.odin                  6 directory tests
+├── lfn_ext_test.odin              4 LFN tests
+├── lfn_lifetime_test.odin         2 LFN storage-lifetime tests (rename/unlink, isolated images)
+├── alloc_test.odin                8 allocator property tests
+├── alloc_write_test.odin          17 allocator + write-path tests
+├── ce_identity_test.odin          1 CE slot-identity test (stale-duplicate clear, isolated image)
+├── truncate_test.odin             3 truncate-boundary tests (fragmented chain + journal pins, isolated image)
+├── zero_fill_test.odin            5 extension zero-fill + zero-length-write tests (poison-reuse images)
+├── free_space_test.odin           3 free-space oracle tests (Reserved/Full accounting, isolated images)
+├── cache_test.odin                10 cache tests
+├── fs_test.odin                   5 filesystem core tests
+├── xattr_test.odin                2 xattr unit tests
+└── size_check.odin                1 struct-size test (12 FUSE structs vs C ground truth)
 ```
 
 ### CI pipeline
@@ -489,19 +516,19 @@ tests/
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `make test` (86 Odin tests: 65 fs + 15 mounter + 4 lock + 2 journal) |
+| 2. Unit tests | `make test` (122 Odin tests) |
 | 3. Tool integration | `make pytest -m tool` (17 format + imgdump tests) |
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |
 | 6. FUSE stress | `make smoke-mt` inside `unshare -rUm` (stress.py) |
-| 7. Benchmark | `make bench` (bench.py — write/read/statfs/readdir MB/s) |
+| 7. Benchmark | `make bench` (bench.py — write/read/statfs/readdir/create-storm MB/s) |
 
 ### Test isolation
 
 FUSE tests run inside an isolated mount namespace (`unshare -rUm`) so that any
 FUSE mount created during testing is automatically torn down when the process
-exits — even if killed. The `run_in_namespace.sh` wrapper (6 lines of bash) is
-the only shell script that survives; everything else is Python or Odin.
+exits — even if killed. The `run_in_namespace.sh` wrapper is the only shell
+script that survives; everything else is Python or Odin.
 
 ### Diagnostics
 

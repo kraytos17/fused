@@ -29,10 +29,13 @@ intent log with a physical redo-log WAL in a dedicated journal region
 (default 64 sectors, configurable at format time). Provides idempotent
 automatic replay on mount. `SUPPORTED_REV_MIN = 6`, `SUPPORTED_REV_MAX = 7`.
 
-Rev 7 images can be mounted read/write by the current codebase. (Historically,
-rev 6 images were also mountable — code selected the journal path based on
-the `Journal_V2` feature flag. The intent log has since been removed; rev 6
-images are now rejected. See below.)
+Rev 7 images all carry the `Journal_V2` feature bit, which is now retired:
+they fail validation with `.Feature_Not_Supported` (rev 6 fails one
+check earlier, at the version gate, with `.Version_Too_Old`). Reformat
+to migrate. (Historically, rev 6 images were also mountable — code
+selected the journal path based on the `Journal_V2` feature flag. The
+intent log has since been removed; rev 6 images are now rejected. See
+below.)
 
 ## Rev 8 — `XAttr` feature
 
