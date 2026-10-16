@@ -175,8 +175,8 @@ _allocate_note_full :: proc(vol: ^Volume, cluster_idx: u64, cme: ^Cluster_Map_En
 
 // _allocate_append_link patches the previously allocated entry (already
 // pointing at the new slot) into its table and journals the patch.
-// A failed predecessor-table read is skipped silently (matches the inline
-// path it replaces); write failures propagate as FS_Error.
+// A missing predecessor entry or a failed table read fails the
+// allocation; write failures propagate as FS_Error.
 @(private = "file")
 _allocate_append_link :: proc(
 	vol: ^Volume,
@@ -186,19 +186,22 @@ _allocate_append_link :: proc(
 	prev_entry: Cluster_Entry,
 ) -> FS_Error {
 	prev_table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-	if read_cluster_entry_table(vol, prev_cluster, &prev_table) == .None {
-		if pidx, pok := ce_find_by_offset(prev_table, prev_offset);
-		   pok && .Allocated in prev_table[pidx].state {
-			prev_table[pidx] = prev_entry
-		}
-
-		write_cluster_entry_table(vol, prev_cluster, &prev_table) or_return
-		_journal_add(
-			vol,
-			jrnl,
-			journal_entry_from_cluster_entry(prev_entry, u64(prev_cluster), u8(prev_offset)),
-		) or_return
+	read_cluster_entry_table(vol, prev_cluster, &prev_table) or_return
+	pidx, pok := ce_find_by_offset(prev_table, prev_offset)
+	if !pok || .Allocated not_in prev_table[pidx].state {
+		log.errorf("allocate: predecessor entry not found (corrupted)")
+		return .Entry_Not_Found
 	}
+	prev_table[pidx] = prev_entry
+	write_cluster_entry_table(vol, prev_cluster, &prev_table) or_return
+	// Journal the actual table index: the sector offset is a location,
+	// not a slot identity, and the two diverge once freed slots with
+	// retained offsets are reused.
+	_journal_add(
+		vol,
+		jrnl,
+		journal_entry_from_cluster_entry(prev_entry, u64(prev_cluster), u8(pidx)),
+	) or_return
 	return .None
 }
 
@@ -390,19 +393,16 @@ deallocate_sectors :: proc(vol: ^Volume, start: Chain_Location) -> FS_Error {
 			return .Entry_Not_Found
 		}
 
-		entry := find_cluster_entry(vol, current_cluster, current_offset) or_return
+		// The table index comes from the allocated-entry lookup itself, so a
+		// stale duplicate offset can never divert the write to the wrong slot.
+		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
+		freed_idx := -1
+		entry := find_cluster_entry(vol, current_cluster, current_offset, &table, &freed_idx) or_return
 		entry.state -= {.Allocated}
 		cme, cme_err := read_cluster_map_entry(vol, current_cluster)
 		if cme_err == .None && .Full in cme.flags {
 			cme.flags -= {.Full}
 			write_cluster_map_entry(vol, current_cluster, &cme) or_return
-		}
-
-		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-		read_cluster_entry_table(vol, current_cluster, &table) or_return
-		freed_idx, fidx_ok := ce_find_by_offset(table, current_offset)
-		if !fidx_ok {
-			return .Entry_Not_Found
 		}
 
 		table[freed_idx] = entry

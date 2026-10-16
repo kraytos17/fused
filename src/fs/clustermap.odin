@@ -59,7 +59,10 @@ read_cluster_entry_table :: proc(
 }
 
 // ce_find_by_offset returns the index of the first Cluster_Entry in the
-// table whose sector_start matches offset.
+// table with a matching sector_start, REGARDLESS of allocation state.
+// Freed slots retain their old sector_start, so the first match can be
+// stale: mutation paths must use find_cluster_entry (which requires
+// .Allocated and returns the index) instead.
 ce_find_by_offset :: proc(
 	table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry,
 	offset: Sector_Offset,
