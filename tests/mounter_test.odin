@@ -965,3 +965,36 @@ test_mount_create_under_file_is_enotdir :: proc(t: ^testing.T) {
 	rc = mounter.fused_symlink("target", "/ndparent/link")
 	expect_errno(t, rc, .ENOTDIR)
 }
+
+// test_mount_symlink_multisector_roundtrip — a target spanning sectors
+// must persist and read back exactly (was: only the first sector was
+// written while file_size claimed the whole target, and readlink copied
+// up to file_size bytes out of a 512-byte stack buffer).
+@(test)
+test_mount_symlink_multisector_roundtrip :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	ok := setup_mounter(t, &fsys)
+	if !ok { return }
+	defer teardown_mounter(&fsys)
+	cleanup_root(&fsys, []string{"mlink"})
+	defer cleanup_root(&fsys, []string{"mlink"})
+
+	tlen := 1500
+	tbuf := make([]u8, tlen)
+	defer delete(tbuf)
+	for i in 0 ..< tlen { tbuf[i] = u8(97 + (i % 26)) }
+	target := make([]u8, tlen + 1)
+	defer delete(target)
+	copy(target, tbuf)
+	target[tlen] = 0
+	rc := mounter.fused_symlink(cstring(raw_data(target)), "/mlink")
+	testing.expect_value(t, rc, 0)
+	if rc != 0 { return }
+
+	out := make([]u8, 2048)
+	defer delete(out)
+	n := mounter.fused_readlink("/mlink", ([^]c.char)(raw_data(out)), c.size_t(len(out)))
+	testing.expect_value(t, n, 0)
+	testing.expect(t, bytes_equal(out[:tlen], tbuf), "target round-trips")
+	testing.expect_value(t, out[tlen], 0)
+}

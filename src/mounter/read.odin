@@ -405,13 +405,25 @@ fused_readlink :: proc "c" (path: cstring, buf: [^]c.char, size: c.size_t) -> c.
 		return fuse3.nix(.EIO)
 	}
 
-	sector_buf: [fs.SECTOR_SIZE]u8
-	if fs.sector_read(&fsys.vol, runs[0].sector, sector_buf[:]) != .None {
-		return fuse3.nix(.EIO)
+	// A non-positive destination holds nothing (readlink(2): EINVAL).
+	if size == 0 {
+		return fuse3.nix(.EINVAL)
 	}
-
 	clen := min(int(size) - 1, int(entry.file_size))
-	mem.copy(rawptr(buf), raw_data(sector_buf[:]), clen)
+	sector_buf: [fs.SECTOR_SIZE]u8
+	copied := 0
+	for run in runs {
+		if copied >= clen { break }
+		for s in 0 ..< run.count {
+			if copied >= clen { break }
+			if fs.sector_read(&fsys.vol, run.sector + fs.Sector(s), sector_buf[:]) != .None {
+				return fuse3.nix(.EIO)
+			}
+			n := min(fs.SECTOR_SIZE, clen - copied)
+			mem.copy(rawptr(mem.ptr_offset(([^]u8)(buf), copied)), raw_data(sector_buf[:]), n)
+			copied += n
+		}
+	}
 	buf[clen] = 0
 	log.debugf("readlink: %s → %d bytes", path, clen)
 	return 0
