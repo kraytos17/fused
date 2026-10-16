@@ -23,10 +23,12 @@ sector_write :: proc(vol: ^Volume, sector: Sector, buf: []u8) -> FS_Error {
 	return .None
 }
 
-// sector_write_bulk writes multiple sectors from a byte buffer
+// sector_write_bulk writes multiple sectors; like the single-sector
+// form, a short write without an error still fails instead of
+// reporting success.
 sector_write_bulk :: proc(vol: ^Volume, start_sector: Sector, buf: []u8) -> FS_Error {
-	_, err := os.write_at(vol.disk, buf, i64(u64(start_sector) * SECTOR_SIZE))
-	if err != nil {
+	n, err := os.write_at(vol.disk, buf, i64(u64(start_sector) * SECTOR_SIZE))
+	if err != nil || n != len(buf) {
 		return .Sector_Write_Error
 	}
 	return .None

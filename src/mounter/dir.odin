@@ -31,6 +31,7 @@ Check_Name_Ctx :: struct {
 	using scan: Dir_Scan_Ctx,
 	name:       string,
 	found:      bool,
+	io_err:     fs.FS_Error,
 }
 
 // write_entry_at writes a Directory_Entry back to its location on disk,
@@ -153,11 +154,22 @@ find_or_extend_dir :: proc(
 }
 
 // check_name_exists checks whether a name already exists in the directory.
-check_name_exists :: proc(fsys: ^FS, dir: fs.Chain_Location, name: string) -> bool {
+// check_name_exists reports whether a name already exists in a directory.
+// A sector-read failure returns an error (never a silent false, which
+// would let creation proceed over a possibly duplicate name).
+check_name_exists :: proc(
+	fsys: ^FS,
+	dir: fs.Chain_Location,
+	name: string,
+) -> (
+	found: bool,
+	err: fs.FS_Error,
+) {
 	depc := dir_entries_per_buf(fsys.vol.master.features)
 	visit := proc(sec: fs.Sector, user: rawptr) -> bool {
 		ctx := (^Check_Name_Ctx)(user)
-		if fs.sector_read(&ctx.fsys.vol, sec, ctx.scan_buf[:]) != .None {
+		if rerr := fs.sector_read(&ctx.fsys.vol, sec, ctx.scan_buf[:]); rerr != .None {
+			ctx.io_err = rerr
 			return false
 		}
 		for i in 0 ..< ctx.depc {
@@ -178,8 +190,13 @@ check_name_exists :: proc(fsys: ^FS, dir: fs.Chain_Location, name: string) -> bo
 		name = name,
 	}
 
-	fs.walk_chain_sectors(&fsys.vol, dir, visit, &ctx)
-	return ctx.found
+	if werr := fs.walk_chain_sectors(&fsys.vol, dir, visit, &ctx); werr != .None {
+		return false, werr
+	}
+	if ctx.io_err != .None {
+		return false, ctx.io_err
+	}
+	return ctx.found, .None
 }
 
 // write_entry_with_lfn writes a directory entry and sets its timestamps,

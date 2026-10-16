@@ -921,3 +921,47 @@ test_dir_extend_zeroes_new_sector :: proc(t: ^testing.T) {
 		testing.expect(t, fs.sector_write(vol, sec, zero[:]) == .None, "zero-back")
 	}
 }
+// test_mount_rmdir_root_is_ebusy — removing the root must fail without
+// touching it (resolve synthesizes root from the live master record, so
+// removal would deallocate the real root chain). Linux reports EBUSY.
+@(test)
+test_mount_rmdir_root_is_ebusy :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	ok := setup_mounter(t, &fsys)
+	if !ok { return }
+	defer teardown_mounter(&fsys)
+
+	rc := mounter.fused_rmdir("/")
+	expect_errno(t, rc, .EBUSY)
+
+	// Root still resolves afterward.
+	_, _, _, _, rerr := mounter.resolve_path_cached(&fsys, "/", context.temp_allocator)
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+}
+
+// test_mount_create_under_file_is_enotdir — create/mkdir/symlink under a
+// regular file must report ENOTDIR instead of using the file's data chain
+// as a directory.
+@(test)
+test_mount_create_under_file_is_enotdir :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	ok := setup_mounter(t, &fsys)
+	if !ok { return }
+	defer teardown_mounter(&fsys)
+	cleanup_root(&fsys, []string{"ndparent"})
+	defer cleanup_root(&fsys, []string{"ndparent"})
+
+	fi: fuse3.File_Info
+	rc := mounter.fused_create("/ndparent", posix.mode_t{.IRUSR, .IWUSR}, &fi)
+	testing.expect_value(t, rc, 0)
+	if rc != 0 { return }
+
+	rc = mounter.fused_create("/ndparent/child", posix.mode_t{.IRUSR, .IWUSR}, &fi)
+	expect_errno(t, rc, .ENOTDIR)
+
+	rc = mounter.fused_mkdir("/ndparent/dir", posix.mode_t{.IRUSR, .IWUSR, .IXUSR})
+	expect_errno(t, rc, .ENOTDIR)
+
+	rc = mounter.fused_symlink("target", "/ndparent/link")
+	expect_errno(t, rc, .ENOTDIR)
+}

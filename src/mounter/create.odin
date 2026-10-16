@@ -17,6 +17,7 @@ Prepare_Slot_Result :: enum {
 	Parent_Not_Found,
 	Name_Exists,
 	Dir_Full,
+	Not_A_Directory, // parent exists but is not a directory
 	Io_Error, // parent resolution hit I/O trouble (not a missing parent)
 }
 
@@ -42,9 +43,21 @@ prepare_parent_slot :: proc(
 		return .Io_Error, {}, 0, 0, ""
 	}
 
+	if .Directory not_in parent_entry.flags {
+		return .Not_A_Directory, {}, 0, 0, ""
+	}
+
 	dir_cluster := fs.Cluster(parent_entry.stored_cluster)
 	dir_offset := fs.Sector_Offset(parent_entry.sector_index)
-	if check_name_exists(fsys, fs.Chain_Location{dir_cluster, dir_offset}, base_name) {
+	name_found, name_err := check_name_exists(
+		fsys,
+		fs.Chain_Location{dir_cluster, dir_offset},
+		base_name,
+	)
+	if name_err != .None {
+		return .Io_Error, {}, 0, 0, ""
+	}
+	if name_found {
 		return .Name_Exists, {}, 0, 0, ""
 	}
 
@@ -76,6 +89,9 @@ fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 	case .Dir_Full:
 		log.debugf("create: %s → ENOSPC (dir full)", path)
 		return fuse3.nix(.ENOSPC)
+	case .Not_A_Directory:
+		log.debugf("create: %s → parent ENOTDIR", path)
+		return fuse3.nix(.ENOTDIR)
 	case .Io_Error:
 		log.debugf("create: %s → EIO", path)
 		return fuse3.nix(.EIO)
@@ -120,6 +136,8 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 		return fuse3.nix(.EEXIST)
 	case .Dir_Full:
 		return fuse3.nix(.ENOSPC)
+	case .Not_A_Directory:
+		return fuse3.nix(.ENOTDIR)
 	case .Io_Error:
 		return fuse3.nix(.EIO)
 	case .Ok:
@@ -180,6 +198,8 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 		return fuse3.nix(.EEXIST)
 	case .Dir_Full:
 		return fuse3.nix(.ENOSPC)
+	case .Not_A_Directory:
+		return fuse3.nix(.ENOTDIR)
 	case .Io_Error:
 		return fuse3.nix(.EIO)
 	case .Ok:
@@ -294,6 +314,14 @@ fused_rmdir :: proc "c" (path: cstring) -> c.int {
 	fsys := begin_op()
 	context.logger = fsys.logger
 	defer end_op(fsys)
+
+	// The root has no parent entry to remove (resolve synthesizes it
+	// from the live master record, so removal would deallocate the real
+	// root chain). Linux reports EBUSY.
+	if string(path) == "/" {
+		log.debugf("rmdir: %s → EBUSY (root)", path)
+		return fuse3.nix(.EBUSY)
+	}
 
 	entry, cluster, offset, idx, rerr := resolve_path_cached(
 		fsys,
