@@ -134,6 +134,14 @@ _alloc_cache_build :: proc(
 		skipped += 1
 	}
 
+	// `used` sums live entry sizes and deliberately excludes the table
+	// sector above: it lags the bitmap population by exactly that sector.
+	// The Full heuristic (used + take >= cluster_size) is calibrated for
+	// this lag — it fires precisely when the data area is full. Counting
+	// the table sector here would mark Full early and strand the last free
+	// sector; a late mark only costs one wasted scan (the no-run path marks
+	// Full next). Note the bitmap itself uses set semantics: a Cluster_Map
+	// pseudo-entry may share the table sector, so population <= the sum.
 	used: u16 = 0
 	if .Allocated in cme.flags {
 		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
@@ -171,10 +179,15 @@ _alloc_cache_build :: proc(
 	return .None
 }
 
-// alloc_cache_count_free counts free sectors across all clusters
+// alloc_cache_count_free counts free sectors across all clusters.
+// Reserved and Full clusters count as zero: the allocator never places
+// new extents in them, so their unset bitmap bits are not free space.
 alloc_cache_count_free :: proc(vol: ^Volume) -> u64 {
 	free: u64 = 0
 	for ci in 0 ..< int(vol.master.cluster_map_size) {
+		cme, cerr := read_cluster_map_entry(vol, Cluster(ci))
+		if cerr != .None { continue }
+		if .Reserved in cme.flags || .Full in cme.flags { continue }
 		bm, _, berr := alloc_cache_ensure(&vol.cache, vol, u64(ci))
 		if berr != .None { continue }
 
