@@ -85,6 +85,7 @@ test_journal_slots_do_not_overlap :: proc(t: ^testing.T) {
 		)
 	}
 	testing.expect(t, backend.commit(&vol, &h1), "commit max txn")
+	testing.expect(t, backend.finish(&vol, &h1, true), "finish max txn")
 
 	pos1, pok := jtxn_find_header(&vol, seq1)
 	testing.expect(t, pok, "txn1 header found")
@@ -103,6 +104,7 @@ test_journal_slots_do_not_overlap :: proc(t: ^testing.T) {
 		"add small",
 	)
 	testing.expect(t, backend.commit(&vol, &h2), "commit small txn")
+	testing.expect(t, backend.finish(&vol, &h2, true), "finish small txn")
 
 	after0: [fs.SECTOR_SIZE]u8
 	after1: [fs.SECTOR_SIZE]u8
@@ -152,6 +154,7 @@ test_journal_replay_stops_at_first_incomplete :: proc(t: ^testing.T) {
 		"add bad",
 	)
 	testing.expect(t, backend.commit(&vol, &hn), "commit N")
+	testing.expect(t, backend.finish(&vol, &hn, true), "finish")
 
 	hv: fs.Journal_Txn_Handle
 	testing.expect(t, backend.begin(&vol, &hv), "begin N+1")
@@ -162,6 +165,7 @@ test_journal_replay_stops_at_first_incomplete :: proc(t: ^testing.T) {
 		"add good",
 	)
 	testing.expect(t, backend.commit(&vol, &hv), "commit N+1")
+	testing.expect(t, backend.finish(&vol, &hv, true), "finish")
 
 	// Simulate the crash window: both transactions still need replay.
 	fs.journal_set_watermark(&vol.master, u64(seqN))
@@ -201,4 +205,37 @@ test_journal_chunks_large_allocations :: proc(t: ^testing.T) {
 	total: u64
 	for r in runs { total += u64(r.count) }
 	testing.expect_value(t, total, u64(600))
+}
+
+// test_journal_collapses_link_patch — a two-cluster allocation issues two
+// placements plus one link patch, but the plan collapses the patch into the
+// predecessor's record: the committed header carries exactly 2 entries
+// (log-before-home plan collection; the old immediate flow journaled 3).
+@(test)
+test_journal_collapses_link_patch :: proc(t: ^testing.T) {
+	fd, ok := jtxn_format(t, JTXN_SCRATCH)
+	if !ok { return }
+	vol, vok := open_volume_on_fd(fd)
+	if !vok { os.close(fd); os.remove(JTXN_SCRATCH); return }
+	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+
+	seq0 := u64(fs.journal_seq_get(&vol.master))
+	c, o, aerr := fs.allocate_sectors(&vol, {}, 20, .File_Content)
+	testing.expect_value(t, aerr, fs.FS_Error.None)
+	if aerr != .None { return }
+
+	pos, pok := jtxn_find_header(&vol, seq0)
+	testing.expect(t, pok, "chunk header found")
+	if !pok { return }
+	hdr_buf: [fs.SECTOR_SIZE]u8
+	testing.expect_value(t, fs.sector_read(&vol, pos, hdr_buf[:]), fs.FS_Error.None)
+	hdr := (^fs.Journal_Header)(raw_data(hdr_buf[:]))^
+	testing.expect_value(t, hdr.rec_count, u16(2))
+
+	runs, rerr := fs.resolve_extents(&vol, fs.Chain_Location{c, o})
+	defer delete(runs)
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+	total: u64
+	for r in runs { total += u64(r.count) }
+	testing.expect_value(t, total, u64(20))
 }

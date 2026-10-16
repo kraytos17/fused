@@ -115,7 +115,7 @@ journal_commit :: proc(vol: ^Volume, txn: ^Journal_Txn) -> bool {
 		}
 	}
 
-	os.sync(vol.disk)
+	if os.sync(vol.disk) != nil { return false }
 	hdr := Journal_Header {
 		magic       = JOURNAL_WAL_MAGIC,
 		seq         = u64(txn.seq),
@@ -134,14 +134,22 @@ journal_commit :: proc(vol: ^Volume, txn: ^Journal_Txn) -> bool {
 		return false
 	}
 
-	os.sync(vol.disk)
+	if os.sync(vol.disk) != nil { return false }
 	return true
 }
 
-journal_finish :: proc(vol: ^Volume, seq: Journal_Seq) {
+// journal_finish checkpoints a committed transaction: the sequence always
+// advances (preserving the slot even when home-apply failed), while the
+// watermark advances only when the home writes landed — recovery then
+// completes the chunk instead of skipping it (ADR-001).
+journal_finish :: proc(vol: ^Volume, seq: Journal_Seq, applied: bool) -> bool {
+	if applied {
+		journal_set_watermark(&vol.master, u64(seq))
+	}
 	journal_seq_set(&vol.master, Journal_Seq(u64(seq) + 1))
-	journal_set_watermark(&vol.master, u64(seq))
-	write_master_record(vol)
+	if write_master_record(vol) != .None { return false }
+	if os.sync(vol.disk) != nil { return false }
+	return true
 }
 
 @(private = "file")
@@ -329,19 +337,20 @@ journal_entry_from_cluster_entry :: proc(
 // kept (rather than direct calls) so a future journal format only adds a
 // new backend value.
 //
-// Semantics:
+// Semantics (see ADR-001):
 //   begin  — open a transaction (always succeeds; nothing is persisted yet).
 //   add    — record one CE-table write; returns false when the txn is full.
-//   commit — persist the transaction and advance the master journal state.
-//   abort  — discard the uncommitted in-memory entries. Home-sector writes
-//            issued before commit are NOT rolled back; chunked commits plus
-//            idempotent replay keep them consistent (log-before-home
-//            ordering is future work).
+//   commit — persist records + header and sync (log durable). Home tables
+//            are untouched; a commit failure leaves nothing to repair.
+//   finish — checkpoint: advance the sequence always (preserving the slot),
+//            the watermark only when home-apply succeeded.
+//   abort  — discard uncommitted in-memory entries (pre-commit only).
 //   recover — replay leftover state from a previous crash, in seq order.
 Journal_Backend :: struct {
 	begin:   proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool,
 	add:     proc(vol: ^Volume, h: ^Journal_Txn_Handle, e: Journal_Entry) -> bool,
 	commit:  proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool,
+	finish:  proc(vol: ^Volume, h: ^Journal_Txn_Handle, applied: bool) -> bool,
 	abort:   proc(vol: ^Volume, h: ^Journal_Txn_Handle),
 	recover: proc(vol: ^Volume),
 }
@@ -360,12 +369,12 @@ _j_add :: proc(vol: ^Volume, h: ^Journal_Txn_Handle, e: Journal_Entry) -> bool {
 
 @(private = "file")
 _j_commit :: proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool {
-	if !journal_commit(vol, &h.v2) {
-		return false
-	}
+	return journal_commit(vol, &h.v2)
+}
 
-	journal_finish(vol, h.v2.seq)
-	return true
+@(private = "file")
+_j_finish :: proc(vol: ^Volume, h: ^Journal_Txn_Handle, applied: bool) -> bool {
+	return journal_finish(vol, h.v2.seq, applied)
 }
 
 @(private = "file")
@@ -380,6 +389,77 @@ JOURNAL_BACKEND :: Journal_Backend {
 	begin   = _j_begin,
 	add     = _j_add,
 	commit  = _j_commit,
+	finish  = _j_finish,
 	abort   = _j_abort,
 	recover = journal_recover,
+}
+
+// journal_apply_entries writes a committed chunk to its home CE tables,
+// grouping by cluster so each table is read and written once. Order
+// within a cluster follows plan order (stable first-appearance grouping);
+// same-slot repeats overwrite in memory before the single write.
+journal_apply_entries :: proc(vol: ^Volume, entries: []Journal_Entry) -> FS_Error {
+	seen: [dynamic]u64
+	defer delete(seen)
+	for i in 0 ..< len(entries) {
+		cl := entries[i].cluster
+		skip := false
+		for d in seen {
+			if d == cl { skip = true; break }
+		}
+		if skip { continue }
+		append(&seen, cl)
+		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
+		if read_cluster_entry_table(vol, Cluster(cl), &table) != .None {
+			return .Sector_Read_Error
+		}
+		for e in entries {
+			if e.cluster != cl { continue }
+			if int(e.ce_index) >= len(table) { return .Sector_Write_Error }
+			table[e.ce_index] = Cluster_Entry{
+				state             = transmute(Cluster_Entry_State)e.state,
+				allocation_size   = e.alloc_size,
+				sector_start      = e.sector_start,
+				next_cluster      = e.next_cluster,
+				next_sector_index = e.next_sector_index,
+			}
+		}
+		if write_cluster_entry_table(vol, Cluster(cl), &table) != .None {
+			return .Sector_Write_Error
+		}
+	}
+	return .None
+}
+
+// journal_flush_chunk commits one bounded plan chunk log-before-home (see
+// ADR-001): records + header go durable first; home tables apply after;
+// the checkpoint advances only once home is durable. A commit failure
+// leaves home untouched; an apply failure holds the watermark so the next
+// recover completes the chunk from the committed log.
+journal_flush_chunk :: proc(vol: ^Volume, entries: []Journal_Entry) -> FS_Error {
+	if len(entries) == 0 { return .None }
+	if len(entries) > MAX_JOURNAL_ENTRIES {
+		log.errorf("journal: chunk too large (%d entries)", len(entries))
+		return .Sector_Write_Error
+	}
+	backend := JOURNAL_BACKEND
+	h: Journal_Txn_Handle
+	if !backend.begin(vol, &h) { return .Sector_Write_Error }
+	for e in entries {
+		// Cannot fail: the chunk fits a fresh transaction by construction.
+		if !backend.add(vol, &h, e) {
+			backend.abort(vol, &h)
+			return .Sector_Write_Error
+		}
+	}
+	if !backend.commit(vol, &h) {
+		backend.abort(vol, &h)
+		return .Sector_Write_Error
+	}
+	if aerr := journal_apply_entries(vol, entries); aerr != .None {
+		backend.finish(vol, &h, false)
+		return aerr
+	}
+	if !backend.finish(vol, &h, true) { return .Sector_Write_Error }
+	return .None
 }

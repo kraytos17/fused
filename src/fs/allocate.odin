@@ -13,28 +13,26 @@ _allocate_io_err :: proc() -> (Cluster, Sector_Offset, FS_Error) {
 	return 0, 0, .Sector_Write_Error
 }
 
-// _journal_checkpoint commits the in-progress chunk and begins a fresh
-// transaction, keeping every commit within MAX_JOURNAL_ENTRIES. Large
-// allocations span multiple bounded, idempotent chunks instead of
-// silently journaling a prefix of the transaction.
+// _plan_append records one CE-table write in the in-progress plan,
+// flushing a full chunk through the journal first (log-before-home per
+// ADR-001). Same-slot repeats collapse to the latest value: a link patch
+// supersedes the initial write, and each flushed chunk stays
+// independently replayable.
 @(private = "file")
-_journal_checkpoint :: proc(vol: ^Volume, jrnl: ^Journal_Txn_Handle) -> FS_Error {
-	backend := JOURNAL_BACKEND
-	if !backend.commit(vol, jrnl) { return .Sector_Write_Error }
-	if !backend.begin(vol, jrnl) { return .Sector_Write_Error }
-	return .None
-}
-
-// _journal_add records one CE-table write, checkpointing first when the
-// transaction is full (checked via count so the journal's error-logging
-// full path is never hit in normal operation). backend.add's result was
-// previously ignored, which let oversized transactions commit partially.
-@(private = "file")
-_journal_add :: proc(vol: ^Volume, jrnl: ^Journal_Txn_Handle, e: Journal_Entry) -> FS_Error {
-	if jrnl.v2.count >= MAX_JOURNAL_ENTRIES {
-		_journal_checkpoint(vol, jrnl) or_return
+_plan_append :: proc(vol: ^Volume, plan: ^[dynamic]Journal_Entry, e: Journal_Entry) -> FS_Error {
+	for &w in plan^ {
+		if w.cluster == e.cluster && w.ce_index == e.ce_index {
+			w = e
+			return .None
+		}
 	}
-	if !JOURNAL_BACKEND.add(vol, jrnl, e) { return .Sector_Write_Error }
+	if len(plan) >= MAX_JOURNAL_ENTRIES {
+		if ferr := journal_flush_chunk(vol, plan[:]); ferr != .None {
+			return ferr
+		}
+		clear(plan)
+	}
+	append(plan, e)
 	return .None
 }
 
@@ -173,36 +171,34 @@ _allocate_note_full :: proc(vol: ^Volume, cluster_idx: u64, cme: ^Cluster_Map_En
 	return .None
 }
 
-// _allocate_append_link patches the previously allocated entry (already
-// pointing at the new slot) into its table and journals the patch.
-// A missing predecessor entry or a failed table read fails the
-// allocation; write failures propagate as FS_Error.
+// _allocate_append_link records the predecessor's link patch in the plan.
+// The patch carries the tracked table index (never re-derived from the
+// sector offset). When the slot already left the plan through a mid-scan
+// flush, the flushed write is verified on disk first; a missing
+// predecessor fails the allocation. Nothing is written home here.
 @(private = "file")
 _allocate_append_link :: proc(
 	vol: ^Volume,
-	jrnl: ^Journal_Txn_Handle,
+	plan: ^[dynamic]Journal_Entry,
 	prev_cluster: Cluster,
-	prev_offset: Sector_Offset,
+	prev_idx: int,
 	prev_entry: Cluster_Entry,
 ) -> FS_Error {
-	prev_table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
-	read_cluster_entry_table(vol, prev_cluster, &prev_table) or_return
-	pidx, pok := ce_find_by_offset(prev_table, prev_offset)
-	if !pok || .Allocated not_in prev_table[pidx].state {
-		log.errorf("allocate: predecessor entry not found (corrupted)")
-		return .Entry_Not_Found
+	rec := journal_entry_from_cluster_entry(prev_entry, u64(prev_cluster), u8(prev_idx))
+	in_plan := false
+	for w in plan^ {
+		if w.cluster == rec.cluster && w.ce_index == rec.ce_index { in_plan = true; break }
 	}
-	prev_table[pidx] = prev_entry
-	write_cluster_entry_table(vol, prev_cluster, &prev_table) or_return
-	// Journal the actual table index: the sector offset is a location,
-	// not a slot identity, and the two diverge once freed slots with
-	// retained offsets are reused.
-	_journal_add(
-		vol,
-		jrnl,
-		journal_entry_from_cluster_entry(prev_entry, u64(prev_cluster), u8(pidx)),
-	) or_return
-	return .None
+	if !in_plan {
+		prev_table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
+		read_cluster_entry_table(vol, prev_cluster, &prev_table) or_return
+		pidx, pok := ce_find_by_offset(prev_table, Sector_Offset(prev_entry.sector_start))
+		if !pok || pidx != prev_idx || .Allocated not_in prev_table[pidx].state {
+			log.errorf("allocate: predecessor entry not found (corrupted)")
+			return .Entry_Not_Found
+		}
+	}
+	return _plan_append(vol, plan, rec)
 }
 
 // allocate_sectors allocates contiguous sectors on a volume.
@@ -218,9 +214,10 @@ _allocate_append_link :: proc(
 // skipped. An unused slot in the cluster-entry table is located and filled with a new
 // Cluster_Entry carrying the allocation size, sector start, and state derived from kind.
 //
-// Journaling: entries are batched via the v2 WAL backend and finalised
-// with a commit once allocation succeeds (or rolled back via the deferred
-// cleanup on error).
+// Journaling (ADR-001): the scan collects CE writes into a plan without
+// touching home; full chunks flush through the journal mid-scan and the
+// tail chunk flushes at the end (log before home). A failed op persists
+// nothing uncommitted; committed chunks replay idempotently.
 //
 // Tail-chain linking: when extending an existing chain (start.cluster != 0),
 // _link_tail_to_new walks the old chain and appends the first newly allocated cluster,
@@ -250,17 +247,16 @@ allocate_sectors :: proc(
 	remaining: u64 = additional_needed
 	is_first := true
 	prev_cluster: Cluster
-	prev_offset: Sector_Offset
+	prev_idx := -1
 	prev_entry: Cluster_Entry
 	prev_has_prev := false
 
-	backend := JOURNAL_BACKEND
-	jrnl: Journal_Txn_Handle
-	committed := false
-	if !backend.begin(vol, &jrnl) { return _allocate_io_err() }
-	defer if !committed {
-		backend.abort(vol, &jrnl)
-	}
+	// Plan-first collection: the scan records CE writes without touching
+	// home; chunks flush through the journal as they fill (see
+	// _plan_append) and the tail chunk flushes at the end. Any error
+	// below drops the unflushed tail plan, persisting nothing new.
+	plan := make([dynamic]Journal_Entry, 0, MAX_JOURNAL_ENTRIES + 1)
+	defer delete(plan)
 
 	start_hint := vol.cache.hint
 	for iter in 0 ..< vol.master.cluster_map_size {
@@ -313,11 +309,9 @@ allocate_sectors :: proc(
 			next_sector_index = 0,
 		}
 
-		table[free_idx] = new_entry
-		write_cluster_entry_table(vol, Cluster(cluster_idx), &table) or_return
-		_journal_add(
+		_plan_append(
 			vol,
-			&jrnl,
+			&plan,
 			journal_entry_from_cluster_entry(new_entry, cluster_idx, u8(free_idx)),
 		) or_return
 		if is_first {
@@ -327,11 +321,11 @@ allocate_sectors :: proc(
 		} else if prev_has_prev {
 			prev_entry.next_cluster = u64(cluster_idx)
 			prev_entry.next_sector_index = u16(free_start)
-			_allocate_append_link(vol, &jrnl, prev_cluster, prev_offset, prev_entry) or_return
+			_allocate_append_link(vol, &plan, prev_cluster, prev_idx, prev_entry) or_return
 		}
 
 		prev_cluster = Cluster(cluster_idx)
-		prev_offset = Sector_Offset(free_start)
+		prev_idx = free_idx
 		prev_entry = new_entry
 		prev_has_prev = true
 		remaining -= u64(take)
@@ -347,43 +341,35 @@ allocate_sectors :: proc(
 		return 0, 0, .No_Space
 	}
 	if start.cluster != 0 && !is_first {
-		if lerr := _link_tail_to_new(vol, &jrnl, start, Chain_Location{first_cluster, first_offset});
+		if lerr := _link_tail_to_new(vol, &plan, start, Chain_Location{first_cluster, first_offset});
 		   lerr != .None {
 			return 0, 0, lerr
 		}
-
-		vol.cache.hint = (u64(first_cluster) + 1) % vol.master.cluster_map_size
-		if !backend.commit(vol, &jrnl) { return _allocate_io_err() }
-
-		committed = true
-		return start.cluster, start.offset, .None
 	}
 
 	log.debugf("allocate: ok — %d sectors across %d clusters", sectors_needed, first_cluster)
 	vol.cache.hint = (u64(first_cluster) + 1) % vol.master.cluster_map_size
-	if !backend.commit(vol, &jrnl) { return _allocate_io_err() }
-
-	committed = true
+	if ferr := journal_flush_chunk(vol, plan[:]); ferr != .None {
+		return 0, 0, ferr
+	}
+	if start.cluster != 0 && !is_first {
+		return start.cluster, start.offset, .None
+	}
 	return first_cluster, first_offset, .None
 }
 
-// deallocate_sectors frees a chain of cluster entries starting at
-// start. Each entry has its Allocated flag cleared;
-// if the owning CME was marked Full, that flag is also removed. Deallocations
-// are journaled (v2 WAL or v6 intent log) so a crash cannot resurrect the
-// freed chain on the next mount.
+// deallocate_sectors frees a chain of cluster entries starting at start.
+// Each entry has its Allocated flag cleared; if the owning CME was marked
+// Full, that flag is also removed. Clears collect into a plan and flush
+// through the journal log-before-home (ADR-001), so a crash cannot resurrect
+// the freed chain and a failed op persists nothing uncommitted.
 deallocate_sectors :: proc(vol: ^Volume, start: Chain_Location) -> FS_Error {
 	if start.cluster == 0 {
 		return .None
 	}
 
-	backend := JOURNAL_BACKEND
-	jrnl: Journal_Txn_Handle
-	committed := false
-	if !backend.begin(vol, &jrnl) { return _allocate_io_err_single() }
-	defer if !committed {
-		backend.abort(vol, &jrnl)
-	}
+	plan := make([dynamic]Journal_Entry, 0, MAX_JOURNAL_ENTRIES + 1)
+	defer delete(plan)
 
 	current_cluster := start.cluster
 	current_offset := start.offset
@@ -405,13 +391,13 @@ deallocate_sectors :: proc(vol: ^Volume, start: Chain_Location) -> FS_Error {
 			write_cluster_map_entry(vol, current_cluster, &cme) or_return
 		}
 
-		table[freed_idx] = entry
-		write_cluster_entry_table(vol, current_cluster, &table) or_return
-		_journal_add(
+		if perr := _plan_append(
 			vol,
-			&jrnl,
+			&plan,
 			journal_entry_from_cluster_entry(entry, u64(current_cluster), u8(freed_idx)),
-		) or_return
+		); perr != .None {
+			return perr
+		}
 		if entry.next_cluster == 0 {
 			break
 		}
@@ -419,21 +405,20 @@ deallocate_sectors :: proc(vol: ^Volume, start: Chain_Location) -> FS_Error {
 		current_cluster = Cluster(entry.next_cluster)
 		current_offset = Sector_Offset(entry.next_sector_index)
 	}
-	if !backend.commit(vol, &jrnl) {
-		return .Sector_Write_Error
+	if ferr := journal_flush_chunk(vol, plan[:]); ferr != .None {
+		return ferr
 	}
 
-	committed = true
 	log.debugf("deallocate: ok — cluster=%d offset=%d", start.cluster, start.offset)
 	return .None
-}
+	}
 
-// _link_tail_to_new walks the existing chain from start to
-// its final entry and sets its next_cluster / next_sector_index to point at
-// first, effectively appending the newly allocated cluster(s).
+// _link_tail_to_new walks the existing chain from start to its final
+// entry and records the next_cluster / next_sector_index patch in the
+// plan, effectively appending the newly allocated cluster(s). A missing
+// tail entry fails the allocation. Nothing is written home here.
 @(private = "file")
-// The tail patch is journaled like any other CE-table write.
-_link_tail_to_new :: proc(vol: ^Volume, jrnl: ^Journal_Txn_Handle, start, first: Chain_Location) -> FS_Error {
+_link_tail_to_new :: proc(vol: ^Volume, plan: ^[dynamic]Journal_Entry, start, first: Chain_Location) -> FS_Error {
 	walk := _chain_walk_start(vol, start.cluster, start.offset)
 	for walk.guard < walk.limit {
 		tail, tc, step := _chain_next(vol, &walk)
@@ -449,12 +434,12 @@ _link_tail_to_new :: proc(vol: ^Volume, jrnl: ^Journal_Txn_Handle, start, first:
 				return rerr
 			}
 			tidx, tok := ce_find_by_offset(tail_table, walk.cursor.offset)
-			if tok && .Allocated in tail_table[tidx].state {
-				tail_table[tidx] = tail
-				if werr := write_cluster_entry_table(vol, tc, &tail_table); werr != .None {
-					return werr
-				}
-				_journal_add(vol, jrnl, journal_entry_from_cluster_entry(tail, u64(tc), u8(tidx))) or_return
+			if !tok || .Allocated not_in tail_table[tidx].state {
+				log.errorf("allocate: tail entry not found (corrupted)")
+				return .Entry_Not_Found
+			}
+			if perr := _plan_append(vol, plan, journal_entry_from_cluster_entry(tail, u64(tc), u8(tidx))); perr != .None {
+				return perr
 			}
 			break
 		}

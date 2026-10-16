@@ -50,6 +50,7 @@ test_backend_abort :: proc(t: ^testing.T) {
 	defer close_test_volume(&vol)
 
 	seq0 := fs.journal_seq_get(&vol.master)
+	w0 := fs.journal_watermark(&vol.master)
 
 	backend := fs.JOURNAL_BACKEND
 	h: fs.Journal_Txn_Handle
@@ -66,7 +67,7 @@ test_backend_abort :: proc(t: ^testing.T) {
 	backend.abort(&vol, &h)
 	testing.expect_value(t, fs.journal_seq_get(&vol.master), seq0)
 
-	// A committed transaction advances seq by one.
+	// Commit persists the log without advancing; finish checkpoints (seq + watermark).
 	backend2 := fs.JOURNAL_BACKEND
 	h2: fs.Journal_Txn_Handle
 	testing.expect(t, backend2.begin(&vol, &h2), "begin 2")
@@ -80,7 +81,11 @@ test_backend_abort :: proc(t: ^testing.T) {
 		),
 	)
 	testing.expect(t, backend2.commit(&vol, &h2), "commit 2")
+	testing.expect_value(t, fs.journal_seq_get(&vol.master), seq0)
+	testing.expect_value(t, fs.journal_watermark(&vol.master), w0)
+	testing.expect(t, backend2.finish(&vol, &h2, true), "finish 2")
 	testing.expect_value(t, fs.journal_seq_get(&vol.master), fs.Journal_Seq(u64(seq0) + 1))
+	testing.expect_value(t, fs.journal_watermark(&vol.master), u64(seq0))
 }
 
 // test_recover_replays_committed_txn verifies crash recovery end to end: a
@@ -131,6 +136,7 @@ test_recover_replays_committed_txn :: proc(t: ^testing.T) {
 		"add",
 	)
 	testing.expect(t, backend.commit(&vol, &h), "commit")
+	testing.expect(t, backend.finish(&vol, &h, true), "finish")
 
 	// Pre-condition: the entry is not yet on disk.
 	pre: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
