@@ -50,11 +50,11 @@ oracle, `tests/property_test.odin`):
 - No readahead/clamping changes in `read_range_from_runs` itself:
   the helper stays sector-granular; the EOF contract lives at the
   callback boundary where `file_size` is known.
-- No nested directories in the property generator yet;
-  subdirectories are flat (one level) and moves refresh the handle
-  via `fused_open` (ADR-003: handles name slots). Symlinks are
-  covered: short and multi-sector targets with a readlink oracle
-  and full rename/move/unlink lifecycle.
+- Property-generator nesting is depth-capped (PROP_MAX_DEPTH);
+  directory moves carry a circularity oracle (ADR-014) and file
+  moves refresh handles via `fused_open` (ADR-003: handles name
+  slots). Symlinks are covered: short and multi-sector targets
+  with a readlink oracle and full rename/move/unlink lifecycle.
 
 ## Consequences
 

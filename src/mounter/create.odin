@@ -525,7 +525,12 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	if .Directory in entry.flags {
 		check_path := new_parent_path
 		for check_path != "/" {
-			check_entry, _, _, _, check_err := resolve_path_cached(
+			// Compare slot identities: the walk fires if and only if
+			// it reaches the source directory itself. (Comparing
+			// data-chain heads here is wrong in both directions: it
+			// rejects legal moves under the source's parent and
+			// misses circular moves rooted at "/".)
+			_, check_c, check_o, check_idx, check_err := resolve_path_cached(
 				fsys,
 				check_path,
 				context.temp_allocator,
@@ -536,8 +541,9 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 			if check_err != .None {
 				return fs_error_to_errno(check_err)
 			}
-			if fs.Cluster(check_entry.stored_cluster) == old_cluster &&
-			   fs.Sector_Offset(check_entry.sector_index) == old_offset {
+			if check_c == old_cluster &&
+			   check_o == old_offset &&
+			   check_idx == old_idx {
 				log.debugf("rename: %s → %s → EINVAL (circular)", oldpath, newpath)
 				return fuse3.nix(.EINVAL)
 			}

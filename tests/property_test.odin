@@ -69,8 +69,14 @@ Prop_File :: struct {
 }
 
 Prop_Dir :: struct {
-	id: int, // path is /pdir_<id>; the root is id 0 (implicit)
+	id:     int,
+	parent: int, // parent dir id; 0 is the root
+	depth:  int, // ancestor count (root is 0); mkdir caps at PROP_MAX_DEPTH
 }
+
+// Depth cap for new subdirectories (moves respect it too, so formatted
+// paths always fit the stack buffers).
+PROP_MAX_DEPTH :: 3
 
 prop_setup :: proc(t: ^testing.T, fsys: ^mounter.FS, vol: ^fs.Volume) -> bool {
 	fd, ok := jtxn_format(t, PROP_SCRATCH)
@@ -118,28 +124,88 @@ prop_make_name :: proc(rng: ^Prop_Rng, id: int) -> string {
 	return strings.clone(fmt.tprintf("ptest_%d", id))
 }
 
-// prop_format_path renders the full path of (dir, name) into buf
-// (NUL-terminated). Directories live directly under the root.
-prop_format_path :: proc(buf: []u8, dir: int, name: string) -> cstring {
-	s: string
-	if dir == 0 {
-		s = fmt.bprintf(buf, "/%s", name)
-	} else {
-		s = fmt.bprintf(buf, "/pdir_%d/%s", dir, name)
+// prop_dir_parent returns the parent id of dir, or -1 if unknown
+// (defensive: the model never drops a live dir).
+prop_dir_parent :: proc(dirs: [dynamic]Prop_Dir, dir: int) -> int {
+	if dir == 0 { return -1 }
+	for d in dirs {
+		if d.id == dir {
+			return d.parent
+		}
 	}
-	buf[len(s)] = 0
+	return -1
+}
+
+// prop_is_descendant reports whether d is anc itself or below it.
+prop_is_descendant :: proc(dirs: [dynamic]Prop_Dir, anc, d: int) -> bool {
+	cur := d
+	for i := 0; i <= len(dirs); i += 1 {
+		if cur == anc { return true }
+		if cur == 0 { return false }
+		cur = prop_dir_parent(dirs, cur)
+		if cur < 0 { return false }
+	}
+	return false
+}
+
+// prop_subtree_height returns the longest descendant chain below dir
+// (0 for a leaf). Bounded: the model never holds a cycle.
+prop_subtree_height :: proc(dirs: [dynamic]Prop_Dir, dir: int) -> int {
+	best := 0
+	for d in dirs {
+		if d.parent == dir {
+			h := 1 + prop_subtree_height(dirs, d.id)
+			if h > best { best = h }
+		}
+	}
+	return best
+}
+
+// prop_format_path renders the full path of (dir, name) by walking
+// ancestors root-ward (cycle-guarded; the model never holds one).
+prop_format_path :: proc(buf: []u8, dirs: [dynamic]Prop_Dir, dir: int, name: string) -> cstring {
+	chain: [PROP_MAX_DEPTH + 4]int
+	n := 0
+	cur := dir
+	for cur != 0 && n < len(chain) {
+		chain[n] = cur
+		n += 1
+		cur = prop_dir_parent(dirs, cur)
+		if cur < 0 { break }
+	}
+	pos := 0
+	for i := n - 1; i >= 0; i -= 1 {
+		s := fmt.bprintf(buf[pos:], "/pdir_%d", chain[i])
+		pos += len(s)
+	}
+	s := fmt.bprintf(buf[pos:], "/%s", name)
+	pos += len(s)
+	buf[pos] = 0
 	return cstring(raw_data(buf))
 }
 
 // prop_format_dir renders a directory path (root is "/").
-prop_format_dir :: proc(buf: []u8, dir: int) -> cstring {
-	s: string
+prop_format_dir :: proc(buf: []u8, dirs: [dynamic]Prop_Dir, dir: int) -> cstring {
 	if dir == 0 {
-		s = fmt.bprintf(buf, "/")
-	} else {
-		s = fmt.bprintf(buf, "/pdir_%d", dir)
+		buf[0] = '/'
+		buf[1] = 0
+		return cstring(raw_data(buf))
 	}
-	buf[len(s)] = 0
+	chain: [PROP_MAX_DEPTH + 4]int
+	n := 0
+	cur := dir
+	for cur != 0 && n < len(chain) {
+		chain[n] = cur
+		n += 1
+		cur = prop_dir_parent(dirs, cur)
+		if cur < 0 { break }
+	}
+	pos := 0
+	for i := n - 1; i >= 0; i -= 1 {
+		s := fmt.bprintf(buf[pos:], "/pdir_%d", chain[i])
+		pos += len(s)
+	}
+	buf[pos] = 0
 	return cstring(raw_data(buf))
 }
 
@@ -188,13 +254,13 @@ prop_verify_dir :: proc(
 	dir: int,
 ) -> bool {
 	dbuf: [192]u8
-	dpath := prop_format_dir(dbuf[:], dir)
+	dpath := prop_format_dir(dbuf[:], dirs, dir)
 	list: Prop_Name_List
 	if rc := mounter.fused_readdir(dpath, &list, prop_collect, 0, nil, 0); rc != 0 {
 		testing.expectf(t, false, "readdir dir %d rc=%d", dir, int(rc))
 		return false
 	}
-	// Model set: files parented here, plus subdirs when listing root.
+	// Model set: files parented here, plus subdirs parented here.
 	// (tprintf temporaries: each call allocates fresh arena memory, so
 	// no two entries alias — the stack-copy trap that bit the checker's
 	// DupName scan.)
@@ -205,8 +271,8 @@ prop_verify_dir :: proc(
 			append(&want, f.name)
 		}
 	}
-	if dir == 0 {
-		for d in dirs {
+	for d in dirs {
+		if d.parent == dir {
 			append(&want, fmt.tprintf("pdir_%d", d.id))
 		}
 	}
@@ -275,22 +341,48 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 		choice := prop_below(&rng, 100)
 
 		if choice < 10 && len(dirs) < PROP_MAX_DIRS {
-			// mkdir a fresh directory directly under root
+			// mkdir a fresh directory under a random parent that
+			// still has depth headroom (root always qualifies)
 			id := next_id
 			next_id += 1
-			dbuf: [192]u8
-			s := fmt.bprintf(dbuf[:], "/pdir_%d", id)
-			dbuf[len(s)] = 0
-			log_op(&oolog, fmt.tprintf("op %d: mkdir %d", op, id))
-			if rc := mounter.fused_mkdir(cstring(raw_data(dbuf[:])), posix.mode_t{.IRUSR, .IWUSR, .IXUSR}); rc != 0 {
+			parent := 0
+			depth := 1
+			if len(dirs) > 0 {
+				// collect eligible parents first so the choice is
+				// uniform over dirs with headroom, not over retries
+				cands: [PROP_MAX_DIRS]int
+				nc := 0
+				for d in dirs {
+					if d.depth < PROP_MAX_DEPTH {
+						cands[nc] = d.id
+						nc += 1
+					}
+				}
+				if nc > 0 {
+					parent = cands[prop_below(&rng, nc)]
+					for d in dirs {
+						if d.id == parent {
+							depth = d.depth + 1
+							break
+						}
+					}
+				}
+			}
+			pbuf: [192]u8
+			nbuf: [32]u8
+			ns := fmt.bprintf(nbuf[:], "pdir_%d", id)
+			p := prop_format_path(pbuf[:], dirs, parent, string(nbuf[:len(ns)]))
+			log_op(&oolog, fmt.tprintf("op %d: mkdir %d in dir %d", op, id, parent))
+			if rc := mounter.fused_mkdir(p, posix.mode_t{.IRUSR, .IWUSR, .IXUSR}); rc != 0 {
 				testing.expect(t, false, oolog[len(oolog) - 1])
 				failed = true
 				continue
 			}
-			append(&dirs, Prop_Dir{id = id})
+			append(&dirs, Prop_Dir{id = id, parent = parent, depth = depth})
 		} else if choice < 15 && len(dirs) > 0 {
-			// rmdir an empty directory (non-empty removals are the
-			// existing ENOTEMPTY unit tests' territory, not the model)
+			// rmdir an empty directory: no files and no subdirs
+			// parented here (non-empty removals are the existing
+			// ENOTEMPTY unit tests' territory, not the model)
 			idx := -1
 			for i in 0 ..< len(dirs) {
 				empty := true
@@ -298,6 +390,14 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 					if f.dir == dirs[i].id {
 						empty = false
 						break
+					}
+				}
+				if empty {
+					for d in dirs {
+						if d.parent == dirs[i].id {
+							empty = false
+							break
+						}
 					}
 				}
 				if empty {
@@ -311,7 +411,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			}
 			id := dirs[idx].id
 			dbuf: [192]u8
-			dpath := prop_format_dir(dbuf[:], id)
+			dpath := prop_format_dir(dbuf[:], dirs, id)
 			log_op(&oolog, fmt.tprintf("op %d: rmdir %d", op, id))
 			if rc := mounter.fused_rmdir(dpath); rc != 0 {
 				testing.expect(t, false, oolog[len(oolog) - 1])
@@ -319,6 +419,69 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 				continue
 			}
 			ordered_remove(&dirs, idx)
+		} else if choice < 17 && len(dirs) > 0 {
+			// move a directory: legal unless the target is itself or
+			// below itself (circular → EINVAL, tree unchanged), or the
+			// target is its current parent (no-op rename onto an
+			// existing dir → EISDIR, tree unchanged)
+			di := prop_below(&rng, len(dirs))
+			D := dirs[di].id
+			T := 0
+			if prop_below(&rng, 2) == 0 {
+				T = dirs[prop_below(&rng, len(dirs))].id
+			}
+			tdepth := 0
+			for d in dirs {
+				if d.id == T {
+					tdepth = d.depth
+					break
+				}
+			}
+			if tdepth + 1 + prop_subtree_height(dirs, D) > PROP_MAX_DEPTH + 1 {
+				log_op(&oolog, fmt.tprintf("op %d: skip dirmove %d (too deep)", op, D))
+				continue
+			}
+			nbuf: [32]u8
+			ns := fmt.bprintf(nbuf[:], "pdir_%d", D)
+			leaf := string(nbuf[:len(ns)])
+			oldp: [192]u8
+			old := prop_format_path(oldp[:], dirs, dirs[di].parent, leaf)
+			newp: [192]u8
+			new := prop_format_path(newp[:], dirs, T, leaf)
+			st: fuse3.Stat
+			if T == dirs[di].parent {
+				log_op(&oolog, fmt.tprintf("op %d: dirmove %d no-op (same parent)", op, D))
+				if rc := mounter.fused_rename(old, new, 0); rc != -c.int(posix.EISDIR) {
+					testing.expectf(t, false, "op %d: dirmove no-op want=-EISDIR got=%d", op, int(rc))
+					failed = true
+				}
+			} else if prop_is_descendant(dirs, D, T) {
+				log_op(&oolog, fmt.tprintf("op %d: dirmove %d -> dir %d (circular)", op, D, T))
+				if rc := mounter.fused_rename(old, new, 0); rc != -c.int(posix.EINVAL) {
+					testing.expectf(t, false, "op %d: dirmove circular want=-EINVAL got=%d", op, int(rc))
+					failed = true
+					continue
+				}
+				if rc := mounter.fused_getattr(old, &st, nil); rc != 0 {
+					testing.expectf(t, false, "op %d: moved-away source still resolves rc=%d", op, int(rc))
+					failed = true
+				}
+			} else {
+				log_op(&oolog, fmt.tprintf("op %d: dirmove %d -> dir %d", op, D, T))
+				if rc := mounter.fused_rename(old, new, 0); rc != 0 {
+					testing.expectf(t, false, "op %d: dirmove %d rc=%d", op, D, int(rc))
+					failed = true
+					continue
+				}
+				delta := (tdepth + 1) - dirs[di].depth
+				dirs[di].parent = T
+				dirs[di].depth = tdepth + 1
+				for i in 0 ..< len(dirs) {
+					if i != di && prop_is_descendant(dirs, D, dirs[i].id) {
+						dirs[i].depth += delta
+					}
+				}
+			}
 		} else if choice < 24 && len(files) < PROP_MAX_LIVE {
 			// create a fresh file (or symlink, 1 in 5) in a random
 			// directory (unique name: no aliasing, no reuse)
@@ -336,7 +499,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			f.data = make([dynamic]u8, 0, 0, context.allocator)
 			f.xattr = make([dynamic]u8, 0, 0, context.allocator)
 			pbuf: [192]u8
-			p := prop_format_path(pbuf[:], parent, name)
+			p := prop_format_path(pbuf[:], dirs, parent, name)
 			if prop_below(&rng, 5) == 0 {
 				// symlink: short target usually, multi-sector (600 B,
 				// exercising the target chain) sometimes
@@ -402,7 +565,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 				copy(f.data[off:], chunk[:n])
 			}
 			pbuf: [192]u8
-			p := prop_format_path(pbuf[:], f.dir, f.name)
+			p := prop_format_path(pbuf[:], dirs, f.dir, f.name)
 			log_op(&oolog, fmt.tprintf("op %d: write %d off=%d n=%d", op, f.id, off, n))
 			got := mounter.fused_write(p, raw_data(chunk), c.size_t(n), posix.off_t(off), &f.fi)
 			if int(got) != n {
@@ -419,7 +582,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			new_size := prop_below(&rng, len(f.data) + 32)
 			resize(&f.data, new_size)
 			pbuf: [192]u8
-			p := prop_format_path(pbuf[:], f.dir, f.name)
+			p := prop_format_path(pbuf[:], dirs, f.dir, f.name)
 			log_op(&oolog, fmt.tprintf("op %d: truncate %d to %d", op, f.id, new_size))
 			if rc := mounter.fused_truncate(p, posix.off_t(new_size), &f.fi); rc != 0 {
 				testing.expect(t, false, oolog[len(oolog) - 1])
@@ -431,7 +594,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			// multi-sector ones)
 			f := files[prop_below(&rng, len(files))]
 			pbuf: [192]u8
-			p := prop_format_path(pbuf[:], f.dir, f.name)
+			p := prop_format_path(pbuf[:], dirs, f.dir, f.name)
 			if f.is_link {
 				lbuf: [1024]u8
 				log_op(&oolog, fmt.tprintf("op %d: readlink %d", op, f.id))
@@ -466,7 +629,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			idx := prop_below(&rng, len(files))
 			f := files[idx]
 			pbuf: [192]u8
-			p := prop_format_path(pbuf[:], f.dir, f.name)
+			p := prop_format_path(pbuf[:], dirs, f.dir, f.name)
 			log_op(&oolog, fmt.tprintf("op %d: unlink %d", op, f.id))
 			if rc := mounter.fused_unlink(p); rc != 0 {
 				testing.expect(t, false, oolog[len(oolog) - 1])
@@ -500,9 +663,9 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			next_id += 1
 			new_name := prop_make_name(&rng, id)
 			oldp: [192]u8
-			old := prop_format_path(oldp[:], f.dir, f.name)
+			old := prop_format_path(oldp[:], dirs, f.dir, f.name)
 			newp: [192]u8
-			new := prop_format_path(newp[:], target, new_name)
+			new := prop_format_path(newp[:], dirs, target, new_name)
 			log_op(&oolog, fmt.tprintf("op %d: move %d dir %d -> dir %d", op, f.id, f.dir, target))
 			if rc := mounter.fused_rename(old, new, 0); rc != 0 {
 				testing.expect(t, false, oolog[len(oolog) - 1])
@@ -539,9 +702,9 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			next_id += 1
 			new_name := prop_make_name(&rng, id)
 			oldp: [192]u8
-			old := prop_format_path(oldp[:], f.dir, f.name)
+			old := prop_format_path(oldp[:], dirs, f.dir, f.name)
 			newp: [192]u8
-			new := prop_format_path(newp[:], f.dir, new_name)
+			new := prop_format_path(newp[:], dirs, f.dir, new_name)
 			log_op(&oolog, fmt.tprintf("op %d: rename %d -> %d", op, f.id, id))
 			if rc := mounter.fused_rename(old, new, 0); rc != 0 {
 				testing.expect(t, false, oolog[len(oolog) - 1])
@@ -571,7 +734,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 				continue
 			}
 			pbuf: [192]u8
-			path := prop_format_path(pbuf[:], f.dir, f.name)
+			path := prop_format_path(pbuf[:], dirs, f.dir, f.name)
 			if !f.has_xattr || prop_below(&rng, 2) == 0 {
 				n := 1 + prop_below(&rng, 16)
 				vbuf: [16]u8
@@ -625,7 +788,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 	// for symlinks), and every directory lists exactly the model set.
 	for f in files {
 		pbuf: [192]u8
-		path := prop_format_path(pbuf[:], f.dir, f.name)
+		path := prop_format_path(pbuf[:], dirs, f.dir, f.name)
 		if f.is_link {
 			lbuf: [1024]u8
 			rc := mounter.fused_readlink(path, raw_data(lbuf[:]), c.size_t(len(lbuf)))
@@ -672,13 +835,21 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 	}
 
 	// Best-effort cleanup so the scratch image stays tidy (it is deleted
-	// below regardless): files first, then the now-empty directories.
+	// below regardless): files first, then directories leaves-first
+	// (parents only become empty once their children are gone).
 	for f in files {
 		pbuf: [192]u8
-		mounter.fused_unlink(prop_format_path(pbuf[:], f.dir, f.name))
+		mounter.fused_unlink(prop_format_path(pbuf[:], dirs, f.dir, f.name))
 	}
-	for d in dirs {
-		dbuf: [192]u8
-		mounter.fused_rmdir(prop_format_dir(dbuf[:], d.id))
+	for pass := 0; pass <= len(dirs) && len(dirs) > 0; pass += 1 {
+		progress := false
+		for i := len(dirs) - 1; i >= 0; i -= 1 {
+			dbuf: [192]u8
+			if mounter.fused_rmdir(prop_format_dir(dbuf[:], dirs, dirs[i].id)) == 0 {
+				ordered_remove(&dirs, i)
+				progress = true
+			}
+		}
+		if !progress { break }
 	}
 }
