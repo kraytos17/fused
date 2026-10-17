@@ -93,7 +93,7 @@ test_fault_sync_fails_home_sync_holds_watermark :: proc(t: ^testing.T) {
 
 	// Budget: 1 record + 1 header + 1 home-table write, then the home
 	// sync fails. The ignored finish(false) master write counts too.
-	vol.fault = fs.IO_Fault{
+	vol.fault = fs.IO_Fault {
 		enabled           = true,
 		fail_reads_after  = max(u64),
 		fail_writes_after = max(u64),
