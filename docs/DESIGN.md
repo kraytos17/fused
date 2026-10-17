@@ -246,6 +246,23 @@ The kernel splices data from the disk fd → FUSE pipe without userspace
 copying. `fused_write_buf` uses `linux.splice()` from the kernel-provided pipe
 fd to the disk fd for the write side.
 
+### Decision records
+
+Binding contracts live in [`docs/decisions/`](decisions/):
+
+- [ADR-001](decisions/adr-001-journal-transaction-contract.md): journal
+  transaction contract (log-before-home, checkpoint rules, recovery
+  failure policy).
+- [ADR-004](decisions/adr-004-free-space-semantics.md): free means
+  allocatable sectors (Reserved/Full excluded); statfs reports sectors
+  with `bfree == bavail`; file counts are capacity, not survey.
+- [ADR-006](decisions/adr-006-permission-model.md): constrained
+  coarse-flag permissions (no stored mode matrix; ownership recorded
+  but not enforced).
+- [ADR-008](decisions/adr-008-error-mapping.md): central
+  `FS_Error → errno` mapping (default EIO); absence vs. corruption
+  discipline.
+
 ### In-memory caches
 
 - **Bitmap cache** (`src/fs/alloc_cache.odin`): LRU cache (1024 entries) backed by

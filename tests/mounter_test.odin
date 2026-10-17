@@ -449,6 +449,7 @@ test_mount_fs_error_to_errno :: proc(t: ^testing.T) {
 		{fs.FS_Error.Version_Too_New, c.int(-int(posix.EIO))},
 		{fs.FS_Error.Feature_Not_Supported, c.int(-int(posix.EIO))},
 		{fs.FS_Error.Corrupt_Master_Record, c.int(-int(posix.EIO))},
+		{fs.FS_Error.Corrupt_XAttr_Blob, c.int(-int(posix.EIO))},
 	}
 	for c in cases {
 		testing.expect_value(t, mounter.fs_error_to_errno(c.err), c.want)
