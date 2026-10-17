@@ -287,14 +287,21 @@ remove_directory_entry :: proc(
 	if ferr := free_entry_lfn(fsys, entry); ferr != .None {
 		return ferr
 	}
-	if xerr := fs.xattr_clear(&fsys.vol, entry); xerr != .None {
-		return xerr
-	}
+	// Detach the xattr chain in memory; the old chain is freed only after
+	// the cleared entry below persists (same publish discipline as
+	// setxattr/removexattr).
+	reclaim := fs.xattr_clear(entry)
 
 	locks_remove_identity(fsys, loc)
 	entry.flags = {}
 	if werr := write_entry_at(fsys, loc, entry); werr != .None {
+		entry.xattr_cluster = reclaim
 		return werr
+	}
+	if reclaim != 0 {
+		if ferr := fs.xattr_free_chain(&fsys.vol, reclaim); ferr != nil {
+			log.debugf("unlink: reclaim of old xattr chain %d failed: %v (leaked for checker)", reclaim, ferr)
+		}
 	}
 
 	reinit_free_sectors(fsys)

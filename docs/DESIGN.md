@@ -28,7 +28,7 @@ read-write FUSE mounting (all 43 `fuse_operations` callbacks implemented).
 | **`cmd/mount/`** | Binary entry point — `package main`, calls `mounter.run()`. | `src/mounter/` |
 | **`cmd/format/`** | Standalone image formatter. Produces valid disk images without libfuse3. | `src/fs/` |
 | **`cmd/dump/`** | Read-only image dumper. Walks the image structure and prints it in human-readable or JSON form. | `src/fs/` |
-| **`tests/`** | Odin unit tests (159), Python pytest integration (61), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
+| **`tests/`** | Odin unit tests (162), Python pytest integration (61), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
 
 ## On-disk format (rev 8)
 
@@ -522,7 +522,7 @@ tests/
 ├── ci.py                          CI orchestrator (calls make + pytest)
 ├── run_in_namespace.sh            Thin shell: exec unshare -rUm timeout "$@"
 ├── test_common.odin               Shared Odin test helpers (image open, scratch volumes)
-├── mounter_test.odin              27 mounter-callback unit tests
+├── mounter_test.odin              29 mounter-callback unit tests
 ├── rmdir_test.odin                1 rmdir-on-unreadable-listing test (isolated image)
 ├── lock_test.odin                 5 lock/flock unit tests (direct fused_lock/fused_flock calls)
 ├── journal_test.odin              3 journal-backend tests (rev-8 WAL image)
@@ -543,7 +543,7 @@ tests/
 ├── free_space_test.odin           3 free-space oracle tests (Reserved/Full accounting, isolated images)
 ├── cache_test.odin                10 cache tests
 ├── fs_test.odin                   5 filesystem core tests
-├── xattr_test.odin                5 xattr unit tests
+├── xattr_test.odin                6 xattr unit tests
 └── size_check.odin                1 struct-size test (12 FUSE structs vs C ground truth)
 ```
 
@@ -552,7 +552,7 @@ tests/
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `make test` (159 Odin tests) |
+| 2. Unit tests | `make test` (162 Odin tests) |
 | 3. Tool integration | `make pytest -m tool` (17 format + imgdump tests) |
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |

@@ -37,6 +37,37 @@ _xattr_upsert :: proc(
 	}
 }
 
+// xattr_publish persists an entry whose xattr pointer was already updated
+// in memory, then reclaims the previous chain. On persist failure the
+// pointer is restored (the old chain was never freed) and the unpublished
+// new chain is reclaimed best-effort, leaving the disk image exactly as
+// before the update. A failed old-chain reclaim after a durable persist
+// is a logged leak for the checker, not a user-visible error: the data
+// is durable either way.
+xattr_publish :: proc(
+	fsys: ^FS,
+	entry: ^fs.Directory_Entry,
+	loc: fs.File_Identity,
+	new_cluster: u64,
+	reclaim: u64,
+) -> c.int {
+	if werr := write_entry_at(fsys, loc, entry); werr != .None {
+		entry.xattr_cluster = reclaim
+		if new_cluster != 0 {
+			_ = fs.xattr_free_chain(&fsys.vol, new_cluster)
+		}
+		reinit_free_sectors(fsys)
+		return fs_error_to_errno(werr)
+	}
+	if reclaim != 0 {
+		if ferr := fs.xattr_free_chain(&fsys.vol, reclaim); ferr != .None {
+			log.debugf("xattr: reclaim of old chain %d failed: %v (leaked for checker)", reclaim, ferr)
+		}
+	}
+	reinit_free_sectors(fsys)
+	return 0
+}
+
 // fused_setxattr sets an extended attribute on a file or directory.
 fused_setxattr :: proc "c" (
 	path: cstring,
@@ -92,17 +123,18 @@ fused_setxattr :: proc "c" (
 	}
 
 	_xattr_upsert(&attrs, attr_name, value, size)
-	if serr := fs.xattr_store(&fsys.vol, &entry, attrs[:]); serr != .None {
+	reclaim, serr := fs.xattr_store(&fsys.vol, &entry, attrs[:])
+	if serr != .None {
 		return fuse3.nix(.EIO)
 	}
-
-	reinit_free_sectors(fsys)
-	if werr := write_entry_at(
+	if rc := xattr_publish(
 		fsys,
-		fs.File_Identity{entry_cluster, entry_offset, entry_idx},
 		&entry,
-	); werr != .None {
-		return fs_error_to_errno(werr)
+		fs.File_Identity{entry_cluster, entry_offset, entry_idx},
+		entry.xattr_cluster,
+		reclaim,
+	); rc != 0 {
+		return rc
 	}
 
 	path_cache_invalidate_all(fsys)
@@ -213,7 +245,7 @@ fused_removexattr :: proc "c" (path: cstring, name: cstring) -> c.int {
 		return fs_error_to_errno(rerr)
 	}
 
-	removed, err := fs.xattr_remove(&fsys.vol, &entry, string(name))
+	removed, reclaim, err := fs.xattr_remove(&fsys.vol, &entry, string(name))
 	if err != .None {
 		return fuse3.nix(.EIO)
 	}
@@ -221,13 +253,14 @@ fused_removexattr :: proc "c" (path: cstring, name: cstring) -> c.int {
 		return fuse3.nix(.ENODATA)
 	}
 
-	reinit_free_sectors(fsys)
-	if werr := write_entry_at(
+	if rc := xattr_publish(
 		fsys,
-		fs.File_Identity{entry_cluster, entry_offset, entry_idx},
 		&entry,
-	); werr != .None {
-		return fs_error_to_errno(werr)
+		fs.File_Identity{entry_cluster, entry_offset, entry_idx},
+		entry.xattr_cluster,
+		reclaim,
+	); rc != 0 {
+		return rc
 	}
 
 	path_cache_invalidate_all(fsys)

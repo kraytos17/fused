@@ -1085,3 +1085,100 @@ test_lfn_lookup_clone_failure_no_name :: proc(t: ^testing.T) {
 	testing.expect(t, name2 == "", "no phantom name on failure")
 	mounter.end_read_op(rfs)
 }
+
+// test_xattr_publish_rollback_restores_old — if the entry persist fails,
+// the pointer is restored to the still-live old chain and the unpublished
+// new chain is reclaimed, leaving the disk image exactly as before.
+@(test)
+test_xattr_publish_rollback_restores_old :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !setup_mounter(t, &fsys) { return }
+	defer teardown_mounter(&fsys)
+	defer cleanup_root(&fsys, []string{"pubfile"})
+
+	fi: fuse3.File_Info
+	testing.expect_value(t, mounter.fused_create("/pubfile", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	v1 := "v1"
+	testing.expect_value(t, mounter.fused_setxattr("/pubfile", "user.k", raw_data(v1), len(v1), 0), 0)
+
+	res, rerr := fs.resolve_path(&fsys.vol, "/pubfile")
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+	if rerr != .None { return }
+	oldc := res.entry.xattr_cluster
+	testing.expect(t, oldc != 0, "V1 chain on disk")
+
+	// Stage V2 in memory only (production flow up to persist).
+	entry := res.entry
+	v2 := "v22"
+	attrs := []fs.XAttr{{name = "user.k", value = transmute([]u8)v2}}
+	reclaim, serr := fs.xattr_store(&fsys.vol, &entry, attrs)
+	testing.expect_value(t, serr, fs.FS_Error.None)
+	testing.expect_value(t, reclaim, oldc)
+	newc := entry.xattr_cluster
+	testing.expect(t, newc != 0 && newc != oldc, "V2 chain staged")
+
+	// Fail the persist write (write_entry_at is a single sector write).
+	fsys.vol.fault = fs.IO_Fault{enabled = true, fail_reads_after = max(u64), fail_writes_after = fsys.vol.fault.writes, fail_syncs_after = max(u64)}
+	loc := fs.File_Identity{res.cluster, res.offset, res.entry_index}
+	testing.expect(t, mounter.xattr_publish(&fsys, &entry, loc, newc, reclaim) != 0, "persist failure surfaces")
+	fsys.vol.fault.enabled = false
+
+	// Rollback: in-memory pointer restored, old chain live with V1.
+	testing.expect_value(t, entry.xattr_cluster, oldc)
+	check_old := fs.Directory_Entry{xattr_cluster = oldc}
+	loaded, lerr := fs.xattr_load(&fsys.vol, &check_old)
+	testing.expect_value(t, lerr, fs.FS_Error.None)
+	testing.expect_value(t, len(loaded), 1)
+	testing.expect_value(t, string(loaded[0].value), "v1")
+	for &a in loaded {
+		delete(a.name)
+		delete(a.value)
+	}
+	delete(loaded)
+
+	// The unpublished new chain was best-effort reclaimed under fault;
+	// reclaim it deterministically now (a double fault leaks it).
+	_ = fs.xattr_free_chain(&fsys.vol, newc)
+	check_new := fs.Directory_Entry{xattr_cluster = newc}
+	gone, lerr2 := fs.xattr_load(&fsys.vol, &check_new)
+	testing.expect(t, lerr2 != .None, "new chain gone")
+	delete(gone)
+}
+
+// test_xattr_replace_reclaims_old — a setxattr overwrite moves the on-disk
+// pointer to the new chain and frees the old one (no leak, no dangling).
+@(test)
+test_xattr_replace_reclaims_old :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !setup_mounter(t, &fsys) { return }
+	defer teardown_mounter(&fsys)
+	defer cleanup_root(&fsys, []string{"repfile"})
+
+	fi: fuse3.File_Info
+	testing.expect_value(t, mounter.fused_create("/repfile", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	v1 := "v1"
+	testing.expect_value(t, mounter.fused_setxattr("/repfile", "user.k", raw_data(v1), len(v1), 0), 0)
+	res1, rerr1 := fs.resolve_path(&fsys.vol, "/repfile")
+	testing.expect_value(t, rerr1, fs.FS_Error.None)
+	if rerr1 != .None { return }
+	oldc := res1.entry.xattr_cluster
+	testing.expect(t, oldc != 0, "V1 chain on disk")
+
+	v2 := "v22222"
+	testing.expect_value(t, mounter.fused_setxattr("/repfile", "user.k", raw_data(v2), len(v2), 0), 0)
+	res2, rerr2 := fs.resolve_path(&fsys.vol, "/repfile")
+	testing.expect_value(t, rerr2, fs.FS_Error.None)
+	if rerr2 != .None { return }
+	testing.expect(t, res2.entry.xattr_cluster != 0 && res2.entry.xattr_cluster != oldc, "pointer moved to new chain")
+
+	// Old chain freed, new chain readable with V2.
+	check_old := fs.Directory_Entry{xattr_cluster = oldc}
+	gone, lerr := fs.xattr_load(&fsys.vol, &check_old)
+	testing.expect(t, lerr != .None, "old chain freed")
+	delete(gone)
+	got, found, gerr := fs.xattr_get(&fsys.vol, &res2.entry, "user.k")
+	defer delete(got)
+	testing.expect_value(t, gerr, fs.FS_Error.None)
+	testing.expect(t, found, "V2 present")
+	testing.expect_value(t, string(got), "v22222")
+}

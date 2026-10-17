@@ -40,9 +40,11 @@ _xattr_chain_locate :: proc(
 	return {}, 0, false
 }
 
-// _xattr_chain_free deallocates the xattr chain rooted at the given cluster.
-@(private = "file")
-_xattr_chain_free :: proc(vol: ^Volume, cluster: u64) -> FS_Error {
+// xattr_free_chain deallocates the xattr chain rooted at the given cluster.
+// It is called after the entry update that dereferences the chain has
+// persisted: freeing earlier would leave a crash window where the on-disk
+// entry points at freed (and reusable) sectors.
+xattr_free_chain :: proc(vol: ^Volume, cluster: u64) -> FS_Error {
 	if cluster == 0 {
 		return .None
 	}
@@ -139,41 +141,44 @@ xattr_get :: proc(
 }
 
 // xattr_store replaces the full attribute set for an entry. It serializes
-// the blob, allocates a fresh .XAttr chain, writes it, updates
-// entry.xattr_cluster, and frees the previous chain (if any). The caller
-// persists the updated entry to disk.
-xattr_store :: proc(vol: ^Volume, entry: ^Directory_Entry, attrs: []XAttr) -> FS_Error {
+// the blob, allocates a fresh .XAttr chain, writes it, and updates
+// entry.xattr_cluster, returning the previous chain for reclamation. The
+// old chain is deliberately NOT freed here: the caller must persist the
+// updated entry first and free the old chain after, so no crash window
+// leaves the on-disk entry pointing at freed sectors. On any failure the
+// entry is untouched and the old chain stays live.
+xattr_store :: proc(
+	vol: ^Volume,
+	entry: ^Directory_Entry,
+	attrs: []XAttr,
+) -> (
+	reclaim: u64,
+	err: FS_Error,
+) {
 	data := _xattr_serialize(attrs)
 	defer delete(data)
 
 	old_cluster := entry.xattr_cluster
 	if len(data) == 0 {
-		if old_cluster != 0 {
-			if cerr := _xattr_chain_free(vol, old_cluster); cerr != .None {
-				return cerr
-			}
-		}
-
 		entry.xattr_cluster = 0
-		return .None
+		return old_cluster, .None
 	}
 
 	sectors := (u64(len(data)) + SECTOR_SIZE - 1) / SECTOR_SIZE
 	new_c, new_o, aerr := allocate_sectors(vol, {}, sectors, .XAttr)
 	if aerr != .None {
-		return aerr
+		return 0, aerr
 	}
 	if werr := write_chain(vol, Chain_Location{new_c, new_o}, data); werr != .None {
-		return werr
-	}
-	if old_cluster != 0 {
-		if cerr := _xattr_chain_free(vol, old_cluster); cerr != .None {
-			return cerr
-		}
+		// Best-effort reclaim of the unpublished chain; the old chain
+		// and the entry are untouched. A double fault here leaks the
+		// new chain for the checker.
+		_ = deallocate_sectors(vol, Chain_Location{new_c, new_o})
+		return 0, werr
 	}
 
 	entry.xattr_cluster = u64(new_c)
-	return .None
+	return old_cluster, .None
 }
 
 // xattr_remove deletes a single named attribute. Returns removed=true when
@@ -185,10 +190,14 @@ xattr_remove :: proc(
 	allocator := context.allocator,
 ) -> (
 	removed: bool,
+	reclaim: u64,
 	err: FS_Error,
 ) {
-	attrs := xattr_load(vol, entry, allocator) or_return
+	attrs, lerr := xattr_load(vol, entry, allocator)
 	defer delete(attrs)
+	if lerr != .None {
+		return false, 0, lerr
+	}
 
 	removed = false
 	for a, i in attrs {
@@ -205,36 +214,32 @@ xattr_remove :: proc(
 			delete(a.name, allocator)
 			delete(a.value, allocator)
 		}
-		return false, .None
+		return false, 0, .None
 	}
-	if serr := xattr_store(vol, entry, attrs[:]); serr != .None {
+	old_chain, serr := xattr_store(vol, entry, attrs[:])
+	if serr != .None {
 		for &a in attrs {
 			delete(a.name, allocator)
 			delete(a.value, allocator)
 		}
-		return false, serr
+		return false, 0, serr
 	}
 	for &a in attrs {
 		delete(a.name, allocator)
 		delete(a.value, allocator)
 	}
-	return true, .None
+	return true, old_chain, .None
 }
 
-// xattr_clear frees the xattr chain for an entry and zeroes
-// xattr_cluster. The caller persists the updated entry to disk. The
-// pointer is zeroed only on success: a failed free leaves the chain
-// allocated, so the entry must keep pointing at it (leak, not loss).
-xattr_clear :: proc(vol: ^Volume, entry: ^Directory_Entry) -> FS_Error {
-	if entry.xattr_cluster == 0 {
-		return .None
-	}
-
-	if err := _xattr_chain_free(vol, entry.xattr_cluster); err != .None {
-		return err
-	}
+// xattr_clear detaches the xattr chain from an entry, returning it for
+// reclamation. The chain itself is deliberately NOT freed here: the
+// caller must persist the cleared entry first and free the old chain
+// after, so no crash window leaves the on-disk entry pointing at freed
+// sectors. Infallible: no I/O happens in this procedure.
+xattr_clear :: proc(entry: ^Directory_Entry) -> (reclaimed: u64) {
+	old := entry.xattr_cluster
 	entry.xattr_cluster = 0
-	return .None
+	return old
 }
 
 // _xattr_serialize packs attributes into a blob buffer.

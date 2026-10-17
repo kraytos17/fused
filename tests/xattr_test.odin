@@ -26,7 +26,7 @@ test_xattr_roundtrip :: proc(t: ^testing.T) {
 		{name = "user.size", value = transmute([]u8)large},
 		{name = "user.empty", value = {}},
 	}
-	serr := fs.xattr_store(&vol, &entry, attrs)
+	reclaim, serr := fs.xattr_store(&vol, &entry, attrs)
 	testing.expect_value(t, serr, fs.FS_Error.None)
 
 	// Persist the entry pointer via write_directory_entry_at (as the mounter does).
@@ -37,6 +37,8 @@ test_xattr_roundtrip :: proc(t: ^testing.T) {
 		.None,
 		"persist entry",
 	)
+	// Free the previous chain only after the pointer persisted.
+	testing.expect_value(t, fs.xattr_free_chain(&vol, reclaim), fs.FS_Error.None)
 
 	// Reload a fresh entry to simulate a fresh resolve.
 	entry2, _ := fs.resolve_path(&vol, "/Kernel")
@@ -70,7 +72,7 @@ test_xattr_roundtrip :: proc(t: ^testing.T) {
 
 	// Remove one attribute.
 	entry3 := entry2.entry
-	removed, rerr := fs.xattr_remove(&vol, &entry3, "user.size")
+	removed, reclaim_r, rerr := fs.xattr_remove(&vol, &entry3, "user.size")
 	testing.expect(t, removed, "removed user.size")
 	testing.expect_value(t, rerr, fs.FS_Error.None)
 	testing.expect(
@@ -79,19 +81,26 @@ test_xattr_roundtrip :: proc(t: ^testing.T) {
 		.None,
 		"persist after remove",
 	)
+	testing.expect_value(t, fs.xattr_free_chain(&vol, reclaim_r), fs.FS_Error.None)
 
 	_, found4, gerr4 := fs.xattr_get(&vol, &entry3, "user.size")
 	testing.expect(t, !found4, "user.size gone after remove")
 	testing.expect_value(t, gerr4, fs.FS_Error.None)
 
-	removed2, rerr2 := fs.xattr_remove(&vol, &entry3, "user.nope")
+	removed2, _, rerr2 := fs.xattr_remove(&vol, &entry3, "user.nope")
 	testing.expect(t, !removed2, "removing missing attr reports not removed")
 	testing.expect_value(t, rerr2, fs.FS_Error.None)
 
 	// Clear everything.
-	cerr := fs.xattr_clear(&vol, &entry3)
-	testing.expect_value(t, cerr, fs.FS_Error.None)
+	cleared := fs.xattr_clear(&entry3)
 	testing.expect_value(t, entry3.xattr_cluster, u64(0))
+	testing.expect(
+		t,
+		fs.write_directory_entry_at(&vol, fs.File_Identity{res.cluster, res.offset, res.entry_index}, &entry3) ==
+		.None,
+		"persist clear",
+	)
+	testing.expect_value(t, fs.xattr_free_chain(&vol, cleared), fs.FS_Error.None)
 }
 
 // test_xattr_large_value — a value spanning multiple sectors round-trips.
@@ -113,7 +122,7 @@ test_xattr_large_value :: proc(t: ^testing.T) {
 
 	entry := res.entry
 	attrs := []fs.XAttr{{name = "user.big", value = big}}
-	serr := fs.xattr_store(&vol, &entry, attrs)
+	reclaim, serr := fs.xattr_store(&vol, &entry, attrs)
 	testing.expect_value(t, serr, fs.FS_Error.None)
 	testing.expect(
 		t,
@@ -121,6 +130,7 @@ test_xattr_large_value :: proc(t: ^testing.T) {
 		.None,
 		"persist entry",
 	)
+	testing.expect_value(t, fs.xattr_free_chain(&vol, reclaim), fs.FS_Error.None)
 
 	val, found, gerr := fs.xattr_get(&vol, &entry, "user.big")
 	defer delete(val)
@@ -134,14 +144,16 @@ test_xattr_large_value :: proc(t: ^testing.T) {
 		}
 	}
 
-	cerr := fs.xattr_clear(&vol, &entry)
-	testing.expect_value(t, cerr, fs.FS_Error.None)
+	cleared_big := fs.xattr_clear(&entry)
+	testing.expect(t, cleared_big != 0, "clear returns old chain")
+	testing.expect_value(t, entry.xattr_cluster, u64(0))
 	testing.expect(
 		t,
 		fs.write_directory_entry_at(&vol, fs.File_Identity{res.cluster, res.offset, res.entry_index}, &entry) ==
 		.None,
 		"persist clear",
 	)
+	testing.expect_value(t, fs.xattr_free_chain(&vol, cleared_big), fs.FS_Error.None)
 }
 
 // xattr_test_blob assembles a blob with explicit header fields and raw
@@ -328,19 +340,43 @@ test_xattr_malformed_blob_rejected :: proc(t: ^testing.T) {
 	}
 }
 
-// test_xattr_clear_failure_keeps_pointer — a failed chain free must not
-// zero the pointer: the chain is still allocated, so the entry must keep
-// pointing at it (leak, not loss).
+// test_xattr_clear_defers_free — clear detaches the chain in memory and
+// hands it back for reclamation: the old chain stays allocated and
+// readable until the caller persists and frees it.
 @(test)
-test_xattr_clear_failure_keeps_pointer :: proc(t: ^testing.T) {
+test_xattr_clear_defers_free :: proc(t: ^testing.T) {
 	vol, ok := open_test_volume()
 	if !ok { testing.fail(t); return }
 	defer close_test_volume(&vol)
 
-	entry := fs.Directory_Entry{xattr_cluster = u64(0xFFFFFF)}
-	cerr := fs.xattr_clear(&vol, &entry)
-	testing.expect_value(t, cerr, fs.FS_Error.Entry_Not_Found)
-	testing.expect_value(t, entry.xattr_cluster, u64(0xFFFFFF))
+	entry := fs.Directory_Entry{}
+	v := []u8{49}
+	attrs := []fs.XAttr{{name = "user.t", value = v}}
+	old, serr := fs.xattr_store(&vol, &entry, attrs)
+	testing.expect_value(t, serr, fs.FS_Error.None)
+	testing.expect(t, old == 0, "no previous chain")
+	c1 := entry.xattr_cluster
+	testing.expect(t, c1 != 0, "chain allocated")
+
+	cleared := fs.xattr_clear(&entry)
+	testing.expect_value(t, cleared, c1)
+	testing.expect_value(t, entry.xattr_cluster, u64(0))
+
+	// Old chain still live and readable (not yet freed).
+	via_old := fs.Directory_Entry{xattr_cluster = cleared}
+	loaded, lerr := fs.xattr_load(&vol, &via_old)
+	testing.expect_value(t, lerr, fs.FS_Error.None)
+	testing.expect_value(t, len(loaded), 1)
+	for &a in loaded {
+		delete(a.name)
+		delete(a.value)
+	}
+	delete(loaded)
+
+	testing.expect_value(t, fs.xattr_free_chain(&vol, cleared), fs.FS_Error.None)
+	gone, lerr2 := fs.xattr_load(&vol, &via_old)
+	testing.expect_value(t, lerr2, fs.FS_Error.Entry_Not_Found)
+	delete(gone)
 }
 
 // test_xattr_store_alloc_failure_keeps_old — when allocation fails before
@@ -361,9 +397,65 @@ test_xattr_store_alloc_failure_keeps_old :: proc(t: ^testing.T) {
 	entry := fs.Directory_Entry{}
 	v := []u8{49}
 	attrs := []fs.XAttr{{name = "user.t", value = v}}
-	serr := fs.xattr_store(&vol, &entry, attrs)
+	reclaim, serr := fs.xattr_store(&vol, &entry, attrs)
 	testing.expect_value(t, serr, fs.FS_Error.Sector_Write_Error)
+	testing.expect_value(t, reclaim, u64(0))
 	testing.expect_value(t, entry.xattr_cluster, u64(0))
 	vol.fault.enabled = false
 	testing.expect_value(t, fs.alloc_cache_count_free(&vol), f0)
+}
+
+// test_xattr_crash_window_sound — between commit and persist the old chain
+// must stay live and readable: a crash there leaves entry → new (to be
+// persisted) and old intact, never entry → freed sectors.
+@(test)
+test_xattr_crash_window_sound :: proc(t: ^testing.T) {
+	vol, ok := open_test_volume()
+	if !ok { testing.fail(t); return }
+	defer close_test_volume(&vol)
+
+	entry := fs.Directory_Entry{}
+	v1 := []u8{49}
+	attrs1 := []fs.XAttr{{name = "user.t", value = v1}}
+	r0, serr1 := fs.xattr_store(&vol, &entry, attrs1)
+	testing.expect_value(t, serr1, fs.FS_Error.None)
+	testing.expect_value(t, r0, u64(0))
+	c1 := entry.xattr_cluster
+	testing.expect(t, c1 != 0, "V1 chain allocated")
+
+	// Second store, old chain deliberately not freed yet (crash window).
+	v2 := []u8{50, 51}
+	attrs2 := []fs.XAttr{{name = "user.t", value = v2}}
+	r1, serr2 := fs.xattr_store(&vol, &entry, attrs2)
+	testing.expect_value(t, serr2, fs.FS_Error.None)
+	testing.expect_value(t, r1, c1)
+	c2 := entry.xattr_cluster
+	testing.expect(t, c2 != 0 && c2 != c1, "V2 chain allocated")
+
+	// Old chain fully intact and readable.
+	via_old := fs.Directory_Entry{xattr_cluster = c1}
+	old_attrs, oerr := fs.xattr_load(&vol, &via_old)
+	testing.expect_value(t, oerr, fs.FS_Error.None)
+	testing.expect_value(t, len(old_attrs), 1)
+	testing.expect_value(t, string(old_attrs[0].value), "1")
+	for &a in old_attrs {
+		delete(a.name)
+		delete(a.value)
+	}
+	delete(old_attrs)
+
+	// New chain readable through the entry.
+	new_attrs, nerr := fs.xattr_load(&vol, &entry)
+	testing.expect_value(t, nerr, fs.FS_Error.None)
+	testing.expect_value(t, len(new_attrs), 1)
+	testing.expect_value(t, string(new_attrs[0].value), "23")
+	for &a in new_attrs {
+		delete(a.name)
+		delete(a.value)
+	}
+	delete(new_attrs)
+
+	// Post-persist cleanup would free the old chain; do it directly.
+	testing.expect_value(t, fs.xattr_free_chain(&vol, c1), fs.FS_Error.None)
+	testing.expect_value(t, fs.xattr_free_chain(&vol, c2), fs.FS_Error.None)
 }
