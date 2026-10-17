@@ -270,6 +270,15 @@ Binding contracts live in [`docs/decisions/`](decisions/):
   open-unlink).
 - [ADR-005](decisions/adr-005-lfn-lifecycle.md): one sector per long
   name; fail-closed resolution.
+- [ADR-002](decisions/adr-002-format-and-compatibility.md): rev 7–8
+  window, feature-gated layouts, no silent migration, no golden
+  fixtures yet.
+- [ADR-007](decisions/adr-007-cache-ownership-and-locking.md): one
+  RW lock, shared holders never mutate, borrowed slices die at
+  invalidation, explicit allocators.
+- [ADR-010](decisions/adr-010-performance-objectives.md):
+  correctness-gated optimization; informational bench harness, no
+  thresholds.
 
 ### In-memory caches
 
