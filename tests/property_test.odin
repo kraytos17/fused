@@ -2,9 +2,9 @@
 // and a final checker scan (audit roadmap: property-based testing).
 //
 // A deterministic PRNG drives mixed mutating ops (mkdir/rmdir, create,
-// write, truncate, unlink, same-dir rename, cross-directory move, readdir
-// verification, xattr set/remove) against a scratch image through the
-// mounter API. An in-memory model tracks the expected tree and file
+// symlink, write, truncate, unlink, same-dir rename, cross-directory
+// move, readdir verification, readlink verification, xattr set/remove)
+// against a scratch image through the mounter API. An in-memory model tracks the expected tree and file
 // contents; every read and listing is verified immediately and all files
 // are re-verified at the end. A final journal+allocation checker scan
 // must be completely clean: leftover chains on a clean shutdown path
@@ -60,10 +60,12 @@ Prop_File :: struct {
 	id:        int,
 	dir:       int, // parent dir id; 0 is the root
 	name:      string, // heap clone of the leaf name
-	data:      [dynamic]u8,
-	has_xattr: bool,
-	xattr:     [dynamic]u8,
-	fi:        fuse3.File_Info,
+	is_link:   bool,
+	target:    string, // heap clone of the link target (links only)
+	data:      [dynamic]u8, // regular files only
+	has_xattr: bool, // regular files only
+	xattr:     [dynamic]u8, // regular files only
+	fi:        fuse3.File_Info, // regular files only
 }
 
 Prop_Dir :: struct {
@@ -229,10 +231,10 @@ prop_verify_dir :: proc(
 	return true
 }
 
-// test_prop_random_ops — randomized create/write/truncate/rename/move/
-// mkdir/rmdir/readdir/xattr sequence against an in-memory model,
-// verified by reads and listings throughout and a clean checker scan
-// at the end.
+// test_prop_random_ops — randomized create/symlink/write/truncate/
+// rename/move/mkdir/rmdir/readdir/readlink/xattr sequence against an
+// in-memory model, verified by reads and listings throughout and a
+// clean checker scan at the end.
 @(test)
 test_prop_random_ops :: proc(t: ^testing.T) {
 	fsys: mounter.FS
@@ -247,6 +249,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 	defer {
 		for f in files {
 			delete(f.name)
+			delete(f.target)
 			delete(f.data)
 			delete(f.xattr)
 			free(f)
@@ -317,8 +320,8 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			}
 			ordered_remove(&dirs, idx)
 		} else if choice < 24 && len(files) < PROP_MAX_LIVE {
-			// create a fresh file in a random directory (unique name:
-			// no aliasing, no reuse)
+			// create a fresh file (or symlink, 1 in 5) in a random
+			// directory (unique name: no aliasing, no reuse)
 			id := next_id
 			next_id += 1
 			parent := 0
@@ -334,6 +337,33 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			f.xattr = make([dynamic]u8, 0, 0, context.allocator)
 			pbuf: [192]u8
 			p := prop_format_path(pbuf[:], parent, name)
+			if prop_below(&rng, 5) == 0 {
+				// symlink: short target usually, multi-sector (600 B,
+				// exercising the target chain) sometimes
+				f.is_link = true
+				n := 0
+				tbuf: [768]u8
+				if prop_below(&rng, 4) == 0 {
+					n = copy(tbuf[:], fmt.tprintf("tgt_%d_", id))
+					for i := n; i < 600; i += 1 { tbuf[i] = 'x' }
+					n = 600
+				} else {
+					n = copy(tbuf[:], fmt.tprintf("tgt_%d", id))
+				}
+				tbuf[n] = 0
+				f.target = strings.clone(string(tbuf[:n]))
+				log_op(&oolog, fmt.tprintf("op %d: symlink %d -> %d bytes in dir %d", op, id, n, parent))
+				if rc := mounter.fused_symlink(cstring(raw_data(tbuf[:])), p); rc != 0 {
+					testing.expect(t, false, oolog[len(oolog) - 1])
+					failed = true
+					delete(name)
+					delete(f.target)
+					free(f)
+					continue
+				}
+				append(&files, f)
+				continue
+			}
 			log_op(&oolog, fmt.tprintf("op %d: create %d in dir %d", op, id, parent))
 			if rc := mounter.fused_create(p, posix.mode_t{.IRUSR, .IWUSR}, &f.fi); rc != 0 {
 				testing.expect(t, false, oolog[len(oolog) - 1])
@@ -347,7 +377,13 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			// write random bytes at a random offset (gaps zero-fill).
 			// A zero-byte write is a no-op (kernel parity: it does not
 			// extend the file), so the model only grows when n > 0.
+			// Symlinks take no data ops (the kernel only readlinks
+			// them); drawing one here is a logged skip.
 			f := files[prop_below(&rng, len(files))]
+			if f.is_link {
+				log_op(&oolog, fmt.tprintf("op %d: skip write (symlink %d)", op, f.id))
+				continue
+			}
 			off := prop_below(&rng, len(f.data) + 16)
 			n := prop_below(&rng, 49)
 			// NOTE: stack, not temp: fused_* resets the temp arena on
@@ -376,6 +412,10 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 		} else if choice < 52 && len(files) > 0 {
 			// truncate (grow zero-fills, shrink drops the tail)
 			f := files[prop_below(&rng, len(files))]
+			if f.is_link {
+				log_op(&oolog, fmt.tprintf("op %d: skip truncate (symlink %d)", op, f.id))
+				continue
+			}
 			new_size := prop_below(&rng, len(f.data) + 32)
 			resize(&f.data, new_size)
 			pbuf: [192]u8
@@ -386,8 +426,26 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 				failed = true
 			}
 		} else if choice < 66 && len(files) > 0 {
-			// read back and compare against the model
+			// read back and compare against the model (readlink for
+			// symlinks, verifying the full target including
+			// multi-sector ones)
 			f := files[prop_below(&rng, len(files))]
+			pbuf: [192]u8
+			p := prop_format_path(pbuf[:], f.dir, f.name)
+			if f.is_link {
+				lbuf: [1024]u8
+				log_op(&oolog, fmt.tprintf("op %d: readlink %d", op, f.id))
+				if rc := mounter.fused_readlink(p, raw_data(lbuf[:]), c.size_t(len(lbuf))); rc != 0 {
+					testing.expectf(t, false, "op %d: readlink %d rc=%d", op, f.id, int(rc))
+					failed = true
+					continue
+				}
+				if string(lbuf[:len(f.target)]) != f.target || lbuf[len(f.target)] != 0 {
+					testing.expectf(t, false, "op %d: readlink %d target mismatch", op, f.id)
+					failed = true
+				}
+				continue
+			}
 			total := len(f.data)
 			off := prop_below(&rng, total + 1)
 			n := prop_below(&rng, 65)
@@ -397,8 +455,6 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			}
 			rbuf: [1024]u8
 			buf := rbuf[:]
-			pbuf: [192]u8
-			p := prop_format_path(pbuf[:], f.dir, f.name)
 			log_op(&oolog, fmt.tprintf("op %d: read %d off=%d n=%d", op, f.id, off, n))
 			got := mounter.fused_read(p, raw_data(buf), c.size_t(n), posix.off_t(off), &f.fi)
 			if int(got) != want_len || !bytes_equal(buf[:int(got)], f.data[off:off + want_len]) {
@@ -419,6 +475,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			}
 			ordered_remove(&files, idx)
 			delete(f.name)
+			delete(f.target)
 			delete(f.data)
 			delete(f.xattr)
 			free(f)
@@ -461,12 +518,15 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 				failed = true
 				continue
 			}
-			// ...and the handle must track the new slot.
-			if rc := mounter.fused_open(new, &f.fi); rc != 0 {
-				testing.expectf(t, false, "op %d: reopen after move rc=%d", op, int(rc))
-				delete(new_name)
-				failed = true
-				continue
+			// ...and the handle must track the new slot (regular
+			// files only; links carry no open handle).
+			if !f.is_link {
+				if rc := mounter.fused_open(new, &f.fi); rc != 0 {
+					testing.expectf(t, false, "op %d: reopen after move rc=%d", op, int(rc))
+					delete(new_name)
+					failed = true
+					continue
+				}
 			}
 			delete(f.name)
 			f.name = new_name
@@ -504,8 +564,12 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 				failed = true
 			}
 		} else if len(files) > 0 {
-			// xattr set/remove/get cycle
+			// xattr set/remove/get cycle (regular files only)
 			f := files[prop_below(&rng, len(files))]
+			if f.is_link {
+				log_op(&oolog, fmt.tprintf("op %d: skip xattr (symlink %d)", op, f.id))
+				continue
+			}
 			pbuf: [192]u8
 			path := prop_format_path(pbuf[:], f.dir, f.name)
 			if !f.has_xattr || prop_below(&rng, 2) == 0 {
@@ -557,11 +621,19 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 		return
 	}
 
-	// Full re-verification: every file reads back exactly, and every
-	// directory lists exactly the model set.
+	// Full re-verification: every file reads back exactly (readlink
+	// for symlinks), and every directory lists exactly the model set.
 	for f in files {
 		pbuf: [192]u8
 		path := prop_format_path(pbuf[:], f.dir, f.name)
+		if f.is_link {
+			lbuf: [1024]u8
+			rc := mounter.fused_readlink(path, raw_data(lbuf[:]), c.size_t(len(lbuf)))
+			testing.expect(t, rc == 0, "final readlink ok")
+			testing.expect(t, string(lbuf[:len(f.target)]) == f.target, "final target matches model")
+			testing.expect(t, lbuf[len(f.target)] == 0, "final target NUL-terminated")
+			continue
+		}
 		buf := make([]u8, len(f.data) + 16, context.allocator)
 		defer delete(buf)
 		got := mounter.fused_read(path, raw_data(buf), c.size_t(len(buf)), 0, &f.fi)

@@ -550,7 +550,7 @@ tests/
 ├── ce_identity_test.odin          1 CE slot-identity test (stale-duplicate clear, isolated image)
 ├── check_test.odin                20 checker tests (Stage A ownership/links/bounds/free + Stage B reachability/orphans/journal + read-only open, isolated images)
 ├── golden_test.odin               2 format byte-golden tests (rev 7 + rev 8 fresh-format hashes, determinism check)
-├── property_test.odin             1 model-based property test (300 deterministic ops: files + subdirs, cross-dir moves, LFN names, readdir oracle, clean final scan)
+├── property_test.odin             1 model-based property test (300 deterministic ops: files + symlinks + subdirs, cross-dir moves, LFN names, readdir/readlink oracles, clean final scan)
 ├── truncate_test.odin             3 truncate-boundary tests (fragmented chain + journal pins, isolated image)
 ├── zero_fill_test.odin            5 extension zero-fill + zero-length-write tests (poison-reuse images)
 ├── free_space_test.odin           3 free-space oracle tests (Reserved/Full accounting, isolated images)
