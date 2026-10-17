@@ -32,10 +32,15 @@ the layout must be validated before any journal sector is touched.
    (including rev 6 with the removed intent log) are rejected, not
    converted. Adding a feature means adding the flag, listing it in
    `ALL_SUPPORTED_FEATURES`, and bumping `SUPPORTED_REV_MAX`.
-5. **No golden fixtures yet.** Compatibility is enforced by revision
-   range checks and layout asserts, not by reference images. Golden
-   fixtures per supported revision are future work (needed before any
-   revision bump).
+5. **Golden fixtures per supported revision.** Fresh formats are
+   byte-pinned: `tests/golden_test.odin` formats a deterministic
+   scratch image (no demo data — demo entries carry wall-clock
+   timestamps) for rev 7 (V5 layouts, no XAttr) and rev 8 (V6/V5
+   layouts with XAttr) and compares FNV-1a hashes of the full image
+   and of each 64 KiB chunk against stored constants, naming the
+   first differing chunk on drift. Any format change must update
+   the goldens deliberately (verify the diff is the intended change
+   first), never blindly.
 
 ## Scope (explicit non-goals)
 
@@ -48,12 +53,16 @@ the layout must be validated before any journal sector is touched.
 ## Consequences
 
 - A format change is a deliberate multi-step act: layout code,
-  feature bit, revision bump, validation, and (once they exist)
-  golden fixtures — never just a struct edit.
+  feature bit, revision bump, validation, and golden fixture
+  updates — never just a struct edit.
 - Retired bits stay retired: bit 1 must never be reused.
 
 ## Tests enforcing this
 
 - `tests/size_check.odin`: struct-size asserts incl. C ABI cross-checks.
 - `tests/io_error_test.odin`: truncated images rejected before I/O.
+- `tests/golden_test.odin`: byte-goldens for rev 7 and rev 8 fresh
+  formats (full + per-chunk hashes) plus a format-twice
+  determinism check. Mutation-checked: a one-byte master change
+  fails both goldens with chunk localization.
 - `make doctor`: master validation on every fresh image.
