@@ -262,6 +262,14 @@ Binding contracts live in [`docs/decisions/`](decisions/):
 - [ADR-008](decisions/adr-008-error-mapping.md): central
   `FS_Error → errno` mapping (default EIO); absence vs. corruption
   discipline.
+- [ADR-009](decisions/adr-009-checker-and-repair-model.md): read-only
+  checker (errors fail, orphans warn); no repair; journal is reported,
+  not replayed.
+- [ADR-003](decisions/adr-003-file-identity.md): handles name
+  directory slots (no stable nodes, no hard links, no POSIX
+  open-unlink).
+- [ADR-005](decisions/adr-005-lfn-lifecycle.md): one sector per long
+  name; fail-closed resolution.
 
 ### In-memory caches
 
