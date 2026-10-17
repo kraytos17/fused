@@ -104,18 +104,8 @@ def mount_fuse(bin: str, image: str, mount: str, logs_dir: str = "logs",
     Yields the mount point path.
     Raises MountError if the mount doesn't appear within 5 seconds.
     """
-    opts = opts or []
-    os.makedirs(mount, exist_ok=True)
-    os.makedirs(logs_dir, exist_ok=True)
-
-    log_path = os.path.join(logs_dir, "fused_fuse.log")
     with contextlib.ExitStack() as stack:
-        fuse_out = stack.enter_context(open(log_path, "w"))
-        proc = subprocess.Popen(
-            [bin, image, "-f", "-d", mount] + opts,
-            stdout=fuse_out, stderr=subprocess.STDOUT,
-        )
-
+        proc, log_path = _spawn(bin, image, mount, logs_dir, opts or [], "fused_fuse.log", stack)
         try:
             _wait_for_mount(proc, mount, log_path)
             yield mount
