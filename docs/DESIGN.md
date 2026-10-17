@@ -28,7 +28,10 @@ read-write FUSE mounting (all 43 `fuse_operations` callbacks implemented).
 | **`cmd/mount/`** | Binary entry point — `package main`, calls `mounter.run()`. | `src/mounter/` |
 | **`cmd/format/`** | Standalone image formatter. Produces valid disk images without libfuse3. | `src/fs/` |
 | **`cmd/dump/`** | Read-only image dumper. Walks the image structure and prints it in human-readable or JSON form. | `src/fs/` |
-| **`tests/`** | Odin unit tests (181), Python pytest integration (69: 21 tool + 45 fuse + 3 static), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
+| **`cmd/check/`** | Image checker binary (fsck-like). Validates an image without mounting: master summary, free-sector coherence, Stage A/B scan, journal slot report. `--read-only` skips recovery, never writes; exits 1 on structural errors. | `src/fs/` |
+| **`src/logflags/`** | Shared `--log-level`/`--log-format` parsing for the CLI tools. | — |
+| **`tools/`** | `audit/` (callback locking/logger/hygiene/attribute audit; `--strict` gates CI) and `gen_trace_wrappers/` (Odin generator for the traced wrappers; output must be byte-identical). | `src/` (read-only source scans) |
+| **`tests/`** | Odin unit tests (184), Python pytest integration (72: 21 tool + 48 fuse + 3 static), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
 
 ## On-disk format (rev 8)
 
@@ -337,6 +340,34 @@ Shared call-site plumbing so FUSE callbacks stay thin:
 - `truncate_chain_at` (`src/fs/clustermap.odin`) — the CE-chain walk for
   `fused_truncate`'s shrink path, shared out of the file-truncation logic.
 
+### Trace wrappers (`src/mounter/trace_wrappers.odin`)
+
+Opt-in JSONL FUSE op tracing (`trace.odin` sink, `--trace` on the mount
+command). The `traced_*` wrappers are generated, not hand-written: each
+mirrors its `fused_*` signature verbatim, fast-paths to the real
+implementation on a nil sink, and otherwise records one event. The ops table
+(`build_operations`) points at `traced_*`; tests call `fused_*` directly.
+
+Regenerate with `make gen-trace` (raw form: `odin run
+tools/gen_trace_wrappers -collection:src=src`); the output must be
+byte-identical to the checked-in file. `make check-trace` verifies this
+and also runs in the CI static phase and `doctor`. Hand-authored bits are confined to the generator: the two-path
+(`symlink`, `rename`, `link`, `copy_file_range` → `a=>b`) and no-path
+(`init`, `destroy`) tables, plus three special cases (`init`/`destroy`
+return shapes, `destroy`'s `private_data` lookup, and the
+`copy_file_range` fast-path wrap which stays wrapped below the width).
+Trace output is a debugging aid, not a stable API: the line schema may grow
+fields without notice.
+
+Event schema (unstable): `{"op","path","rc","err","dur_us"}` — `err`
+always agrees with `rc < 0`; two-path ops log `old=>new`. `--trace=errors`
+records only failing ops; `--trace-out=-` writes stdout (never closed by
+teardown); `--trace` without `--trace-out` refuses to mount. Per-op call,
+error, and latency-ns counters accumulate in the sink. Covered by
+`tests/fuse/test_trace.py` (all / errors-only / missing-out) and the
+`test_trace_format_line` unit test (exact line, quoting, control-byte
+escapes).
+
 ### Advisory locks (`src/mounter/lock.odin`)
 
 `lock` and `flock` are tracked entirely in memory per mount — no on-disk
@@ -420,6 +451,29 @@ The full transaction contract lives in
 - Recovery collects valid ring slots, sorts by seq, and replays oldest-first
   so a wrapped-around older transaction can't overwrite a newer one.
   It stops at the first incomplete slot without advancing past it.
+
+### Checker (`src/fs/check.odin` + `cmd/check`)
+
+Offline structural validation without mounting (full contract in ADR-009).
+`check_image` runs **Stage A** straight from disk allocation metadata:
+entry ownership, link counts, CE bounds, free-sector accounting —
+errors only. Stored short names borrow the chain buffer (never a reused
+stack slot, per audit rule s10). **Stage B** (`_check_reachability`) then
+walks every directory from the root: reference validation plus orphan
+analysis — allocated-but-unreachable entries warn (orphans are suspicious,
+not corrupt; `Cluster_Map` pseudo-entries describe their own table sector
+and are excluded). Chain-link integrity itself is Stage A output.
+
+`volume_open_readonly` opens without running journal recovery (read-only
+fd, zero image bytes touched); a read-only scan may lag uncheckpointed
+slots. `check_journal_report` lists ring slots (seq, record count,
+committed/pending) for the CLI. `cmd/check` prints a master summary,
+free-sector coherence (`alloc_cache_count_free` vs total), per-finding
+`severity: code cluster=… index=… — detail` lines, and the journal summary;
+it exits 1 on structural errors or an unreadable image, 0 otherwise
+(warnings don't fail). Covered by `check_test.odin` (20 tests: ownership,
+links, bounds, free, reachability, orphans, journal, read-only open),
+two corrupt-image pytest guards, and `check --read-only` pytest tests.
 - Ring slots reserve header + maximum record sectors (non-overlapping);
   headers carry CRC/count/shape validation.
 
@@ -531,13 +585,14 @@ tests/
 ├── conftest.py                    Pytest binary-path fixtures (shared by all suites)
 ├── pyproject.toml                 Pytest markers (tool, fuse, static) + pythonpath
 ├── fuse/                          FUSE suites (own conftest: clean_image, private_mount; no shared mounts)
-│   ├── test_basic.py              7 smoke tests on the shared demo image (asserts /Kernel)
+│   ├── test_basic.py              7 smoke tests on the demo image (asserts /Kernel; private mount)
 │   ├── test_crash.py              5 kill -9 crash-consistency tests (data, truncate-extend/shrink, unlink, long-name rename)
 │   ├── test_errors.py             6 error-path tests
 │   ├── test_lock.py               6 lock/flock tests (cross-process)
 │   ├── test_rw.py                 13 read-write tests
 │   ├── test_xattr.py              7 xattr tests
-│   └── test_stress.py             1 short multi-threaded stress test (5s, private image)
+│   ├── test_stress.py             1 short multi-threaded stress test (5s, private image)
+│   └── test_trace.py              3 JSONL trace tests (all/errors-only/missing-out flag)
 ├── tools/                         CLI suites (binaries only, no mounts)
 │   ├── test_disker.py             7 format tool CLI tests
 │   └── test_imgdump.py            14 imgdump/check tests (10 dump + 2 corrupt-image guards + 2 check --read-only)
@@ -546,7 +601,7 @@ tests/
 ├── ci.py                          CI orchestrator (calls make + pytest)
 ├── run_in_namespace.sh            Thin shell: exec unshare -rUm timeout "$@"
 ├── test_common.odin               Shared Odin test helpers (image open, scratch volumes)
-├── mounter_test.odin              43 mounter-callback unit tests
+├── mounter_test.odin              45 mounter-callback unit tests (incl. trace format-line test)
 ├── rmdir_test.odin                1 rmdir-on-unreadable-listing test (isolated image)
 ├── lock_test.odin                 5 lock/flock unit tests (direct fused_lock/fused_flock calls)
 ├── journal_test.odin              3 journal-backend tests (rev-8 WAL image)
@@ -578,7 +633,7 @@ tests/
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `make test` (183 Odin tests) |
+| 2. Unit tests | `make test` (184 Odin tests) |
 | 3. Tool integration | `make pytest -m tool` (7 format + 14 imgdump tests) |
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |
@@ -594,9 +649,9 @@ script that survives; everything else is Python or Odin.
 
 Image hygiene is layered, not incidental: crash tests and every writer mount
 a private formatted image per test (`clean_image` + `private_mount`
-fixtures), so no test can perturb another via image residue. Only
-`test_basic.py` uses the shared demo image, and only to assert the
-embedded `/Kernel` content. The Odin side mirrors this with a `// scope:`
+fixtures), so no test can perturb another via image residue: every fuse
+test mounts a private image, and the shared `fused.img` is read-only
+input for the tool tests. The Odin side mirrors this with a `// scope:`
 tag on every test file (`shared image`, `scratch image`, or `no image`)
 plus two fixtures in `test_fixtures.odin` (`scratch_volume` for fs-level
 tests, `scratch_fs` for mounter-level tests); caller buffers for
@@ -608,6 +663,14 @@ enforced by audit rule t1.
 **imgdump --json** produces valid JSON even with corrupted or garbage directory
 entries. Entry names with non-printable bytes are escaped as `\uXXXX`. The JSON
 master record includes `rev_min`, `rev_max`, and `features` fields.
+
+**`build/check <image>`** runs the Stage A/B scan plus the journal report
+without mounting (see Checker above): master summary, free-sector
+coherence, per-finding `severity: code cluster=… index=… — detail` lines,
+and a `journal: N slots, M pending` summary (`--verbose` prints per-slot
+seq/record-count/committed lines). Exits 1 on structural errors or an
+unreadable image, 0 otherwise. `--read-only` skips journal recovery and
+never writes (findings may lag uncheckpointed slots).
 
 ## Remaining work
 

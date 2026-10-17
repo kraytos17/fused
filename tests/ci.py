@@ -59,6 +59,7 @@ def phase_static() -> tuple[int, int]:
     suites = [
         make_suite("struct sizes", ["make", "check"]),
         make_suite("context audit", ["make", "audit"]),
+        make_suite("trace wrappers current", ["make", "check-trace"]),
         make_suite("vet", ["make", "vet"]),
     ]
     print("== Phase 1: Build + static analysis ==")

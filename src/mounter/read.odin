@@ -22,7 +22,13 @@ import "src:fuse3"
 // date) and maps to the Unix epoch; anything else out of range is
 // corruption and fails closed instead of surfacing a garbage time.
 @(private = "file")
-_dir_time_to_unix :: proc(year: u16, month, date, hour, minute, second: u32) -> (posix.time_t, bool) {
+_dir_time_to_unix :: proc(
+	year: u16,
+	month, date, hour, minute, second: u32,
+) -> (
+	posix.time_t,
+	bool,
+) {
 	if year == 0 && month == 0 && date == 0 && hour == 0 && minute == 0 && second == 0 {
 		return 0, true
 	}

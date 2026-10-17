@@ -121,14 +121,12 @@ find_or_extend_dir :: proc(
 	}
 
 	fs.allocate_sectors(&fsys.vol, dir, current_count + 1, .Directory) or_return
-
 	// The extension changed the chain on disk: drop the cached runs before
 	// re-resolving, or the lookup below would hit the pre-extend chain and
 	// name a slot in the wrong sector.
 	extent_cache_invalidate(fsys, dir.cluster, dir.offset)
 	fsys.free_sectors -= 1
 	dir_runs := resolve_extents_cached(fsys, dir) or_return
-
 	last_run := dir_runs[len(dir_runs) - 1]
 	last_sec := fs.Sector(u64(last_run.sector) + u64(last_run.count) - 1)
 	// The added sector may sit on a reused cluster carrying stale bytes; a
@@ -201,7 +199,14 @@ check_name_exists :: proc(
 // Fresh entries have no previous name; the returned reclaim is always
 // zero here, but callers still free it after persisting (same discipline
 // as rename, in case the helper is ever reused for existing entries).
-write_entry_with_lfn :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> (reclaim: fs.LFN_Pointer, err: fs.FS_Error) {
+write_entry_with_lfn :: proc(
+	fsys: ^FS,
+	entry: ^fs.Directory_Entry,
+	name: string,
+) -> (
+	reclaim: fs.LFN_Pointer,
+	err: fs.FS_Error,
+) {
 	set_entry_time_to_now(entry)
 	return set_entry_name(fsys, entry, name)
 }
@@ -212,7 +217,14 @@ write_entry_with_lfn :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string
 // renamed entry persists, so no crash window leaves the on-disk entry
 // pointing at freed sectors. Does NOT modify timestamps. Allocation
 // failures propagate as FS_Error instead of collapsing to ENOSPC.
-set_entry_name :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> (reclaim: fs.LFN_Pointer, err: fs.FS_Error) {
+set_entry_name :: proc(
+	fsys: ^FS,
+	entry: ^fs.Directory_Entry,
+	name: string,
+) -> (
+	reclaim: fs.LFN_Pointer,
+	err: fs.FS_Error,
+) {
 	if .LFN in entry.flags {
 		reclaim = (^fs.LFN_Pointer)(&entry.file_name[0])^
 		entry.flags -= {.LFN}
@@ -235,6 +247,7 @@ set_entry_name :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> (
 // on rename-replace and unlink cannot invalidate other names.
 free_entry_lfn :: proc(fsys: ^FS, entry: ^fs.Directory_Entry) -> fs.FS_Error {
 	if .LFN not_in entry.flags { return .None }
+
 	ptr := (^fs.LFN_Pointer)(&entry.file_name[0])
 	if ptr.cluster == 0 { return .None }
 	return fs.deallocate_sectors(

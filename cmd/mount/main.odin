@@ -28,6 +28,7 @@ usage :: proc() {
 	)
 	fmt.println("Flags:   --log-file=<path>  --log-level=<level>  --log-format=<format>")
 	fmt.println("         --path-cache-cap=<n>  --lfn-cache-cap=<n>  --alloc-cache-cap=<n>")
+	fmt.println("         --trace=all|errors --trace-out=<file|-> (JSONL op trace; - is stdout)")
 	fmt.println("         -f (foreground, default), -d (FUSE debug), -s (single-threaded)")
 	fmt.println("         -h shows FUSE help when mounting; bare -h shows this text")
 }
@@ -51,6 +52,8 @@ main :: proc() {
 	log_level := log.Level.Debug
 	log_opts := log.Default_Console_Logger_Opts
 	cache := fs.DEFAULT_CACHE_CONFIG
+	trace_mode: mounter.Trace_Mode
+	trace_path: string
 	fuse_args: [dynamic]string
 	defer delete(fuse_args)
 
@@ -107,6 +110,19 @@ main :: proc() {
 				os.exit(1)
 			}
 			log_level = lvl
+		case strings.has_prefix(arg, "--trace="):
+			mode_str := strings.trim_prefix(arg, "--trace=")
+			switch mode_str {
+			case "all":
+				trace_mode = .All
+			case "errors":
+				trace_mode = .Errors
+			case:
+				fmt.eprintf("unknown trace mode: %s (use all|errors)\n", mode_str)
+				os.exit(1)
+			}
+		case strings.has_prefix(arg, "--trace-out="):
+			trace_path = strings.trim_prefix(arg, "--trace-out=")
 		case strings.has_prefix(arg, "--log-format="):
 			fmt_str := strings.trim_prefix(arg, "--log-format=")
 			lf, fok := logflags.parse_log_format(fmt_str)
@@ -146,6 +162,8 @@ main :: proc() {
 			log_file_path = log_file_path,
 			log_level = log_level,
 			log_opts = log_opts,
+			trace_mode = trace_mode,
+			trace_path = trace_path,
 			fuse_args = fuse_args[1:],
 			cache = cache,
 		},

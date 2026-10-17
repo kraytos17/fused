@@ -351,7 +351,10 @@ test_mount_copy_range_clamps_and_zeroes :: proc(t: ^testing.T) {
 
 	// mtime advances even on a same-size overwrite copy (backdated, no
 	// sleeps: the pre-fix code only bumped on size changes).
-	old := posix.timespec{tv_sec = 1000000000, tv_nsec = 0}
+	old := posix.timespec {
+		tv_sec  = 1000000000,
+		tv_nsec = 0,
+	}
 	tv := [2]posix.timespec{old, old}
 	rc = mounter.fused_utimens("/cgap", &tv[0], nil)
 	testing.expect_value(t, rc, 0)
@@ -1997,4 +2000,31 @@ test_getattr_corrupt_atime_fails :: proc(t: ^testing.T) {
 
 	st: fuse3.Stat
 	expect_errno(t, mounter.fused_getattr("/baddate2", &st, nil), .EIO)
+}
+
+// test_trace_format_line — the JSONL event line is exact, quoted, and
+// NUL-free: paths with quotes/backslashes/controls get JSON escapes.
+@(test)
+test_trace_format_line :: proc(t: ^testing.T) {
+	buf: [256]u8
+	s := mounter.trace_format_line(buf[:], "getattr", "/Kernel", 0, false, 42)
+	testing.expect_value(
+		t,
+		s,
+		"{\"op\":\"getattr\",\"path\":\"/Kernel\",\"rc\":0,\"err\":false,\"dur_us\":42}\n",
+	)
+
+	s2 := mounter.trace_format_line(buf[:], "write", "/a\"b\\c", -5, true, 7)
+	testing.expect_value(
+		t,
+		s2,
+		"{\"op\":\"write\",\"path\":\"/a\\\"b\\\\c\",\"rc\":-5,\"err\":true,\"dur_us\":7}\n",
+	)
+
+	s3 := mounter.trace_format_line(buf[:], "mknod", "/x\x01y", 0, false, 1)
+	testing.expect_value(
+		t,
+		s3,
+		"{\"op\":\"mknod\",\"path\":\"/x\\u0001y\",\"rc\":0,\"err\":false,\"dur_us\":1}\n",
+	)
 }

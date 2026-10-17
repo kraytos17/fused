@@ -34,55 +34,59 @@ Mount_Options :: struct {
 	fuse_args:     []string,
 	// cache sizes the three in-memory caches; zero entries select defaults.
 	cache:         fs.Cache_Config,
+	// trace_mode enables JSONL op tracing (.Off by default); trace_path
+	// is the output file ("-" selects stdout, which is never closed).
+	trace_mode:    Trace_Mode,
+	trace_path:    string,
 }
 
 // build_operations assembles the FUSE callback table. Extracted from run()
 // so the 43-callback wiring reads (and reviews) in isolation; no logic.
 build_operations :: proc() -> fuse3.Operations {
 	return {
-		init = fused_init,
-		destroy = fused_destroy,
-		getattr = fused_getattr,
-		readdir = fused_readdir,
-		open = fused_open,
-		read = fused_read,
-		write = fused_write,
-		create = fused_create,
-		symlink = fused_symlink,
-		readlink = fused_readlink,
-		mkdir = fused_mkdir,
-		unlink = fused_unlink,
-		rmdir = fused_rmdir,
-		truncate = fused_truncate,
-		rename = fused_rename,
-		access = fused_access,
-		chmod = fused_chmod,
-		chown = fused_chown,
-		utimens = fused_utimens,
-		fallocate = fused_fallocate,
-		flush = fused_flush,
-		release = fused_release,
-		setxattr = fused_setxattr,
-		getxattr = fused_getxattr,
-		listxattr = fused_listxattr,
-		removexattr = fused_removexattr,
-		copy_file_range = fused_copy_file_range,
-		read_buf = fused_read_buf,
-		write_buf = fused_write_buf,
-		opendir = fused_opendir,
-		releasedir = fused_releasedir,
-		fsync = fused_fsync,
-		lseek = fused_lseek,
-		statfs = fused_statfs,
-		fsyncdir = fused_fsyncdir,
-		lock = fused_lock,
-		flock = fused_flock,
-		mknod = fused_mknod,
-		ioctl = fused_ioctl,
-		link = fused_link,
-		statx = fused_statx,
-		bmap = fused_bmap,
-		poll = fused_poll,
+		init = traced_init,
+		destroy = traced_destroy,
+		getattr = traced_getattr,
+		readdir = traced_readdir,
+		open = traced_open,
+		read = traced_read,
+		write = traced_write,
+		create = traced_create,
+		symlink = traced_symlink,
+		readlink = traced_readlink,
+		mkdir = traced_mkdir,
+		unlink = traced_unlink,
+		rmdir = traced_rmdir,
+		truncate = traced_truncate,
+		rename = traced_rename,
+		access = traced_access,
+		chmod = traced_chmod,
+		chown = traced_chown,
+		utimens = traced_utimens,
+		fallocate = traced_fallocate,
+		flush = traced_flush,
+		release = traced_release,
+		setxattr = traced_setxattr,
+		getxattr = traced_getxattr,
+		listxattr = traced_listxattr,
+		removexattr = traced_removexattr,
+		copy_file_range = traced_copy_file_range,
+		read_buf = traced_read_buf,
+		write_buf = traced_write_buf,
+		opendir = traced_opendir,
+		releasedir = traced_releasedir,
+		fsync = traced_fsync,
+		lseek = traced_lseek,
+		statfs = traced_statfs,
+		fsyncdir = traced_fsyncdir,
+		lock = traced_lock,
+		flock = traced_flock,
+		mknod = traced_mknod,
+		ioctl = traced_ioctl,
+		link = traced_link,
+		statx = traced_statx,
+		bmap = traced_bmap,
+		poll = traced_poll,
 	}
 }
 
@@ -193,6 +197,15 @@ run :: proc(opts: Mount_Options) -> bool {
 	}
 
 	image_path := opts.image_path
+	// Trace mode needs a destination before anything runs: fail fast
+	// here rather than after opening the image.
+	trace_required := opts.trace_mode != .Off && len(opts.trace_path) == 0
+	if trace_required {
+		log.errorf("trace mode requires --trace-out=<file> (or - for stdout)")
+		free(fsys)
+		return false
+	}
+
 	vol, vol_err := fs.volume_open(image_path, opts.cache)
 	if vol_err != .None {
 		log.errorf("failed to open image: %v", vol_err)
@@ -203,7 +216,17 @@ run :: proc(opts: Mount_Options) -> bool {
 	defer fs.volume_close(&vol)
 	fsys.vol = vol
 	fsys.disk_raw_fd = c.int(os.fd(vol.disk))
+
 	init_fs_state(fsys, context.allocator, opts.cache)
+	if opts.trace_mode != .Off {
+		if fsys.trace = trace_sink_open(opts.trace_path, opts.trace_mode); fsys.trace == nil {
+			log.errorf("cannot open trace file %s", opts.trace_path)
+			destroy_fs_for_test(fsys)
+			free(fsys)
+			return false
+		}
+		log.infof("tracing %v → %s", opts.trace_mode, opts.trace_path)
+	}
 
 	log.debugf("opened %s → raw_fd=%d", image_path, fsys.disk_raw_fd)
 	log.infof(
@@ -225,8 +248,10 @@ run :: proc(opts: Mount_Options) -> bool {
 
 	delete(dynamic_argv)
 	// NOTE: opts.fuse_args is borrowed — the cmd/mount caller frees it.
-	// Full teardown before the leak dump: caches, lock tables, FS shell.
-	// The volume itself is closed by the deferred volume_close.
+	// Full teardown before the leak dump: trace sink first (it outlives
+	// the FS shell), then caches, lock tables, FS shell. The volume
+	// itself is closed by the deferred volume_close.
+	trace_sink_close(fsys.trace)
 	destroy_fs_for_test(fsys)
 	free(fsys)
 	if rc != 0 {

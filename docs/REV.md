@@ -1,5 +1,15 @@
 # fused — Format Revision History
 
+## Current support window
+
+`SUPPORTED_REV_MIN = 7`, `SUPPORTED_REV_MAX = 8`
+(`src/fs/structure.odin`). Rev-7 images carry the retired bit-1 flag and
+are rejected by validation (reformat to migrate); rev-8 images mount
+read-write. Fresh-format bytes are pinned by `tests/golden_test.odin`
+(byte-goldens for rev 7 and rev 8 formats, full + per-chunk hashes, plus a
+format-twice determinism check — a one-byte master change fails both
+goldens with chunk localization).
+
 ## Rev 4 (legacy — not parseable by current code)
 
 Single rev byte at offset 7. `Directory_Entry` is 48 bytes (10 per sector).

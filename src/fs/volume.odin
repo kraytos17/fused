@@ -44,7 +44,13 @@ Volume :: struct {
 // which may lag committed-but-uncheckpointed journal slots — callers
 // must consult check_journal_report to qualify the findings. Master
 // validation and cache initialisation match volume_open.
-volume_open_readonly :: proc(path: string, cache := DEFAULT_CACHE_CONFIG) -> (vol: Volume, err: FS_Error) {
+volume_open_readonly :: proc(
+	path: string,
+	cache := DEFAULT_CACHE_CONFIG,
+) -> (
+	vol: Volume,
+	err: FS_Error,
+) {
 	fd, open_err := os.open(path, {.Read})
 	if open_err != nil {
 		return {}, .Sector_Read_Error
@@ -73,7 +79,10 @@ _volume_open_inner :: proc(
 	path: string,
 	cache: Cache_Config,
 	do_recovery: bool,
-) -> (vol: Volume, err: FS_Error) {
+) -> (
+	vol: Volume,
+	err: FS_Error,
+) {
 
 	vol.disk = fd
 	master, merr := read_master_record(fd)
@@ -156,9 +165,9 @@ lfn_bump_write :: proc(
 ) {
 	_ = bump
 	new_c, new_o := allocate_sectors(vol, {}, 1, .LFN) or_return
-
 	runs, rok := resolve_extents(vol, Chain_Location{new_c, new_o})
 	defer delete(runs)
+
 	if rok != .None { return {}, rok }
 	if len(runs) == 0 { return {}, .Entry_Not_Found }
 

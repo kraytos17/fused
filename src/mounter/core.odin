@@ -65,6 +65,10 @@ FS :: struct {
 	free_sectors: u64,
 	// locks holds POSIX fcntl region locks per file (in-memory, advisory).
 	locks:        map[fs.File_Identity][dynamic]Region_Lock,
+	// trace, when non-nil, receives one JSONL event per FUSE callback
+	// (see trace.odin). Nil by default so untraced mounts — including
+	// all unit-test FS instances — pay a single branch per callback.
+	trace:        ^Trace_Sink,
 	// flock_locks holds BSD flock holders per file (in-memory, advisory).
 	flock_locks:  map[fs.File_Identity][dynamic]Flock_State,
 }

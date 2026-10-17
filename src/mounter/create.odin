@@ -42,7 +42,6 @@ prepare_parent_slot :: proc(
 	if perr != .None {
 		return .Io_Error, {}, 0, 0, ""
 	}
-
 	if .Directory not_in parent_entry.flags {
 		return .Not_A_Directory, {}, 0, 0, ""
 	}
@@ -118,7 +117,10 @@ fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 	if new_reclaim.cluster != 0 {
 		if derr := fs.deallocate_sectors(
 			&fsys.vol,
-			fs.Chain_Location{fs.Cluster(new_reclaim.cluster), fs.Sector_Offset(new_reclaim.sector)},
+			fs.Chain_Location {
+				fs.Cluster(new_reclaim.cluster),
+				fs.Sector_Offset(new_reclaim.sector),
+			},
 		); derr != .None {
 			return fs_error_to_errno(derr)
 		}
@@ -278,7 +280,10 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 	if new_reclaim.cluster != 0 {
 		if derr := fs.deallocate_sectors(
 			&fsys.vol,
-			fs.Chain_Location{fs.Cluster(new_reclaim.cluster), fs.Sector_Offset(new_reclaim.sector)},
+			fs.Chain_Location {
+				fs.Cluster(new_reclaim.cluster),
+				fs.Sector_Offset(new_reclaim.sector),
+			},
 		); derr != .None {
 			return fs_error_to_errno(derr)
 		}
@@ -509,12 +514,19 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 				return fuse3.nix(.EISDIR)
 			}
 		}
+
 		saved := entry
 		reclaim, nerr := set_entry_name(fsys, &entry, new_name)
 		if nerr != .None {
 			return fs_error_to_errno(nerr)
 		}
-		if rc := rename_publish(fsys, &entry, saved, fs.File_Identity{old_cluster, old_offset, old_idx}, reclaim); rc != 0 {
+		if rc := rename_publish(
+			fsys,
+			&entry,
+			saved,
+			fs.File_Identity{old_cluster, old_offset, old_idx},
+			reclaim,
+		); rc != 0 {
 			return rc
 		}
 
@@ -541,9 +553,7 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 			if check_err != .None {
 				return fs_error_to_errno(check_err)
 			}
-			if check_c == old_cluster &&
-			   check_o == old_offset &&
-			   check_idx == old_idx {
+			if check_c == old_cluster && check_o == old_offset && check_idx == old_idx {
 				log.debugf("rename: %s → %s → EINVAL (circular)", oldpath, newpath)
 				return fuse3.nix(.EINVAL)
 			}
@@ -593,7 +603,13 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	if nerr != .None {
 		return fs_error_to_errno(nerr)
 	}
-	if rc := rename_publish(fsys, &entry, saved, fs.File_Identity{dst_cluster, dst_sec, dst_slot_idx}, reclaim); rc != 0 {
+	if rc := rename_publish(
+		fsys,
+		&entry,
+		saved,
+		fs.File_Identity{dst_cluster, dst_sec, dst_slot_idx},
+		reclaim,
+	); rc != 0 {
 		return rc
 	}
 
@@ -602,6 +618,7 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	   werr != .None {
 		return fs_error_to_errno(werr)
 	}
+
 	path_cache_invalidate_all(fsys)
 	log.debugf("rename: %s → %s ok (cross-directory)", oldpath, newpath)
 	return 0

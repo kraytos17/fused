@@ -73,7 +73,17 @@ _check_add :: proc(
 		// is unavailable. Never drop a finding over a detail string.
 		detail = "detail unavailable (out of memory)"
 	}
-	append(&r.findings, Check_Finding{severity = sev, code = code, cluster = cluster, index = index, detail = detail})
+
+	append(
+		&r.findings,
+		Check_Finding {
+			severity = sev,
+			code = code,
+			cluster = cluster,
+			index = index,
+			detail = detail,
+		},
+	)
 	if sev == .Error {
 		r.errors += 1
 	} else {
@@ -91,7 +101,15 @@ check_image :: proc(vol: ^Volume, allocator := context.allocator) -> Check_Repor
 	cs := u64(vol.master.cluster_size)
 	map_size := u64(vol.master.cluster_map_size)
 	if cs == 0 || map_size == 0 {
-		_check_add(&r, .Error, "Geometry", max(u64), -1, allocator, "zero cluster size or map size")
+		_check_add(
+			&r,
+			.Error,
+			"Geometry",
+			max(u64),
+			-1,
+			allocator,
+			"zero cluster size or map size",
+		)
 		return r
 	}
 
@@ -105,15 +123,39 @@ check_image :: proc(vol: ^Volume, allocator := context.allocator) -> Check_Repor
 	}
 
 	// Metadata region bounds with overflow-safe arithmetic.
-	cm_sectors := (map_size + u64(CLUSTER_MAP_ENTRIES_PER_SECTOR) - 1) / u64(CLUSTER_MAP_ENTRIES_PER_SECTOR)
+	cm_sectors :=
+		(map_size + u64(CLUSTER_MAP_ENTRIES_PER_SECTOR) - 1) / u64(CLUSTER_MAP_ENTRIES_PER_SECTOR)
 	cm_end := u64(vol.master.cluster_map_offset) + cm_sectors
 	if cm_end < u64(vol.master.cluster_map_offset) || (sector_count > 0 && cm_end > sector_count) {
-		_check_add(&r, .Error, "CmeBounds", max(u64), -1, allocator, "cluster-map region [%d, %d) outside image (%d sectors)", u64(vol.master.cluster_map_offset), cm_end, sector_count)
+		_check_add(
+			&r,
+			.Error,
+			"CmeBounds",
+			max(u64),
+			-1,
+			allocator,
+			"cluster-map region [%d, %d) outside image (%d sectors)",
+			u64(vol.master.cluster_map_offset),
+			cm_end,
+			sector_count,
+		)
 	}
+
 	J := u64(journal_region_base(&vol.master))
 	M := journal_region_size(&vol.master)
 	if M == 0 || J + M < J || (sector_count > 0 && J + M > sector_count) {
-		_check_add(&r, .Error, "JournalBounds", max(u64), -1, allocator, "journal region [%d, %d) outside image (%d sectors)", J, J + M, sector_count)
+		_check_add(
+			&r,
+			.Error,
+			"JournalBounds",
+			max(u64),
+			-1,
+			allocator,
+			"journal region [%d, %d) outside image (%d sectors)",
+			J,
+			J + M,
+			sector_count,
+		)
 	}
 
 	total := map_size * cs
@@ -126,12 +168,21 @@ check_image :: proc(vol: ^Volume, allocator := context.allocator) -> Check_Repor
 	// _mark claims one global sector for (cluster, index): false when
 	// already owned (caller reports DoubleOwnership with the first owner).
 	_mark :: proc(
-		owned: []bool, owner_c: []u64, owner_i: []int, sec: u64,
-		c: u64, idx: int,
-	) -> (prev_c: u64, prev_i: int, clash: bool) {
+		owned: []bool,
+		owner_c: []u64,
+		owner_i: []int,
+		sec: u64,
+		c: u64,
+		idx: int,
+	) -> (
+		prev_c: u64,
+		prev_i: int,
+		clash: bool,
+	) {
 		if owned[sec] {
 			return owner_c[sec], owner_i[sec], true
 		}
+
 		owned[sec] = true
 		owner_c[sec] = c
 		owner_i[sec] = idx
@@ -142,15 +193,43 @@ check_image :: proc(vol: ^Volume, allocator := context.allocator) -> Check_Repor
 	for ci in 0 ..< map_size {
 		cme, cerr := read_cluster_map_entry(vol, Cluster(ci))
 		if cerr != .None {
-			_check_add(&r, .Error, "CmeRead", ci, -1, allocator, "cannot read cluster-map entry: %v", cerr)
+			_check_add(
+				&r,
+				.Error,
+				"CmeRead",
+				ci,
+				-1,
+				allocator,
+				"cannot read cluster-map entry: %v",
+				cerr,
+			)
+
 			read_errors += 1
 			continue
 		}
 		if .Reserved in cme.flags && .Allocated in cme.flags {
-			_check_add(&r, .Error, "FlagCombo", ci, -1, allocator, "cluster map entry is both Reserved and Allocated")
+			_check_add(
+				&r,
+				.Error,
+				"FlagCombo",
+				ci,
+				-1,
+				allocator,
+				"cluster map entry is both Reserved and Allocated",
+			)
 		}
 		if u64(cme.sector_index) >= cs {
-			_check_add(&r, .Error, "TableRange", ci, -1, allocator, "table sector index %d outside cluster size %d", u64(cme.sector_index), cs)
+			_check_add(
+				&r,
+				.Error,
+				"TableRange",
+				ci,
+				-1,
+				allocator,
+				"table sector index %d outside cluster size %d",
+				u64(cme.sector_index),
+				cs,
+			)
 		}
 
 		// Mirror alloc_cache_count_free: Reserved/Full clusters
@@ -159,7 +238,6 @@ check_image :: proc(vol: ^Volume, allocator := context.allocator) -> Check_Repor
 		// the index is in range, even for unallocated CMEs).
 		reserved_or_full := .Reserved in cme.flags || .Full in cme.flags
 		table_bit := u64(cme.sector_index) < cs
-
 		if .Allocated not_in cme.flags {
 			if !reserved_or_full && table_bit {
 				free_scan += cs - 1
@@ -171,7 +249,17 @@ check_image :: proc(vol: ^Volume, allocator := context.allocator) -> Check_Repor
 
 		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 		if terr := read_cluster_entry_table(vol, Cluster(ci), &table); terr != .None {
-			_check_add(&r, .Error, "TableRead", ci, -1, allocator, "cannot read entry table: %v", terr)
+			_check_add(
+				&r,
+				.Error,
+				"TableRead",
+				ci,
+				-1,
+				allocator,
+				"cannot read entry table: %v",
+				terr,
+			)
+
 			read_errors += 1
 			continue
 		}
@@ -180,25 +268,57 @@ check_image :: proc(vol: ^Volume, allocator := context.allocator) -> Check_Repor
 		tsec := ci * cs + u64(cme.sector_index)
 		if table_bit {
 			if pc, pi, clash := _mark(owned, owner_c, owner_i, tsec, ci, -1); clash {
-				_check_add(&r, .Error, "DoubleOwnership", ci, -1, allocator, "table sector %d owned by cluster %d entry %d", tsec, pc, pi)
+				_check_add(
+					&r,
+					.Error,
+					"DoubleOwnership",
+					ci,
+					-1,
+					allocator,
+					"table sector %d owned by cluster %d entry %d",
+					tsec,
+					pc,
+					pi,
+				)
 			}
 		}
+
 		live_bytes: u64 = 0
 		for &e, ei in table {
 			if .Allocated not_in e.state { continue }
 			if e.allocation_size == 0 {
-				_check_add(&r, .Error, "ZeroSize", ci, ei, allocator, "allocated entry has zero size")
+				_check_add(
+					&r,
+					.Error,
+					"ZeroSize",
+					ci,
+					ei,
+					allocator,
+					"allocated entry has zero size",
+				)
 				continue
 			}
 			if u64(e.sector_start) + u64(e.allocation_size) > cs {
-				_check_add(&r, .Error, "Range", ci, ei, allocator, "extent [%d, %d) outside cluster size %d", u64(e.sector_start), u64(e.sector_start) + u64(e.allocation_size), cs)
+				_check_add(
+					&r,
+					.Error,
+					"Range",
+					ci,
+					ei,
+					allocator,
+					"extent [%d, %d) outside cluster size %d",
+					u64(e.sector_start),
+					u64(e.sector_start) + u64(e.allocation_size),
+					cs,
+				)
 				continue
 			}
 			// The Cluster_Map pseudo-entry describes the table sector
 			// itself (format writes it as [sector_index, +1)): sharing
 			// that one sector is by design, not double ownership.
 			is_map := .Cluster_Map in e.state
-			map_ok := is_map && u64(e.sector_start) == u64(cme.sector_index) && e.allocation_size == 1
+			map_ok :=
+				is_map && u64(e.sector_start) == u64(cme.sector_index) && e.allocation_size == 1
 			for off in 0 ..< u64(e.allocation_size) {
 				sec := ci * cs + u64(e.sector_start) + off
 				if pc, pi, clash := _mark(owned, owner_c, owner_i, sec, ci, ei); clash {
@@ -208,7 +328,18 @@ check_image :: proc(vol: ^Volume, allocator := context.allocator) -> Check_Repor
 						// record the pseudo-entry as the owner.
 						owner_c[sec], owner_i[sec] = ci, ei
 					} else {
-						_check_add(&r, .Error, "DoubleOwnership", ci, ei, allocator, "sector %d owned by cluster %d entry %d", sec, pc, pi)
+						_check_add(
+							&r,
+							.Error,
+							"DoubleOwnership",
+							ci,
+							ei,
+							allocator,
+							"sector %d owned by cluster %d entry %d",
+							sec,
+							pc,
+							pi,
+						)
 					}
 				} else {
 					live_bytes += 1
@@ -217,7 +348,7 @@ check_image :: proc(vol: ^Volume, allocator := context.allocator) -> Check_Repor
 			// Chain links: walk with the same rules as _chain_step
 			// (offset match + Allocated + nonzero size, guard bound),
 			// skipping entries already verified by an earlier walk.
-			if e.next_cluster != 0 && !verified[ci*u64(CLUSTER_ENTRIES_PER_SECTOR)+u64(ei)] {
+			if e.next_cluster != 0 && !verified[ci * u64(CLUSTER_ENTRIES_PER_SECTOR) + u64(ei)] {
 				_check_walk(vol, &r, verified, allocator, map_size, ci, ei, e)
 			}
 		}
@@ -228,14 +359,23 @@ check_image :: proc(vol: ^Volume, allocator := context.allocator) -> Check_Repor
 
 	// Reachability: directory walk, reference validation, orphans.
 	_check_reachability(vol, &r, allocator)
-
 	// Free agreement against the cache view (independent raw-disk reads
 	// above vs. cached bitmaps below). Suppressed when reads failed:
 	// those clusters are skipped on both sides and would add noise.
 	if read_errors == 0 {
 		free_cached := alloc_cache_count_free(vol)
 		if free_scan != free_cached {
-			_check_add(&r, .Error, "FreeMismatch", max(u64), -1, allocator, "independent free %d != cache free %d", free_scan, free_cached)
+			_check_add(
+				&r,
+				.Error,
+				"FreeMismatch",
+				max(u64),
+				-1,
+				allocator,
+				"independent free %d != cache free %d",
+				free_scan,
+				free_cached,
+			)
 		}
 	}
 	return r
@@ -257,23 +397,48 @@ _check_walk :: proc(
 ) {
 	seen := make([dynamic]u64, 0, 16, context.temp_allocator)
 	mark_seen :: proc(seen: ^[dynamic]u64, verified: []bool, c: u64, idx: int) {
-		append(seen, c*u64(CLUSTER_ENTRIES_PER_SECTOR)+u64(idx))
-		verified[c*u64(CLUSTER_ENTRIES_PER_SECTOR)+u64(idx)] = true
+		append(seen, c * u64(CLUSTER_ENTRIES_PER_SECTOR) + u64(idx))
+		verified[c * u64(CLUSTER_ENTRIES_PER_SECTOR) + u64(idx)] = true
 	}
-	mark_seen(&seen, verified, head_c, head_i)
 
+	mark_seen(&seen, verified, head_c, head_i)
 	cur_c := u64(head.next_cluster)
 	cur_o := u64(head.next_sector_index)
 	for _ in 0 ..< int(map_size) + 1 {
 		if cur_c >= map_size {
-			_check_add(r, .Error, "BadLink", head_c, head_i, allocator, "link %d/%d: cluster %d outside map (size %d)", cur_c, cur_o, cur_c, map_size)
+			_check_add(
+				r,
+				.Error,
+				"BadLink",
+				head_c,
+				head_i,
+				allocator,
+				"link %d/%d: cluster %d outside map (size %d)",
+				cur_c,
+				cur_o,
+				cur_c,
+				map_size,
+			)
 			return
 		}
+
 		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 		if terr := read_cluster_entry_table(vol, Cluster(cur_c), &table); terr != .None {
-			_check_add(r, .Error, "LinkRead", head_c, head_i, allocator, "link %d/%d: table unreadable: %v", cur_c, cur_o, terr)
+			_check_add(
+				r,
+				.Error,
+				"LinkRead",
+				head_c,
+				head_i,
+				allocator,
+				"link %d/%d: table unreadable: %v",
+				cur_c,
+				cur_o,
+				terr,
+			)
 			return
 		}
+
 		found := -1
 		for &e, ei in table {
 			if u64(e.sector_start) == cur_o && .Allocated in e.state {
@@ -282,24 +447,57 @@ _check_walk :: proc(
 			}
 		}
 		if found < 0 || table[found].allocation_size == 0 {
-			_check_add(r, .Error, "DanglingLink", head_c, head_i, allocator, "link %d/%d: no live entry", cur_c, cur_o)
+			_check_add(
+				r,
+				.Error,
+				"DanglingLink",
+				head_c,
+				head_i,
+				allocator,
+				"link %d/%d: no live entry",
+				cur_c,
+				cur_o,
+			)
 			return
 		}
-		key := cur_c*u64(CLUSTER_ENTRIES_PER_SECTOR)+u64(found)
+
+		key := cur_c * u64(CLUSTER_ENTRIES_PER_SECTOR) + u64(found)
 		for s in seen {
 			if s == key {
-				_check_add(r, .Error, "Cycle", head_c, head_i, allocator, "link %d/%d revisits entry", cur_c, cur_o)
+				_check_add(
+					r,
+					.Error,
+					"Cycle",
+					head_c,
+					head_i,
+					allocator,
+					"link %d/%d revisits entry",
+					cur_c,
+					cur_o,
+				)
 				return
 			}
 		}
+
 		mark_seen(&seen, verified, cur_c, found)
 		if table[found].next_cluster == 0 {
 			return
 		}
+
 		cur_c = u64(table[found].next_cluster)
 		cur_o = u64(table[found].next_sector_index)
 	}
-	_check_add(r, .Error, "Cycle", head_c, head_i, allocator, "chain exceeds link bound %d", map_size + 1)
+
+	_check_add(
+		r,
+		.Error,
+		"Cycle",
+		head_c,
+		head_i,
+		allocator,
+		"chain exceeds link bound %d",
+		map_size + 1,
+	)
 }
 
 // check_reachability walks every directory reachable from the root,
@@ -312,9 +510,8 @@ _check_walk :: proc(
 _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Allocator) {
 	map_size := u64(vol.master.cluster_map_size)
 	rooted := make([]bool, map_size * u64(CLUSTER_ENTRIES_PER_SECTOR), context.temp_allocator)
-
 	mark_idx :: proc(rooted: []bool, c: u64, idx: int) {
-		rooted[c*u64(CLUSTER_ENTRIES_PER_SECTOR)+u64(idx)] = true
+		rooted[c * u64(CLUSTER_ENTRIES_PER_SECTOR) + u64(idx)] = true
 	}
 
 	// _mark_links marks a chain head and every reachable link. Stops
@@ -326,6 +523,7 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 			if cur_c >= map_size || cur_i < 0 || cur_i >= CLUSTER_ENTRIES_PER_SECTOR {
 				return
 			}
+
 			table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 			if read_cluster_entry_table(vol, Cluster(cur_c), &table) != .None {
 				return
@@ -333,10 +531,12 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 			if .Allocated not_in table[cur_i].state {
 				return
 			}
+
 			mark_idx(rooted, cur_c, cur_i)
 			if table[cur_i].next_cluster == 0 {
 				return
 			}
+
 			next_c := u64(table[cur_i].next_cluster)
 			next_o := u64(table[cur_i].next_sector_index)
 			found := -1
@@ -361,17 +561,11 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 	// _head_index resolves a data-chain head to its table index: the
 	// entry must exist, be allocated, and be nonzero-sized (mirroring
 	// _chain_step, whose Corrupted covers all three).
-	_head_index :: proc(
-		vol: ^Volume,
-		c: u64,
-		o: u16,
-	) -> (
-		idx: int,
-		ok: bool,
-	) {
+	_head_index :: proc(vol: ^Volume, c: u64, o: u16) -> (idx: int, ok: bool) {
 		if c >= u64(vol.master.cluster_map_size) {
 			return -1, false
 		}
+
 		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 		if read_cluster_entry_table(vol, Cluster(c), &table) != .None {
 			return -1, false
@@ -390,18 +584,33 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 		path:    string,
 		exiting: bool,
 	}
+
 	// The walk marks everything reachable FROM entries, but the root
 	// chain itself is only reachable as the walk start: mark it up
 	// front or it reports as an orphan of itself.
-	if rhi, rhok := _head_index(vol, u64(vol.master.root_cluster), u16(vol.master.root_sector_index)); rhok {
+	if rhi, rhok := _head_index(
+		vol,
+		u64(vol.master.root_cluster),
+		u16(vol.master.root_sector_index),
+	); rhok {
 		_mark_links(vol, rooted, map_size, u64(vol.master.root_cluster), rhi)
 	}
+
 	path_set := make(map[u64]bool, 16, context.temp_allocator)
 	done_set := make(map[u64]bool, 64, context.temp_allocator)
 	stack := make([dynamic]Frame, 0, 16, context.temp_allocator)
-	dir_key :: proc(c: u64, o: u16) -> u64 { return c*65536 + u64(o) }
 
-	append(&stack, Frame{cluster = u64(vol.master.root_cluster), offset = u16(vol.master.root_sector_index), path = "/", exiting = false})
+	dir_key :: proc(c: u64, o: u16) -> u64 { return c * 65536 + u64(o) }
+
+	append(
+		&stack,
+		Frame {
+			cluster = u64(vol.master.root_cluster),
+			offset = u16(vol.master.root_sector_index),
+			path = "/",
+			exiting = false,
+		},
+	)
 	for len(stack) > 0 {
 		fr := pop(&stack)
 		key := dir_key(fr.cluster, fr.offset)
@@ -410,33 +619,85 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 			continue
 		}
 		if key in path_set {
-			_check_add(r, .Error, "DirCycle", fr.cluster, -1, allocator, "directory %s revisits its ancestor", fr.path)
+			_check_add(
+				r,
+				.Error,
+				"DirCycle",
+				fr.cluster,
+				-1,
+				allocator,
+				"directory %s revisits its ancestor",
+				fr.path,
+			)
 			continue
 		}
 		if key in done_set {
-			_check_add(r, .Error, "DirShared", fr.cluster, -1, allocator, "directory %s shared by multiple parents", fr.path)
+			_check_add(
+				r,
+				.Error,
+				"DirShared",
+				fr.cluster,
+				-1,
+				allocator,
+				"directory %s shared by multiple parents",
+				fr.path,
+			)
 			continue
 		}
+
 		path_set[key] = true
 		done_set[key] = true
-		append(&stack, Frame{cluster = fr.cluster, offset = fr.offset, path = fr.path, exiting = true})
+		append(
+			&stack,
+			Frame{cluster = fr.cluster, offset = fr.offset, path = fr.path, exiting = true},
+		)
 
-		runs, rerr := resolve_extents(vol, Chain_Location{Cluster(fr.cluster), Sector_Offset(fr.offset)})
+		runs, rerr := resolve_extents(
+			vol,
+			Chain_Location{Cluster(fr.cluster), Sector_Offset(fr.offset)},
+		)
 		if rerr != .None {
-			_check_add(r, .Error, "DirChain", fr.cluster, -1, allocator, "directory %s chain unreadable: %v", fr.path, rerr)
+			_check_add(
+				r,
+				.Error,
+				"DirChain",
+				fr.cluster,
+				-1,
+				allocator,
+				"directory %s chain unreadable: %v",
+				fr.path,
+				rerr,
+			)
 			continue
 		}
 		// Read the whole chain into one temp buffer so parsed entry
 		// names stay valid for duplicate detection below.
 		total := 0
 		for run in runs { total += int(run.count) }
+
 		chain := make([]u8, total * SECTOR_SIZE, context.temp_allocator)
 		ok := true
 		pos := 0
 		for run in runs {
 			for si in 0 ..< int(run.count) {
-				if sector_read(vol, Sector(u64(run.sector) + u64(si)), chain[pos:pos + SECTOR_SIZE]) != .None {
-					_check_add(r, .Error, "DirRead", fr.cluster, -1, allocator, "directory %s sector %d unreadable", fr.path, u64(run.sector) + u64(si))
+				if sector_read(
+					   vol,
+					   Sector(u64(run.sector) + u64(si)),
+					   chain[pos:pos + SECTOR_SIZE],
+				   ) !=
+				   .None {
+					_check_add(
+						r,
+						.Error,
+						"DirRead",
+						fr.cluster,
+						-1,
+						allocator,
+						"directory %s sector %d unreadable",
+						fr.path,
+						u64(run.sector) + u64(si),
+					)
+
 					ok = false
 					break
 				}
@@ -451,10 +712,12 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 
 		des := int(dir_entry_size(vol.master.features))
 		deps := int(dir_entries_per_sector(vol.master.features))
+
 		Seen_Name :: struct {
 			name: string,
 			slot: int,
 		}
+
 		seen := make([dynamic]Seen_Name, 0, 16, context.temp_allocator)
 		for si in 0 ..< total {
 			for i in 0 ..< deps {
@@ -463,7 +726,17 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 				e := ep^
 				if .Exists not_in e.flags { continue }
 				if .Allocated not_in e.flags {
-					_check_add(r, .Error, "SlotState", fr.cluster, slot, allocator, "entry %d in %s exists without Allocated", slot, fr.path)
+					_check_add(
+						r,
+						.Error,
+						"SlotState",
+						fr.cluster,
+						slot,
+						allocator,
+						"entry %d in %s exists without Allocated",
+						slot,
+						fr.path,
+					)
 					continue
 				}
 
@@ -477,12 +750,23 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 				if .LFN in e.flags {
 					lfn, lok := resolve_lfn(vol, ep, context.temp_allocator)
 					if !lok {
-						_check_add(r, .Error, "LfnPtr", fr.cluster, slot, allocator, "entry %d in %s has bad long-name reference", slot, fr.path)
+						_check_add(
+							r,
+							.Error,
+							"LfnPtr",
+							fr.cluster,
+							slot,
+							allocator,
+							"entry %d in %s has bad long-name reference",
+							slot,
+							fr.path,
+						)
 						name = ""
 					} else {
 						name = lfn
 					}
 				}
+
 				dup := -1
 				for &s in seen {
 					if s.name == name && len(name) > 0 {
@@ -491,7 +775,18 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 					}
 				}
 				if dup >= 0 {
-					_check_add(r, .Error, "DupName", fr.cluster, slot, allocator, "duplicate name in %s (slots %d and %d)", fr.path, dup, slot)
+					_check_add(
+						r,
+						.Error,
+						"DupName",
+						fr.cluster,
+						slot,
+						allocator,
+						"duplicate name in %s (slots %d and %d)",
+						fr.path,
+						dup,
+						slot,
+					)
 				} else if len(name) > 0 {
 					append(&seen, Seen_Name{name = name, slot = slot})
 				}
@@ -499,12 +794,34 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 				// Data chain head.
 				if e.stored_cluster == 0 {
 					if .Directory in e.flags || e.file_size > 0 {
-						_check_add(r, .Error, "DirHead", fr.cluster, slot, allocator, "entry %d in %s has no data chain", slot, fr.path)
+						_check_add(
+							r,
+							.Error,
+							"DirHead",
+							fr.cluster,
+							slot,
+							allocator,
+							"entry %d in %s has no data chain",
+							slot,
+							fr.path,
+						)
 					}
 				} else {
 					hi, hok := _head_index(vol, u64(e.stored_cluster), u16(e.sector_index))
 					if !hok {
-						_check_add(r, .Error, "DirHead", fr.cluster, slot, allocator, "entry %d in %s references missing chain %d/%d", slot, fr.path, u64(e.stored_cluster), u64(e.sector_index))
+						_check_add(
+							r,
+							.Error,
+							"DirHead",
+							fr.cluster,
+							slot,
+							allocator,
+							"entry %d in %s references missing chain %d/%d",
+							slot,
+							fr.path,
+							u64(e.stored_cluster),
+							u64(e.sector_index),
+						)
 					} else {
 						_mark_links(vol, rooted, map_size, u64(e.stored_cluster), hi)
 					}
@@ -523,7 +840,18 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 						}
 					}
 					if xidx < 0 {
-						_check_add(r, .Error, "XattrPtr", fr.cluster, slot, allocator, "entry %d in %s references missing xattr chain %d", slot, fr.path, u64(e.xattr_cluster))
+						_check_add(
+							r,
+							.Error,
+							"XattrPtr",
+							fr.cluster,
+							slot,
+							allocator,
+							"entry %d in %s references missing xattr chain %d",
+							slot,
+							fr.path,
+							u64(e.xattr_cluster),
+						)
 					} else {
 						_mark_links(vol, rooted, map_size, u64(e.xattr_cluster), xidx)
 					}
@@ -533,11 +861,15 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 				// resolving the name; mark the entry's sectors rooted).
 				if .LFN in e.flags {
 					ptr := (^LFN_Pointer)(&e.file_name[0])^
-					if ptr.cluster != 0 && u64(ptr.cluster) < map_size && u64(ptr._pad) < SECTOR_SIZE {
+					if ptr.cluster != 0 &&
+					   u64(ptr.cluster) < map_size &&
+					   u64(ptr._pad) < SECTOR_SIZE {
 						ltable: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 						if read_cluster_entry_table(vol, Cluster(ptr.cluster), &ltable) == .None {
 							for &le, lei in ltable {
-								if u64(le.sector_start) == u64(ptr.sector) && .Allocated in le.state && le.allocation_size > 0 {
+								if u64(le.sector_start) == u64(ptr.sector) &&
+								   .Allocated in le.state &&
+								   le.allocation_size > 0 {
 									_mark_links(vol, rooted, map_size, u64(ptr.cluster), lei)
 									break
 								}
@@ -548,8 +880,14 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 
 				// Recurse into subdirectories with a validated head.
 				if .Directory in e.flags && e.stored_cluster != 0 {
-					if _, chok := _head_index(vol, u64(e.stored_cluster), u16(e.sector_index)); chok {
-						child := Frame{cluster = u64(e.stored_cluster), offset = u16(e.sector_index), path = fmt.tprintf("%s%s/", fr.path, name), exiting = false}
+					if _, chok := _head_index(vol, u64(e.stored_cluster), u16(e.sector_index));
+					   chok {
+						child := Frame {
+							cluster = u64(e.stored_cluster),
+							offset  = u16(e.sector_index),
+							path    = fmt.tprintf("%s%s/", fr.path, name),
+							exiting = false,
+						}
 						append(&stack, child)
 					}
 				}
@@ -567,6 +905,7 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 		if cerr != .None || .Allocated not_in cme.flags {
 			continue
 		}
+
 		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 		if read_cluster_entry_table(vol, Cluster(ci), &table) != .None {
 			continue
@@ -575,16 +914,33 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 			if .Allocated not_in e.state || .Cluster_Map in e.state {
 				continue
 			}
-			if !rooted[ci*u64(CLUSTER_ENTRIES_PER_SECTOR)+u64(ei)] {
+			if !rooted[ci * u64(CLUSTER_ENTRIES_PER_SECTOR) + u64(ei)] {
 				if orphans < 100 {
-					_check_add(r, .Warning, "Orphan", ci, ei, allocator, "allocated entry unreachable from root")
+					_check_add(
+						r,
+						.Warning,
+						"Orphan",
+						ci,
+						ei,
+						allocator,
+						"allocated entry unreachable from root",
+					)
 				}
 				orphans += 1
 			}
 		}
 	}
 	if orphans > 100 {
-		_check_add(r, .Warning, "Orphan", max(u64), -1, allocator, "%d more orphaned entries omitted", orphans - 100)
+		_check_add(
+			r,
+			.Warning,
+			"Orphan",
+			max(u64),
+			-1,
+			allocator,
+			"%d more orphaned entries omitted",
+			orphans - 100,
+		)
 	}
 }
 
@@ -592,11 +948,11 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 // checker report: position, sequence, size, commit state, and whether
 // it is still pending replay (seq at or past the watermark).
 Journal_Slot_Info :: struct {
-	pos:        Sector,
-	seq:        u64,
-	rec_count:  u16,
-	committed:  bool,
-	pending:    bool,
+	pos:       Sector,
+	seq:       u64,
+	rec_count: u16,
+	committed: bool,
+	pending:   bool,
 }
 
 // check_journal_report_destroy frees a journal report.
@@ -608,7 +964,10 @@ check_journal_report_destroy :: proc(r: [dynamic]Journal_Slot_Info) {
 // anything. Validation mirrors the recover scan (magic, tail magic,
 // counts, sectors, CRC); invalid slots are skipped silently here —
 // allocation recovery already reported what it skipped.
-check_journal_report :: proc(vol: ^Volume, allocator := context.allocator) -> [dynamic]Journal_Slot_Info {
+check_journal_report :: proc(
+	vol: ^Volume,
+	allocator := context.allocator,
+) -> [dynamic]Journal_Slot_Info {
 	out := make([dynamic]Journal_Slot_Info, 0, 8, allocator)
 	J := journal_region_base(&vol.master)
 	M := journal_region_size(&vol.master)
@@ -619,6 +978,7 @@ check_journal_report :: proc(vol: ^Volume, allocator := context.allocator) -> [d
 		if sector_read(vol, pos, hdr_buf[:]) != .None {
 			continue
 		}
+
 		hdr := (^Journal_Header)(raw_data(hdr_buf[:]))^
 		if hdr.magic != JOURNAL_WAL_MAGIC || hdr.tail_magic != JOURNAL_WAL_MAGIC {
 			continue
@@ -626,20 +986,32 @@ check_journal_report :: proc(vol: ^Volume, allocator := context.allocator) -> [d
 		if hdr.rec_count == 0 || hdr.rec_count > MAX_JOURNAL_ENTRIES {
 			continue
 		}
-		want_secs := u16((u64(hdr.rec_count) + JOURNAL_ENTRIES_PER_RECORD - 1) / JOURNAL_ENTRIES_PER_RECORD)
+
+		want_secs := u16(
+			(u64(hdr.rec_count) + JOURNAL_ENTRIES_PER_RECORD - 1) / JOURNAL_ENTRIES_PER_RECORD,
+		)
 		if hdr.rec_sectors != want_secs {
 			continue
 		}
+
 		crc_buf: [24]u8
 		copy(crc_buf[:], hdr_buf[:24])
+
 		crc_buf[22] = 0
 		crc_buf[23] = 0
 		if hash.crc32(crc_buf[:]) != hdr.header_crc {
 			continue
 		}
+
 		append(
 			&out,
-			Journal_Slot_Info{pos = pos, seq = u64(hdr.seq), rec_count = hdr.rec_count, committed = hdr.committed == 1, pending = hdr.committed == 1 && u64(hdr.seq) >= W},
+			Journal_Slot_Info {
+				pos = pos,
+				seq = u64(hdr.seq),
+				rec_count = hdr.rec_count,
+				committed = hdr.committed == 1,
+				pending = hdr.committed == 1 && u64(hdr.seq) >= W,
+			},
 		)
 	}
 	return out
