@@ -70,11 +70,8 @@ read_chain :: proc(
 	data: []u8,
 	err: FS_Error,
 ) {
-	runs, rerr := resolve_extents(vol, loc)
+	runs := resolve_extents(vol, loc) or_return
 	defer delete(runs)
-	if rerr != .None {
-		return {}, rerr
-	}
 
 	total := 0
 	for r in runs {
@@ -100,11 +97,8 @@ read_chain :: proc(
 // (cluster, offset). The final sector is zero-padded when the buffer is not
 // sector-aligned. The chain must be large enough to hold len(data).
 write_chain :: proc(vol: ^Volume, loc: Chain_Location, data: []u8) -> FS_Error {
-	runs, rerr := resolve_extents(vol, loc)
+	runs := resolve_extents(vol, loc) or_return
 	defer delete(runs)
-	if rerr != .None {
-		return rerr
-	}
 
 	pos := 0
 	for r in runs {
@@ -140,11 +134,8 @@ walk_chain_sectors :: proc(
 	visit: proc(sector: Sector, user: rawptr) -> bool,
 	user: rawptr,
 ) -> FS_Error {
-	runs, rerr := resolve_extents(vol, loc)
+	runs := resolve_extents(vol, loc) or_return
 	defer delete(runs)
-	if rerr != .None {
-		return rerr
-	}
 	for r in runs {
 		for si in 0 ..< int(r.count) {
 			if !visit(Sector(u64(r.sector) + u64(si)), user) {

@@ -44,11 +44,8 @@ read_directory_entries :: proc(
 		return dup, .None
 	}
 
-	data, derr := read_chain(vol, Chain_Location{cluster, sector_offset})
+	data := read_chain(vol, Chain_Location{cluster, sector_offset}) or_return
 	defer delete(data)
-	if derr != .None {
-		return {}, derr
-	}
 
 	features := vol.master.features
 	des := int(dir_entry_size(features))
@@ -183,9 +180,7 @@ write_directory_entry_at :: proc(
 ) -> FS_Error {
 	buf: [SECTOR_SIZE]u8
 	table_sector := sector_for(id.dir_cluster, id.dir_offset, vol.master.cluster_size)
-	if err := sector_read(vol, table_sector, buf[:]); err != .None {
-		return err
-	}
+	sector_read(vol, table_sector, buf[:]) or_return
 
 	features := vol.master.features
 	des := int(dir_entry_size(features))
@@ -213,20 +208,24 @@ data_chain_of :: proc(entry: Directory_Entry) -> Chain_Location {
 // within that sector for a directory entry addressed by a chain-relative
 // index. Returns Entry_Not_Found when the index falls outside the chain;
 // resolve I/O errors propagate unchanged.
-entry_sector_for_index :: proc(vol: ^Volume, id: File_Identity) -> (Sector, int, FS_Error) {
-	runs, err := resolve_extents(vol, Chain_Location{id.dir_cluster, id.dir_offset})
+entry_sector_for_index :: proc(
+	vol: ^Volume,
+	id: File_Identity,
+) -> (
+	sec: Sector,
+	within: int,
+	err: FS_Error,
+) {
+	runs := resolve_extents(vol, Chain_Location{id.dir_cluster, id.dir_offset}) or_return
 	defer delete(runs)
-	if err != .None {
-		return {}, 0, err
-	}
 
 	deps := int(dir_entries_per_sector(vol.master.features))
 	remaining := id.entry_index
 	for r in runs {
 		n := int(r.count) * deps
 		if remaining < n {
-			sec := Sector(u64(r.sector) + u64(remaining / deps))
-			return sec, remaining % deps, .None
+			s := Sector(u64(r.sector) + u64(remaining / deps))
+			return s, remaining % deps, .None
 		}
 		remaining -= n
 	}
@@ -242,10 +241,7 @@ read_entry_at_index :: proc(
 	entry: Directory_Entry,
 	err: FS_Error,
 ) {
-	sec, within, rerr := entry_sector_for_index(vol, id)
-	if rerr != .None {
-		return {}, rerr
-	}
+	sec, within := entry_sector_for_index(vol, id) or_return
 
 	buf: [SECTOR_SIZE]u8
 	if sector_read(vol, sec, buf[:]) != .None {
@@ -268,10 +264,7 @@ write_entry_at_index :: proc(
 	id: File_Identity,
 	entry: ^Directory_Entry,
 ) -> FS_Error {
-	sec, within, err := entry_sector_for_index(vol, id)
-	if err != .None {
-		return err
-	}
+	sec, within := entry_sector_for_index(vol, id) or_return
 
 	buf: [SECTOR_SIZE]u8
 	if sector_read(vol, sec, buf[:]) != .None {
