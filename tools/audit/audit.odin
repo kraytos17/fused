@@ -23,6 +23,9 @@
 //       the op, never cache an empty chain).
 //   (s5) every #packed struct has a size_of(Named) assert within 25 lines
 //       (on-disk and ABI layouts stay pinned).
+//   (s6) every ce_find_by_offset() call site checks .Allocated within 3
+//       lines (a stale freed slot may share the offset; mutation paths
+//       additionally cross-check the table index before journaling).
 package main
 
 import "base:runtime"
@@ -716,6 +719,24 @@ audit_storage_rules :: proc(path: string, lines: []string) -> (checked, failed: 
 			   strings.contains(line, ", _ :=") ||
 			   strings.contains(line, ", _ =") {
 				fmt.printf("FAIL   %s:%d discarded slice.clone status\n", path, i + 1)
+				failed += 1
+			}
+		}
+
+		// s6: ce_find_by_offset results must be Allocated-checked: a
+		// freed slot retains its old offset, so an unchecked match can
+		// select a stale slot for mutation.
+		if strings.contains(line, "ce_find_by_offset(") && !strings.contains(line, ":: proc") {
+			checked += 1
+			found := false
+			for k in i ..< min(i + 3, len(lines)) {
+				if strings.contains(lines[k], ".Allocated") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				fmt.printf("FAIL   %s:%d ce_find_by_offset without .Allocated check\n", path, i + 1)
 				failed += 1
 			}
 		}
