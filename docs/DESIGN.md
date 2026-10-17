@@ -28,7 +28,7 @@ read-write FUSE mounting (all 43 `fuse_operations` callbacks implemented).
 | **`cmd/mount/`** | Binary entry point — `package main`, calls `mounter.run()`. | `src/mounter/` |
 | **`cmd/format/`** | Standalone image formatter. Produces valid disk images without libfuse3. | `src/fs/` |
 | **`cmd/dump/`** | Read-only image dumper. Walks the image structure and prints it in human-readable or JSON form. | `src/fs/` |
-| **`tests/`** | Odin unit tests (180), Python pytest integration (65), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
+| **`tests/`** | Odin unit tests (180), Python pytest integration (69: 21 tool + 45 fuse + 3 static), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
 
 ## On-disk format (rev 8)
 
@@ -523,17 +523,19 @@ tests/
 │   │   ├── stress.py              Multi-threaded stress test (reader + writer workers)
 │   │   └── bench.py               Throughput benchmark (write/read/statfs/readdir/create-storm)
 │   ├── mount.py                   FUSE mount context manager (contextlib.contextmanager)
-│   └── io.py                      read/write helpers, run_cli, make_file/make_dir context managers
-├── conftest.py                    Pytest fixtures: mounted_fs, fused_bin, disker_bin, imgdump_bin
-├── pyproject.toml                 Pytest markers: tool, fuse
-├── test_basic.py                  7 FUSE smoke tests (pytest)
+│   └── io.py                      read/write/sync helpers, run_cli (+timeout), assert helpers, make_file/make_dir context managers
+├── conftest.py                    Pytest fixtures: mounted_fs/shared bins, clean_image, private_mount
+├── pyproject.toml                 Pytest markers: tool, fuse, static
+├── test_basic.py                  7 FUSE smoke tests on the shared demo image (asserts /Kernel; pytest)
 ├── test_crash.py                  5 kill -9 crash-consistency tests (pytest: data, truncate-extend/shrink, unlink, long-name rename)
 ├── test_disker.py                 7 format tool CLI tests (pytest)
 ├── test_errors.py                 6 FUSE error path tests (pytest)
 ├── test_imgdump.py                14 tool tests (pytest: 10 dump + 2 corrupt-image guards + 2 check --read-only)
 ├── test_lock.py                   6 lock/flock tests (pytest, cross-process)
 ├── test_rw.py                     13 read-write tests (pytest)
-├── test_xattr.py                  7 xattr tests (pytest)
+├── test_xattr.py                  7 xattr tests (pytest, private mounts)
+├── test_static.py                 3 static-analysis tests (struct sizes, audit, vet; pytest -m static)
+├── test_stress.py                 1 short multi-threaded stress test (5s, private image; pytest -m fuse)
 ├── ci.py                          CI orchestrator (calls make + pytest)
 ├── run_in_namespace.sh            Thin shell: exec unshare -rUm timeout "$@"
 ├── test_common.odin               Shared Odin test helpers (image open, scratch volumes)
@@ -570,7 +572,7 @@ tests/
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
 | 2. Unit tests | `make test` (180 Odin tests) |
-| 3. Tool integration | `make pytest -m tool` (17 format + imgdump tests) |
+| 3. Tool integration | `make pytest -m tool` (7 format + 14 imgdump tests) |
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |
 | 6. FUSE stress | `make smoke-mt` inside `unshare -rUm` (stress.py) |
@@ -582,6 +584,17 @@ FUSE tests run inside an isolated mount namespace (`unshare -rUm`) so that any
 FUSE mount created during testing is automatically torn down when the process
 exits — even if killed. The `run_in_namespace.sh` wrapper is the only shell
 script that survives; everything else is Python or Odin.
+
+Image hygiene is layered, not incidental: crash tests and every writer mount
+a private formatted image per test (`clean_image` + `private_mount`
+fixtures), so no test can perturb another via image residue. Only
+`test_basic.py` uses the shared demo image, and only to assert the
+embedded `/Kernel` content. The Odin side mirrors this with a `// scope:`
+tag on every test file (`shared image`, `scratch image`, or `no image`)
+plus two fixtures in `test_fixtures.odin` (`scratch_volume` for fs-level
+tests, `scratch_fs` for mounter-level tests); caller buffers for
+`fused_*` must be stack or heap (`tpath` helper), never the temp arena,
+enforced by audit rule t1.
 
 ### Diagnostics
 
