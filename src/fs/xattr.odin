@@ -88,13 +88,25 @@ xattr_load :: proc(
 		return attrs, rerr
 	}
 
-	_xattr_deserialize_into(&attrs, data[:], allocator)
+	// A malformed blob is corruption, not an empty set: fail closed so a
+	// torn xattr chain can never surface as silently missing attributes.
+	// Partial appends are freed and the array cleared (the caller still
+	// owns and deletes it).
+	if derr := _xattr_deserialize_into(&attrs, data[:], allocator); derr != .None {
+		for &a in attrs {
+			delete(a.name, allocator)
+			delete(a.value, allocator)
+		}
+		clear(&attrs)
+		return attrs, derr
+	}
 	return attrs, .None
 }
 
 // xattr_get returns a heap-allocated copy of the value for a named
 // attribute. The caller deletes the returned slice. found=false when the
-// attribute does not exist.
+// attribute does not exist; err reports load/parse failure separately so
+// corruption is never mistaken for absence.
 xattr_get :: proc(
 	vol: ^Volume,
 	entry: ^Directory_Entry,
@@ -103,8 +115,9 @@ xattr_get :: proc(
 ) -> (
 	value: []u8,
 	found: bool,
+	err: FS_Error,
 ) {
-	attrs, err := xattr_load(vol, entry, allocator)
+	attrs, lerr := xattr_load(vol, entry, allocator)
 	defer {
 		for &a in attrs {
 			delete(a.name, allocator)
@@ -112,17 +125,17 @@ xattr_get :: proc(
 		}
 		delete(attrs)
 	}
-	if err != .None {
-		return {}, false
+	if lerr != .None {
+		return {}, false, lerr
 	}
 	for &a in attrs {
 		if a.name == name {
 			value = make([]u8, len(a.value), allocator)
 			copy(value, a.value)
-			return value, true
+			return value, true, .None
 		}
 	}
-	return {}, false
+	return {}, false, .None
 }
 
 // xattr_store replaces the full attribute set for an entry. It serializes
@@ -209,15 +222,19 @@ xattr_remove :: proc(
 }
 
 // xattr_clear frees the xattr chain for an entry and zeroes
-// xattr_cluster. The caller persists the updated entry to disk.
+// xattr_cluster. The caller persists the updated entry to disk. The
+// pointer is zeroed only on success: a failed free leaves the chain
+// allocated, so the entry must keep pointing at it (leak, not loss).
 xattr_clear :: proc(vol: ^Volume, entry: ^Directory_Entry) -> FS_Error {
 	if entry.xattr_cluster == 0 {
 		return .None
 	}
 
-	err := _xattr_chain_free(vol, entry.xattr_cluster)
+	if err := _xattr_chain_free(vol, entry.xattr_cluster); err != .None {
+		return err
+	}
 	entry.xattr_cluster = 0
-	return err
+	return .None
 }
 
 // _xattr_serialize packs attributes into a blob buffer.
@@ -253,34 +270,46 @@ _xattr_serialize :: proc(attrs: []XAttr) -> (data: []u8) {
 }
 
 // _xattr_deserialize_into parses a blob buffer into an existing dynamic
-// array of cloned attributes.
+// array of cloned attributes. Every structural property is validated:
+// header size, magic, per-record bounds, recomputed total, exact record
+// count and consumption, and duplicate names. Anything else is
+// .Corrupt_XAttr_Blob — a torn blob must never surface as a partial or
+// empty attribute set. Partial appends stay in the array; the caller
+// frees them on error.
 @(private = "file")
 _xattr_deserialize_into :: proc(
 	attrs: ^[dynamic]XAttr,
 	data: []u8,
 	allocator := context.allocator,
-) {
+) -> FS_Error {
 	if len(data) < size_of(XAttr_Blob_Header) {
-		return
+		return .Corrupt_XAttr_Blob
 	}
 
 	hdr := (^XAttr_Blob_Header)(raw_data(data))^
 	if hdr.magic != XATTR_MAGIC {
-		return
+		return .Corrupt_XAttr_Blob
 	}
 
 	pos := size_of(XAttr_Blob_Header)
+	accounted := 0
 	for _ in 0 ..< int(hdr.count) {
 		if pos + size_of(XAttr_Record_Header) > len(data) {
-			break
+			return .Corrupt_XAttr_Blob
 		}
 
 		rh := (^XAttr_Record_Header)(raw_data(data[pos:]))^
 		pos += size_of(XAttr_Record_Header)
 		name_len := int(rh.name_len)
 		value_len := int(rh.value_len)
-		if pos + name_len + value_len > len(data) {
-			break
+		if name_len == 0 || pos + name_len + value_len > len(data) {
+			return .Corrupt_XAttr_Blob
+		}
+
+		for &a in attrs^ {
+			if a.name == string(data[pos:pos + name_len]) {
+				return .Corrupt_XAttr_Blob
+			}
 		}
 
 		name := strings.clone(string(data[pos:pos + name_len]), allocator)
@@ -290,5 +319,14 @@ _xattr_deserialize_into :: proc(
 		copy(value, data[pos:pos + value_len])
 		pos += value_len
 		append(attrs, XAttr{name = name, value = value})
+		accounted += size_of(XAttr_Record_Header) + name_len + value_len
 	}
+	if accounted != int(hdr.total) {
+		return .Corrupt_XAttr_Blob
+	}
+	// No exact end-of-data check: chains are sector-granular, so a valid
+	// blob is always followed by sector padding (zeros or stale bytes)
+	// that is never parsed. The record count, recomputed total, and
+	// per-record bounds above are the integrity contract.
+	return .None
 }

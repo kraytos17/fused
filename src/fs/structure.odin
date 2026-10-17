@@ -114,6 +114,7 @@ FS_Error :: enum {
 	Sector_Read_Error,
 	Sector_Write_Error,
 	Name_Too_Long,
+	Corrupt_XAttr_Blob,
 }
 
 // Rev 4 images had a single rev byte at offset 7 and can't be parsed
@@ -315,7 +316,7 @@ XAttr_Blob_Header :: struct #packed {
 	magic: u32,
 	count: u16,
 	_pad:  u16,
-	total: u32, // total payload bytes (names + values) that follow the header
+	total: u32, // Σ over records of (6 + name_len + value_len); blob len is 12 + total
 }
 #assert(size_of(XAttr_Blob_Header) == 12)
 

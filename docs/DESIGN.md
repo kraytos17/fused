@@ -508,7 +508,7 @@ tests/
 ├── free_space_test.odin           3 free-space oracle tests (Reserved/Full accounting, isolated images)
 ├── cache_test.odin                10 cache tests
 ├── fs_test.odin                   5 filesystem core tests
-├── xattr_test.odin                2 xattr unit tests
+├── xattr_test.odin                5 xattr unit tests
 └── size_check.odin                1 struct-size test (12 FUSE structs vs C ground truth)
 ```
 
@@ -517,7 +517,7 @@ tests/
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `make test` (136 Odin tests) |
+| 2. Unit tests | `make test` (139 Odin tests) |
 | 3. Tool integration | `make pytest -m tool` (17 format + imgdump tests) |
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |

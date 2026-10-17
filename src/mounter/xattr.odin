@@ -130,8 +130,11 @@ fused_getxattr :: proc "c" (
 		return fs_error_to_errno(rerr)
 	}
 
-	val, found := fs.xattr_get(&fsys.vol, &entry, string(name))
+	val, found, gerr := fs.xattr_get(&fsys.vol, &entry, string(name))
 	defer delete(val)
+	if gerr != .None {
+		return fuse3.nix(.EIO)
+	}
 	if !found {
 		return fuse3.nix(.ENODATA)
 	}
