@@ -3,12 +3,12 @@ import os
 
 import pytest
 
-from fused_test.io import run_cli
+from fused_test.io import assert_cli_ok, run_cli
 
 
 def get_json(imgdump: str, image: str) -> dict:
     r = run_cli(imgdump, "--json", image)
-    assert r.returncode == 0, r.stderr
+    assert_cli_ok(r)
     return json.loads(r.stdout)
 
 
@@ -41,7 +41,7 @@ def test_json_deep(imgdump_bin: str, fused_image: str):
 @pytest.mark.tool
 def test_text_output(imgdump_bin: str, fused_image: str):
     r = run_cli(imgdump_bin, fused_image)
-    assert r.returncode == 0
+    assert_cli_ok(r)
     for keyword in ["MasterRecord", "ALLOCATED", "Directory Tree", "Kernel", "CE[00]"]:
         assert keyword in r.stdout, f"missing '{keyword}'"
 
@@ -152,11 +152,11 @@ def test_json_cycle_terminates(imgdump_bin: str, fused_image: str, tmp_path: str
     _plant_root_entries(fused_image, dst, [(b"loop", 0x25, rc, ro)], rc, ro, cs)
 
     r = run_cli(imgdump_bin, dst, timeout=30)
-    assert r.returncode == 0, r.stderr
+    assert_cli_ok(r)
     assert "<cycle>" in r.stdout
 
     r = run_cli(imgdump_bin, "--json", dst, timeout=30)
-    assert r.returncode == 0, r.stderr
+    assert_cli_ok(r)
     d = json.loads(r.stdout)
     assert "loop" in d["root"]
     assert "<cycle>" in d["root"]["loop"].get("children", {})
@@ -183,13 +183,13 @@ def test_json_duplicate_names_surfaced(imgdump_bin: str, fused_image: str, tmp_p
     )
 
     r = run_cli(imgdump_bin, "--json", dst, timeout=30)
-    assert r.returncode == 0, r.stderr
+    assert_cli_ok(r)
     d = json.loads(r.stdout)
     assert "dup" in d["root"]
     assert "dup#dup2" in d["root"]
 
     r = run_cli(imgdump_bin, dst, timeout=30)
-    assert r.returncode == 0, r.stderr
+    assert_cli_ok(r)
     assert r.stdout.count('"dup"') == 2
 
 
@@ -202,11 +202,11 @@ def test_check_read_only_clean_image(
 
     img = str(tmp_path / "ro.img")
     r = run_cli(disker_bin, "--force", "--size=1M", f"--output={img}")
-    assert r.returncode == 0, r.stderr
+    assert_cli_ok(r)
     with open(img, "rb") as f:
         digest_before = hashlib.sha256(f.read()).hexdigest()
     r = run_cli(check_bin, "--read-only", img)
-    assert r.returncode == 0, r.stderr
+    assert_cli_ok(r)
     assert "read-only mode" in r.stdout
     assert ": OK" in r.stdout
     with open(img, "rb") as f:

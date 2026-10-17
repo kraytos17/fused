@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from fused_test.io import run_cli
+from fused_test.io import assert_cli_ok, run_cli
 
 
 @pytest.fixture
@@ -13,28 +13,28 @@ def tmp_img(tmp_path: str) -> str:
 @pytest.mark.tool
 def test_default_format(disker_bin: str, tmp_img: str):
     r = run_cli(disker_bin, "--force", "--output", tmp_img)
-    assert r.returncode == 0
+    assert_cli_ok(r)
     assert os.path.getsize(tmp_img) == 1048576
 
 
 @pytest.mark.tool
 def test_custom_size_4M(disker_bin: str, tmp_img: str):
     r = run_cli(disker_bin, "--force", "--output", tmp_img, "--size=4M")
-    assert r.returncode == 0
+    assert_cli_ok(r)
     assert os.path.getsize(tmp_img) == 4 * 1024 * 1024
 
 
 @pytest.mark.tool
 def test_custom_cluster_64(disker_bin: str, tmp_img: str):
     r = run_cli(disker_bin, "--force", "--output", tmp_img, "--size=8M", "--cluster-size=64")
-    assert r.returncode == 0
+    assert_cli_ok(r)
     assert os.path.getsize(tmp_img) == 8 * 1024 * 1024
 
 
 @pytest.mark.tool
 def test_positional_output(disker_bin: str, tmp_img: str):
     r = run_cli(disker_bin, "--force", tmp_img)
-    assert r.returncode == 0
+    assert_cli_ok(r)
     assert os.path.isfile(tmp_img)
 
 
