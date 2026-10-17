@@ -256,9 +256,7 @@ journal_recover :: proc(vol: ^Volume) -> FS_Error {
 		// slot: without it the committed set is unknowable, so fail
 		// instead of scanning past potentially committed data. (Bad
 		// magic/CRC/counts below mean "no transaction here" and skip.)
-		if rerr := sector_read(vol, pos, hdr_buf[:]); rerr != .None {
-			return rerr
-		}
+		sector_read(vol, pos, hdr_buf[:]) or_return
 
 		hdr := (^Journal_Header)(raw_data(hdr_buf[:]))^
 		if hdr.magic != JOURNAL_WAL_MAGIC { continue }
@@ -327,9 +325,7 @@ journal_recover :: proc(vol: ^Volume) -> FS_Error {
 		// The checkpoint must persist: an advanced-but-unwritten
 		// watermark would diverge in-memory state from disk, so report
 		// it and let the opener refuse the mount.
-		if werr := write_master_record(vol); werr != .None {
-			return werr
-		}
+		write_master_record(vol) or_return
 	}
 	if replayed > 0 {
 		log.infof("journal: replayed %d entries", replayed)

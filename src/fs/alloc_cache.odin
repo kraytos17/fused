@@ -183,11 +183,9 @@ _alloc_cache_build :: proc(
 alloc_cache_count_free :: proc(vol: ^Volume) -> u64 {
 	free: u64 = 0
 	for ci in 0 ..< int(vol.master.cluster_map_size) {
-		cme, cerr := read_cluster_map_entry(vol, Cluster(ci))
-		if cerr != .None { continue }
+		cme := read_cluster_map_entry(vol, Cluster(ci)) or_continue
 		if .Reserved in cme.flags || .Full in cme.flags { continue }
-		bm, _, berr := alloc_cache_ensure(&vol.cache, vol, u64(ci))
-		if berr != .None { continue }
+		bm, _ := alloc_cache_ensure(&vol.cache, vol, u64(ci)) or_continue
 
 		it := bit_array.make_iterator(&bm)
 		for set, _ in bit_array.iterate_by_all(&it) {

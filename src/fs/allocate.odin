@@ -274,10 +274,7 @@ allocate_sectors :: proc(
 			}
 		}
 
-		bitmap, used, var_err := alloc_cache_ensure(&vol.cache, vol, cluster_idx)
-		if var_err != .None {
-			continue
-		}
+		bitmap, used := alloc_cache_ensure(&vol.cache, vol, cluster_idx) or_continue
 
 		free_start, free_avail, free_ok := _find_contiguous_free(
 			&bitmap,
