@@ -69,7 +69,15 @@ volume_open :: proc(path: string, cache := DEFAULT_CACHE_CONFIG) -> (vol: Volume
 
 	dir_cap := cache.dir_cap if cache.dir_cap > 0 else DEFAULT_CACHE_CONFIG.dir_cap
 	dir_cache_init(&vol.dir_cache, dir_cap)
-	JOURNAL_BACKEND.recover(&vol)
+	// Recovery failure means the committed set is unknowable or the
+	// checkpoint cannot persist: refuse the mount rather than run
+	// writable on an unrecovered image (ADR-001 §7).
+	if rerr := JOURNAL_BACKEND.recover(&vol); rerr != .None {
+		alloc_cache_destroy(&vol.cache)
+		dir_cache_destroy(&vol.dir_cache)
+		os.close(fd)
+		return {}, rerr
+	}
 	return vol, .None
 }
 

@@ -44,6 +44,14 @@ watermark — can double-own sectors or walk into stale links.
    itself is unsynced: home is already durable when it persists, and a
    lost checkpoint only causes (idempotent) re-replay. What must never
    happen is the watermark overtaking undurable home tables.
+7. **Recovery I/O failure policy (2026-10-17 amendment).** A
+   journal-region header that cannot be *read* is a disk failure, not
+   an empty slot: `journal_recover` returns the error and
+   `volume_open` refuses the mount — the committed set is unknowable,
+   so scanning past is unsound. A failed checkpoint write likewise
+   errors out. A held watermark (incomplete/torn slot, unreadable
+   replay target) is routine and returns `.None`: the slot is
+   preserved and the next mount converges from the log.
 
 ## Scope (explicit non-goals)
 
@@ -76,4 +84,7 @@ watermark — can double-own sectors or walk into stale links.
   simulation (reordered home-apply) once plan-first lands.
 - Torn-log fixtures: torn header/record, bad CRC/counts, short home
   apply followed by recover must converge to the logged state.
+- `tests/fault_test.odin`: scan-header read failure returns the error
+  with the watermark unmoved; replay-abort paths return the failed
+  checkpoint write while the in-memory hold stands.
 - `make bench` before/after each stage.

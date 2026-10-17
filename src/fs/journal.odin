@@ -235,7 +235,7 @@ _replay_slot :: proc(vol: ^Volume, s: Slot_Entry) -> (replayed: int, completed: 
 }
 
 @(cold, optimization_mode = "favor_size")
-journal_recover :: proc(vol: ^Volume) {
+journal_recover :: proc(vol: ^Volume) -> FS_Error {
 	J := journal_region_base(&vol.master)
 	M := journal_region_size(&vol.master)
 	W := journal_watermark(&vol.master)
@@ -251,7 +251,13 @@ journal_recover :: proc(vol: ^Volume) {
 	for i: u64; i < M; i += 1 {
 		pos := J + Sector(i)
 		hdr_buf: [SECTOR_SIZE]u8
-		if sector_read(vol, pos, hdr_buf[:]) != .None { continue }
+		// A header that cannot be READ is a disk failure, not an empty
+		// slot: without it the committed set is unknowable, so fail
+		// instead of scanning past potentially committed data. (Bad
+		// magic/CRC/counts below mean "no transaction here" and skip.)
+		if rerr := sector_read(vol, pos, hdr_buf[:]); rerr != .None {
+			return rerr
+		}
 
 		hdr := (^Journal_Header)(raw_data(hdr_buf[:]))^
 		if hdr.magic != JOURNAL_WAL_MAGIC { continue }
@@ -317,11 +323,19 @@ journal_recover :: proc(vol: ^Volume) {
 	old_W := journal_watermark(&vol.master)
 	journal_set_watermark(&vol.master, W)
 	if replayed > 0 || W > old_W {
-		write_master_record(vol)
+		// The checkpoint must persist: an advanced-but-unwritten
+		// watermark would diverge in-memory state from disk, so report
+		// it and let the opener refuse the mount.
+		if werr := write_master_record(vol); werr != .None {
+			return werr
+		}
 	}
 	if replayed > 0 {
 		log.infof("journal: replayed %d entries", replayed)
 	}
+	// A held watermark (incomplete slot) is routine, not failure: the
+	// next mount replays the preserved chunk to convergence.
+	return .None
 }
 
 // Journal_Txn_Handle carries the per-transaction state of the journal.
@@ -360,14 +374,18 @@ journal_entry_from_cluster_entry :: proc(
 //   finish — checkpoint: advance the sequence always (preserving the slot),
 //            the watermark only when home-apply succeeded.
 //   abort  — discard uncommitted in-memory entries (pre-commit only).
-//   recover — replay leftover state from a previous crash, in seq order.
+//   recover — replay leftover state from a previous crash, in seq order;
+//            returns an error only when the committed set is unknowable
+//            (journal-region read failure) or the checkpoint cannot
+//            persist. A held watermark (incomplete slot) is routine and
+//            returns .None: the next mount converges from the log.
 Journal_Backend :: struct {
 	begin:   proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool,
 	add:     proc(vol: ^Volume, h: ^Journal_Txn_Handle, e: Journal_Entry) -> bool,
 	commit:  proc(vol: ^Volume, h: ^Journal_Txn_Handle) -> bool,
 	finish:  proc(vol: ^Volume, h: ^Journal_Txn_Handle, applied: bool) -> bool,
 	abort:   proc(vol: ^Volume, h: ^Journal_Txn_Handle),
-	recover: proc(vol: ^Volume),
+	recover: proc(vol: ^Volume) -> FS_Error,
 }
 
 // Backend adapters — physical redo-log WAL (rev 7+; the only journal).

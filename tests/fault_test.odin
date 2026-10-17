@@ -364,7 +364,10 @@ test_fault_recover_aborts_on_home_write :: proc(t: ^testing.T) {
 	// Recover with the replay's home-table write faulted: scan and record
 	// reads succeed, the apply write is the next one and fails.
 	vol.fault.fail_writes_after = vol.fault.writes
-	fs.journal_recover(&vol)
+	// The checkpoint write fails too (writes armed): recover reports it,
+	// but the in-memory hold still stands for the asserts below.
+	recerr := fs.journal_recover(&vol)
+	testing.expect_value(t, recerr, fs.FS_Error.Sector_Write_Error)
 
 	// Watermark advanced past the already-checkpointed prefix but stopped
 	// before the unapplied chunk; home untouched, free count unchanged.
@@ -510,7 +513,10 @@ test_fault_recover_aborts_on_record_read :: proc(t: ^testing.T) {
 	// Budget: M scan reads + old record read + old table read (CME +
 	// sector); the unapplied chunk's record read is the first failure.
 	vol.fault.fail_reads_after = R0 + M + 3
-	fs.journal_recover(&vol)
+	// The checkpoint write fails too (writes still armed from the flush):
+	// recover reports it, but the in-memory hold stands.
+	recerr := fs.journal_recover(&vol)
+	testing.expect_value(t, recerr, fs.FS_Error.Sector_Write_Error)
 	testing.expect_value(t, vol.fault.reads, R0 + M + 4)
 	testing.expect_value(t, vol.fault.writes, W0 + 1)
 	vol.fault.fail_reads_after = max(u64)
@@ -585,7 +591,10 @@ test_fault_recover_aborts_on_home_read :: proc(t: ^testing.T) {
 	W0 := vol.fault.writes
 	M := fs.journal_region_size(&vol.master)
 	vol.fault.fail_reads_after = R0 + M + 5
-	fs.journal_recover(&vol)
+	// The checkpoint write fails too (writes still armed from the flush):
+	// recover reports it, but the in-memory hold stands.
+	recerr := fs.journal_recover(&vol)
+	testing.expect_value(t, recerr, fs.FS_Error.Sector_Write_Error)
 	testing.expect_value(t, vol.fault.reads, R0 + M + 6)
 	testing.expect_value(t, vol.fault.writes, W0 + 1)
 	vol.fault.fail_reads_after = max(u64)
@@ -670,4 +679,75 @@ test_fault_commit_header_write_leaves_nothing :: proc(t: ^testing.T) {
 	_, rerr2 := fs.find_cluster_entry(&vol, hc, ho)
 	testing.expect_value(t, rerr2, fs.FS_Error.None)
 	testing.expect_value(t, fs.alloc_cache_count_free(&vol), f0)
+}
+
+// test_fault_recover_scan_read_error_fails — a journal-region header
+// that cannot be READ is a disk failure, not an empty slot: recover
+// must return the error with the watermark unmoved (the committed set
+// is unknowable, so scanning past is unsound), and a later fault-free
+// recover must converge from the log.
+@(test)
+test_fault_recover_scan_read_error_fails :: proc(t: ^testing.T) {
+	vol, ok := fault_setup(t)
+	if !ok { return }
+	defer fault_teardown(&vol)
+
+	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
+	testing.expect_value(t, aerr, fs.FS_Error.None)
+	if aerr != .None { return }
+
+	// Single-entry deallocation plan, committed but left unapplied by a
+	// failed apply (same setup as the flush-path tests).
+	table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
+	idx := -1
+	entry, ferr := fs.find_cluster_entry(&vol, hc, ho, &table, &idx)
+	testing.expect_value(t, ferr, fs.FS_Error.None)
+	if ferr != .None { return }
+	cleared_size := u64(entry.allocation_size)
+	entry.state -= {.Allocated}
+	plan := [1]fs.Journal_Entry{fs.journal_entry_from_cluster_entry(entry, u64(hc), u8(idx))}
+
+	f0, seq0, wm0 := fault_state(&vol)
+	testing.expect_value(t, wm0, seq0 - 1)
+
+	// Commit the chunk, fail the home-table write: logged but unapplied,
+	// watermark held, seq advanced once.
+	vol.fault = fs.IO_Fault{
+		enabled           = true,
+		fail_reads_after  = max(u64),
+		fail_writes_after = 2,
+		fail_syncs_after  = max(u64),
+	}
+	jerr := fs.journal_flush_chunk(&vol, plan[:])
+	testing.expect_value(t, jerr, fs.FS_Error.Sector_Write_Error)
+	testing.expect_value(t, vol.fault.writes, u64(4))
+	testing.expect_value(t, vol.fault.syncs, u64(2))
+
+	// Fail the very first scan header read: no slot may be trusted.
+	R0 := vol.fault.reads
+	W0 := vol.fault.writes
+	vol.fault.fail_reads_after = R0
+	recerr := fs.journal_recover(&vol)
+	testing.expect_value(t, recerr, fs.FS_Error.Sector_Read_Error)
+	testing.expect_value(t, vol.fault.reads, R0 + 1)
+	testing.expect_value(t, vol.fault.writes, W0)
+	vol.fault.fail_reads_after = max(u64)
+
+	// Nothing replayed, watermark unmoved, home untouched.
+	_, seq1, wm1 := fault_state(&vol)
+	testing.expect_value(t, seq1, seq0 + 1)
+	testing.expect_value(t, wm1, wm0)
+	_, rerr := fs.find_cluster_entry(&vol, hc, ho)
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+	testing.expect_value(t, fs.alloc_cache_count_free(&vol), f0)
+
+	// Faults off: recover converges from the committed log.
+	vol.fault.enabled = false
+	fs.journal_recover(&vol)
+	_, seq2, wm2 := fault_state(&vol)
+	testing.expect_value(t, seq2, seq1)
+	testing.expect_value(t, wm2, seq1)
+	_, rerr2 := fs.find_cluster_entry(&vol, hc, ho)
+	testing.expect_value(t, rerr2, fs.FS_Error.Entry_Not_Found)
+	testing.expect_value(t, fs.alloc_cache_count_free(&vol), f0 + cleared_size)
 }
