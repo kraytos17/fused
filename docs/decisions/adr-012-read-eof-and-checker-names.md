@@ -73,9 +73,12 @@ oracle, `tests/property_test.odin`):
   at/past-EOF reads return 0, `read_buf` mirrors both (NULL bufp
   at EOF). Mutation-checked: fails with the clamp reverted.
 - `tests/property_test.odin::test_prop_random_ops`: 300-op model
-  run (files + symlinks with short/multi-sector targets, flat
-  subdirectories, cross-directory moves with handle refresh, short
-  and LFN names, readdir/readlink oracles) with a clean final scan.
-  Caught both bugs (slack-zero reads; 7 false `DupName`
-  findings on 8 live files) plus the truncate-to-zero stale head
-  (ADR-013) on seed 0x12345678.
+  run (files + symlinks with short/multi-sector targets, nested
+  directories, cross-directory file/dir moves with handle refresh
+  and circularity oracle, short and LFN names, readdir/readlink
+  oracles, plus copy_file_range / write_buf / fallocate oracles)
+  with a clean final scan. Caught both bugs (slack-zero reads;
+  7 false `DupName` findings on 8 live files) plus the
+  truncate-to-zero stale head (ADR-013) on seed 0x12345678 and the
+  copy_file_range slack/gap bugs (ADR-015) on the first run with
+  copy ops enabled.

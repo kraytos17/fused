@@ -640,10 +640,17 @@ fused_copy_file_range :: proc "c" (
 		return c.ssize_t(fuse3.nix(.EINVAL))
 	}
 
-	_, src_cluster, src_offset, src_rerr := read_entry_from_fh(fsys, fi_in.fh)
+	src_entry, src_cluster, src_offset, src_rerr := read_entry_from_fh(fsys, fi_in.fh)
 	if src_rerr != .None {
 		return c.ssize_t(fs_error_to_errno(src_rerr))
 	}
+	// Clamp to src EOF: the extent runs are sector-granular, so without
+	// this a copy crossing src EOF would copy slack zeros as file data
+	// (and over-report). Reading at/past EOF copies nothing.
+	if src_off >= src_entry.file_size {
+		return 0
+	}
+	clamped := min(u64(size), src_entry.file_size - src_off)
 
 	dst_entry, dst_cluster, dst_offset, dst_err := read_entry_from_fh(fsys, fi_out.fh)
 	if dst_err != .None {
@@ -655,7 +662,7 @@ fused_copy_file_range :: proc "c" (
 		return c.ssize_t(fuse3.nix(.ENOENT))
 	}
 
-	dst_total_sectors, sok := _span_sectors(dst_off, u64(size))
+	dst_total_sectors, sok := _span_sectors(dst_off, clamped)
 	if !sok {
 		return c.ssize_t(fuse3.nix(.EOVERFLOW))
 	}
@@ -673,12 +680,34 @@ fused_copy_file_range :: proc "c" (
 		return c.ssize_t(fs_error_to_errno(derr))
 	}
 
-	bytes_copied := _copy_runs_to_runs(fsys, src_runs, dst_runs, src_off, dst_off, u64(size))
-	// Safe: dst_off + size did not overflow above and bytes_copied <= size.
+	// Zero the gap between old dst EOF and the copy offset before the new
+	// bytes land; reused sectors may hold stale data.
+	old_dst_size := u64(dst_entry.file_size)
+	if dst_off > old_dst_size {
+		if zerr := zero_file_range(
+			fsys,
+			&dst_entry,
+			fs.Chain_Location{dst_cluster, dst_offset},
+			Byte_Range{old_dst_size, dst_off},
+		); zerr != .None {
+			return c.ssize_t(fs_error_to_errno(zerr))
+		}
+	}
+
+	bytes_copied := _copy_runs_to_runs(fsys, src_runs, dst_runs, src_off, dst_off, clamped)
+	// Safe: dst_off + clamped did not overflow above and bytes_copied <= clamped.
 	new_size := max(u64(dst_entry.file_size), u64(off_out) + bytes_copied)
-	if new_size != u64(dst_entry.file_size) {
+	// mtime advances on every copy that transfers bytes (POSIX: even a
+	// same-size overwrite must bump mtime), mirroring write_finish.
+	touched := bytes_copied > 0
+	if touched {
 		set_entry_time_to_now(&dst_entry)
+	}
+	if new_size != u64(dst_entry.file_size) {
 		dst_entry.file_size = new_size
+		touched = true
+	}
+	if touched {
 		if werr := write_entry_at(fsys, fh_parts(fi_out.fh), &dst_entry); werr != .None {
 			return c.ssize_t(fs_error_to_errno(werr))
 		}

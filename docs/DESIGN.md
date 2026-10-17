@@ -28,7 +28,7 @@ read-write FUSE mounting (all 43 `fuse_operations` callbacks implemented).
 | **`cmd/mount/`** | Binary entry point — `package main`, calls `mounter.run()`. | `src/mounter/` |
 | **`cmd/format/`** | Standalone image formatter. Produces valid disk images without libfuse3. | `src/fs/` |
 | **`cmd/dump/`** | Read-only image dumper. Walks the image structure and prints it in human-readable or JSON form. | `src/fs/` |
-| **`tests/`** | Odin unit tests (180), Python pytest integration (69: 21 tool + 45 fuse + 3 static), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
+| **`tests/`** | Odin unit tests (181), Python pytest integration (69: 21 tool + 45 fuse + 3 static), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
 
 ## On-disk format (rev 8)
 
@@ -294,6 +294,10 @@ Binding contracts live in [`docs/decisions/`](decisions/):
   directory-move circularity compares slot identities (entry
   location), never data-chain heads; circular moves fail EINVAL
   with the tree untouched.
+- [ADR-015](decisions/adr-015-copy-range-semantics.md):
+  copy_file_range clamps to src EOF (short count, 0 past EOF),
+  zero-fills dst gaps over reused sectors, and bumps mtime on any
+  successful copy.
 
 ### In-memory caches
 
@@ -559,7 +563,7 @@ tests/
 ├── ce_identity_test.odin          1 CE slot-identity test (stale-duplicate clear, isolated image)
 ├── check_test.odin                20 checker tests (Stage A ownership/links/bounds/free + Stage B reachability/orphans/journal + read-only open, isolated images)
 ├── golden_test.odin               2 format byte-golden tests (rev 7 + rev 8 fresh-format hashes, determinism check)
-├── property_test.odin             1 model-based property test (300 deterministic ops: files + symlinks + nested dirs, file/dir moves with circularity oracle, LFN names, readdir/readlink oracles, clean final scan)
+├── property_test.odin             1 model-based property test (300 deterministic ops: + copy_file_range, write_buf, fallocate oracles; clean final scan)
 ├── truncate_test.odin             3 truncate-boundary tests (fragmented chain + journal pins, isolated image)
 ├── zero_fill_test.odin            5 extension zero-fill + zero-length-write tests (poison-reuse images)
 ├── free_space_test.odin           3 free-space oracle tests (Reserved/Full accounting, isolated images)
@@ -574,7 +578,7 @@ tests/
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `make test` (180 Odin tests) |
+| 2. Unit tests | `make test` (181 Odin tests) |
 | 3. Tool integration | `make pytest -m tool` (7 format + 14 imgdump tests) |
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |

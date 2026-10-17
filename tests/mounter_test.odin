@@ -284,6 +284,92 @@ test_mount_truncate_zero_then_grow :: proc(t: ^testing.T) {
 	testing.expect_value(t, rc, 0)
 }
 
+// test_mount_copy_range_clamps_and_zeroes — copy_file_range returns a
+// short count at src EOF (never slack zeros), zero-fills a dst gap over
+// reused sectors, and bumps mtime on any successful copy.
+@(test)
+test_mount_copy_range_clamps_and_zeroes :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	ok := setup_mounter(t, &fsys)
+	if !ok { return }
+	defer teardown_mounter(&fsys)
+	cleanup_root(&fsys, []string{"csrc", "cdst", "cpoison", "cgap"})
+	defer cleanup_root(&fsys, []string{"csrc", "cdst", "cpoison", "cgap"})
+
+	fi_s, fi_d: fuse3.File_Info
+	rc := mounter.fused_create("/csrc", posix.mode_t{.IRUSR, .IWUSR}, &fi_s)
+	testing.expect_value(t, rc, 0)
+	rc = mounter.fused_create("/cdst", posix.mode_t{.IRUSR, .IWUSR}, &fi_d)
+	testing.expect_value(t, rc, 0)
+
+	data := "HELLO WORLD" // 11 bytes
+	rc = mounter.fused_write("/csrc", raw_data(data), c.size_t(len(data)), 0, &fi_s)
+	testing.expect_value(t, rc, c.int(len(data)))
+
+	// Copy 100 bytes from an 11-byte src → short count, exact content.
+	got := mounter.fused_copy_file_range("/csrc", &fi_s, 0, "/cdst", &fi_d, 0, 100, 0)
+	testing.expect_value(t, got, 11)
+	buf := make([]u8, 16)
+	defer delete(buf)
+	got2 := mounter.fused_read("/cdst", raw_data(buf), 11, 0, &fi_d)
+	testing.expect_value(t, got2, 11)
+	testing.expect(t, string(buf[:got2]) == data, "copied content matches")
+
+	// Reading at src EOF copies nothing.
+	got3 := mounter.fused_copy_file_range("/csrc", &fi_s, 11, "/cdst", &fi_d, 0, 10, 0)
+	testing.expect_value(t, got3, 0)
+
+	// Poison free sectors, then copy into a gap on a fresh file: the
+	// gap must read zeros, not stale bytes.
+	fi_p: fuse3.File_Info
+	rc = mounter.fused_create("/cpoison", posix.mode_t{.IRUSR, .IWUSR}, &fi_p)
+	testing.expect_value(t, rc, 0)
+	big := make([]u8, 2048)
+	defer delete(big)
+	for i in 0 ..< len(big) { big[i] = 0xAA }
+	rc = mounter.fused_write("/cpoison", raw_data(big), c.size_t(len(big)), 0, &fi_p)
+	testing.expect_value(t, rc, c.int(len(big)))
+	rc = mounter.fused_unlink("/cpoison")
+	testing.expect_value(t, rc, 0)
+
+	fi_g: fuse3.File_Info
+	rc = mounter.fused_create("/cgap", posix.mode_t{.IRUSR, .IWUSR}, &fi_g)
+	testing.expect_value(t, rc, 0)
+	got4 := mounter.fused_copy_file_range("/csrc", &fi_s, 0, "/cgap", &fi_g, 100, 5, 0)
+	testing.expect_value(t, got4, 5)
+	gbuf := make([]u8, 120)
+	defer delete(gbuf)
+	n := mounter.fused_read("/cgap", raw_data(gbuf), 105, 0, &fi_g)
+	testing.expect_value(t, n, 105)
+	for i in 0 ..< 100 {
+		if gbuf[i] != 0 {
+			testing.expectf(t, false, "gap byte %d is 0x%02x, want 0x00", i, gbuf[i])
+			break
+		}
+	}
+	testing.expect(t, string(gbuf[100:105]) == "HELLO", "gap tail matches")
+
+	// mtime advances even on a same-size overwrite copy (backdated, no
+	// sleeps: the pre-fix code only bumped on size changes).
+	old := posix.timespec{tv_sec = 1000000000, tv_nsec = 0}
+	tv := [2]posix.timespec{old, old}
+	rc = mounter.fused_utimens("/cgap", &tv[0], nil)
+	testing.expect_value(t, rc, 0)
+	got5 := mounter.fused_copy_file_range("/csrc", &fi_s, 0, "/cgap", &fi_g, 100, 5, 0)
+	testing.expect_value(t, got5, 5)
+	st_after: fuse3.Stat
+	rc = mounter.fused_getattr("/cgap", &st_after, nil)
+	testing.expect_value(t, rc, 0)
+	testing.expect(t, i64(st_after.st_mtim.tv_sec) > 1000000000, "copy bumps mtime")
+
+	rc = mounter.fused_unlink("/csrc")
+	testing.expect_value(t, rc, 0)
+	rc = mounter.fused_unlink("/cdst")
+	testing.expect_value(t, rc, 0)
+	rc = mounter.fused_unlink("/cgap")
+	testing.expect_value(t, rc, 0)
+}
+
 // test_mount_mkdir_rmdir — directory lifecycle + ENOTEMPTY.
 @(test)
 test_mount_mkdir_rmdir :: proc(t: ^testing.T) {

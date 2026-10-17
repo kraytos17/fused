@@ -2,9 +2,10 @@
 // and a final checker scan (audit roadmap: property-based testing).
 //
 // A deterministic PRNG drives mixed mutating ops (mkdir/rmdir, create,
-// symlink, write, truncate, unlink, same-dir rename, cross-directory
-// move, readdir verification, readlink verification, xattr set/remove)
-// against a scratch image through the mounter API. An in-memory model tracks the expected tree and file
+// symlink, write, write_buf, truncate, copy_file_range, fallocate,
+// unlink, same-dir rename, cross-directory move, readdir verification,
+// readlink verification, xattr set/remove) against a scratch image
+// through the mounter API. An in-memory model tracks the expected tree and file
 // contents; every read and listing is verified immediately and all files
 // are re-verified at the end. A final journal+allocation checker scan
 // must be completely clean: leftover chains on a clean shutdown path
@@ -360,7 +361,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 				continue
 			}
 			append(&dirs, Prop_Dir{id = id, parent = parent, depth = depth})
-		} else if choice < 15 && len(dirs) > 0 {
+		} else if choice < 14 && len(dirs) > 0 {
 			// rmdir an empty directory: no files and no subdirs
 			// parented here (non-empty removals are the existing
 			// ENOTEMPTY unit tests' territory, not the model)
@@ -481,7 +482,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 					}
 				}
 			}
-		} else if choice < 24 && len(files) < PROP_MAX_LIVE {
+		} else if choice < 25 && len(files) < PROP_MAX_LIVE {
 			// create a fresh file (or symlink, 1 in 5) in a random
 			// directory (unique name: no aliasing, no reuse)
 			id := next_id
@@ -538,7 +539,42 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 				continue
 			}
 			append(&files, f)
-		} else if choice < 44 && len(files) > 0 {
+		} else if choice < 30 && len(files) > 0 {
+			// copy_file_range between two distinct regular files:
+			// short count at src EOF (never slack), dst gap zero-fills.
+			si := prop_below(&rng, len(files))
+			di := prop_below(&rng, len(files))
+			src := files[si]
+			dst := files[di]
+			if src.is_link || dst.is_link || si == di {
+				log_op(&oolog, fmt.tprintf("op %d: skip copy (link or self)", op))
+				continue
+			}
+			src_off := prop_below(&rng, len(src.data) + 8)
+			n := 1 + prop_below(&rng, 64)
+			dst_off := prop_below(&rng, len(dst.data) + 16)
+			want := 0
+			if src_off < len(src.data) {
+				want = min(n, len(src.data) - src_off)
+			}
+			if want > 0 {
+				need := dst_off + want
+				if len(dst.data) < need {
+					resize(&dst.data, need)
+				}
+				copy(dst.data[dst_off:], src.data[src_off:src_off + want])
+			}
+			spbuf: [192]u8
+			sp := prop_format_path(spbuf[:], dirs, src.dir, src.name)
+			dpbuf: [192]u8
+			dp := prop_format_path(dpbuf[:], dirs, dst.dir, dst.name)
+			log_op(&oolog, fmt.tprintf("op %d: copy %d -> %d off=%d n=%d", op, src.id, dst.id, src_off, n))
+			got := mounter.fused_copy_file_range(sp, &src.fi, posix.off_t(src_off), dp, &dst.fi, posix.off_t(dst_off), c.size_t(n), 0)
+			if int(got) != want {
+				testing.expectf(t, false, "op %d: copy %d -> %d want=%d got=%d", op, src.id, dst.id, want, int(got))
+				failed = true
+			}
+		} else if choice < 46 && len(files) > 0 {
 			// write random bytes at a random offset (gaps zero-fill).
 			// A zero-byte write is a no-op (kernel parity: it does not
 			// extend the file), so the model only grows when n > 0.
@@ -569,12 +605,26 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			pbuf: [192]u8
 			p := prop_format_path(pbuf[:], dirs, f.dir, f.name)
 			log_op(&oolog, fmt.tprintf("op %d: write %d off=%d n=%d", op, f.id, off, n))
-			got := mounter.fused_write(p, raw_data(chunk), c.size_t(n), posix.off_t(off), &f.fi)
-			if int(got) != n {
-				testing.expect(t, false, oolog[len(oolog) - 1])
-				failed = true
+			if prop_below(&rng, 3) == 0 && n > 0 {
+				// Zero-copy path with a mem-backed single bufvec;
+				// same model contract as a plain write.
+				bv: fuse3.Bufvec
+				bv.count = 1
+				bv._buf[0] = fuse3.Buf{size = c.size_t(n), mem = raw_data(chunk)}
+				log_op(&oolog, fmt.tprintf("op %d: write_buf %d off=%d n=%d", op, f.id, off, n))
+				got := mounter.fused_write_buf(p, &bv, posix.off_t(off), &f.fi)
+				if int(got) != n {
+					testing.expectf(t, false, "op %d: write_buf %d want=%d got=%d", op, f.id, n, int(got))
+					failed = true
+				}
+			} else {
+				got := mounter.fused_write(p, raw_data(chunk), c.size_t(n), posix.off_t(off), &f.fi)
+				if int(got) != n {
+					testing.expect(t, false, oolog[len(oolog) - 1])
+					failed = true
+				}
 			}
-		} else if choice < 52 && len(files) > 0 {
+		} else if choice < 53 && len(files) > 0 {
 			// truncate (grow zero-fills, shrink drops the tail)
 			f := files[prop_below(&rng, len(files))]
 			if f.is_link {
@@ -590,7 +640,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 				testing.expect(t, false, oolog[len(oolog) - 1])
 				failed = true
 			}
-		} else if choice < 66 && len(files) > 0 {
+		} else if choice < 67 && len(files) > 0 {
 			// read back and compare against the model (readlink for
 			// symlinks, verifying the full target including
 			// multi-sector ones)
@@ -637,7 +687,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 				)
 				failed = true
 			}
-		} else if choice < 73 && len(files) > 0 {
+		} else if choice < 74 && len(files) > 0 {
 			// unlink (model forgets the file; teardown removes leftovers)
 			idx := prop_below(&rng, len(files))
 			f := files[idx]
@@ -655,7 +705,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			delete(f.data)
 			delete(f.xattr)
 			free(f)
-		} else if choice < 80 && len(files) > 0 {
+		} else if choice < 81 && len(files) > 0 {
 			// cross-directory move to a fresh name, then refresh the
 			// open handle (handles track slots per ADR-003) and pin
 			// the old path gone
@@ -708,7 +758,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			f.name = new_name
 			f.dir = target
 			f.id = id
-		} else if choice < 84 && len(files) > 0 {
+		} else if choice < 85 && len(files) > 0 {
 			// same-dir rename (slot stays put, so the open handle stays valid)
 			f := files[prop_below(&rng, len(files))]
 			id := next_id
@@ -728,7 +778,53 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			delete(f.name)
 			f.name = new_name
 			f.id = id
-		} else if choice < 90 {
+		} else if choice < 90 && len(files) > 0 {
+			// fallocate: grow (model extends with zeros), keep-size
+			// (model no-op), or hole-punch a clamped in-range span.
+			// Symlinks and dirs take no fallocate ops.
+			f := files[prop_below(&rng, len(files))]
+			if f.is_link {
+				log_op(&oolog, fmt.tprintf("op %d: skip fallocate (symlink %d)", op, f.id))
+				continue
+			}
+			off := prop_below(&rng, len(f.data) + 16)
+			ln := 1 + prop_below(&rng, 48)
+			pbuf: [192]u8
+			p := prop_format_path(pbuf[:], dirs, f.dir, f.name)
+			kind := prop_below(&rng, 3)
+			if kind == 0 {
+				// grow (KEEP_SIZE unset): extend with zeros
+				new_size := max(len(f.data), off + ln)
+				resize(&f.data, new_size)
+				log_op(&oolog, fmt.tprintf("op %d: fallocate grow %d off=%d len=%d", op, f.id, off, ln))
+				if rc := mounter.fused_fallocate(p, 0, posix.off_t(off), posix.off_t(ln), &f.fi); rc != 0 {
+					testing.expectf(t, false, "op %d: fallocate grow %d rc=%d", op, f.id, int(rc))
+					failed = true
+				}
+			} else if kind == 1 {
+				// keep-size: allocates backing without changing size
+				// (model no-op; exercises the alloc path)
+				log_op(&oolog, fmt.tprintf("op %d: fallocate keep %d off=%d len=%d", op, f.id, off, ln))
+				if rc := mounter.fused_fallocate(p, transmute(c.int)fuse3.Falloc_Flags{.Keep_Size}, posix.off_t(off), posix.off_t(ln), &f.fi); rc != 0 {
+					testing.expectf(t, false, "op %d: fallocate keep %d rc=%d", op, f.id, int(rc))
+					failed = true
+				}
+			} else {
+				// hole-punch a clamped in-range span (beyond-EOF
+				// punch semantics stay unspecified: skip those)
+				if off >= len(f.data) {
+					log_op(&oolog, fmt.tprintf("op %d: skip punch (past EOF %d)", op, f.id))
+					continue
+				}
+				end := min(off + ln, len(f.data))
+				for i in off ..< end { f.data[i] = 0 }
+				log_op(&oolog, fmt.tprintf("op %d: punch %d off=%d len=%d", op, f.id, off, end - off))
+				if rc := mounter.fused_fallocate(p, transmute(c.int)fuse3.Falloc_Flags{.Punch_Hole}, posix.off_t(off), posix.off_t(end - off), &f.fi); rc != 0 {
+					testing.expectf(t, false, "op %d: punch %d rc=%d", op, f.id, int(rc))
+					failed = true
+				}
+			}
+		} else if choice < 95 {
 			// list a random directory and compare the full set
 			// against the model (also covers the empty listing)
 			dir := 0
