@@ -97,6 +97,28 @@ main :: proc() {
 		report.errors,
 		report.warnings,
 	)
+	journal := fs.check_journal_report(&vol)
+	defer fs.check_journal_report_destroy(journal)
+	pending := 0
+	for slot in journal {
+		if slot.pending {
+			pending += 1
+		}
+		if f.verbose {
+			fmt.printf(
+				"journal: seq=%d recs=%d %s%s\n",
+				slot.seq,
+				slot.rec_count,
+				"committed" if slot.committed else "uncommitted",
+				" pending" if slot.pending else "",
+			)
+		}
+	}
+	fmt.printf(
+		"journal: %d slots, %d pending\n",
+		len(journal),
+		pending,
+	)
 	if report.errors > 0 {
 		fmt.eprintf("check: %s: FAILED\n", f.path)
 		os.exit(1)

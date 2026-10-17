@@ -28,7 +28,7 @@ read-write FUSE mounting (all 43 `fuse_operations` callbacks implemented).
 | **`cmd/mount/`** | Binary entry point — `package main`, calls `mounter.run()`. | `src/mounter/` |
 | **`cmd/format/`** | Standalone image formatter. Produces valid disk images without libfuse3. | `src/fs/` |
 | **`cmd/dump/`** | Read-only image dumper. Walks the image structure and prints it in human-readable or JSON form. | `src/fs/` |
-| **`tests/`** | Odin unit tests (130), Python pytest integration (61), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
+| **`tests/`** | Odin unit tests (158), Python pytest integration (61), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
 
 ## On-disk format (rev 8)
 
@@ -520,7 +520,7 @@ tests/
 ├── alloc_test.odin                8 allocator property tests
 ├── alloc_write_test.odin          17 allocator + write-path tests
 ├── ce_identity_test.odin          1 CE slot-identity test (stale-duplicate clear, isolated image)
-├── check_test.odin                10 checker Stage A tests (ownership/links/bounds/free, isolated images)
+├── check_test.odin                19 checker tests (Stage A ownership/links/bounds/free + Stage B reachability/orphans/journal, isolated images)
 ├── truncate_test.odin             3 truncate-boundary tests (fragmented chain + journal pins, isolated image)
 ├── zero_fill_test.odin            5 extension zero-fill + zero-length-write tests (poison-reuse images)
 ├── free_space_test.odin           3 free-space oracle tests (Reserved/Full accounting, isolated images)
@@ -535,7 +535,7 @@ tests/
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `make test` (149 Odin tests) |
+| 2. Unit tests | `make test` (158 Odin tests) |
 | 3. Tool integration | `make pytest -m tool` (17 format + imgdump tests) |
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |

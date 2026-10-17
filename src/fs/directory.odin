@@ -95,6 +95,11 @@ resolve_lfn :: proc(
 	if ptr.cluster == 0 {
 		return "", false
 	}
+	// Corrupt pointers must fail closed, never panic: _pad indexes the
+	// sector buffer, and size reserves the output.
+	if u64(ptr._pad) >= SECTOR_SIZE {
+		return "", false
+	}
 
 	ce_buf: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 	if read_cluster_entry_table(vol, Cluster(ptr.cluster), &ce_buf) != .None {
@@ -110,7 +115,7 @@ resolve_lfn :: proc(
 		return "", false
 	}
 
-	data := make([dynamic]u8, 0, int(ptr.size), allocator)
+	data := make([dynamic]u8, 0, min(int(ptr.size), SECTOR_SIZE), allocator)
 	sector_buf: [SECTOR_SIZE]u8
 	current_cluster := Cluster(ptr.cluster)
 	current_entry := target
@@ -157,6 +162,12 @@ resolve_lfn :: proc(
 
 		current_cluster = Cluster(current_entry.next_cluster)
 		current_entry = next
+	}
+	// A chain shorter than the declared name is torn, not truncated:
+	// returning a prefix as the name would misidentify the file.
+	if len(data) < int(ptr.size) {
+		delete(data)
+		return "", false
 	}
 	if len(data) > int(ptr.size) {
 		resize(&data, int(ptr.size))
