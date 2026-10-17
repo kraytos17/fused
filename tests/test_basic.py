@@ -1,3 +1,8 @@
+# tests/test_basic.py — Smoke tests against the shared demo image.
+#
+# These tests assert the content of the embedded demo file (/Kernel) and
+# therefore stay on the shared mounted_fs. Every other fuse suite mounts
+# a private image per test (private_mount fixture).
 import os
 import stat
 import subprocess

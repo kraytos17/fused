@@ -47,8 +47,8 @@ def _with_lock_holder(path, lock_cmd, holder_fn):
 
 
 @pytest.mark.fuse
-def test_lockf_exclusive_conflicts_with_other_process(mounted_fs: str):
-    f = os.path.join(mounted_fs, "lockf1")
+def test_lockf_exclusive_conflicts_with_other_process(private_mount: str):
+    f = os.path.join(private_mount, "lockf1")
     with open(f, "wb") as fh:
         fh.write(b"x" * 512)
     try:
@@ -72,8 +72,8 @@ def test_lockf_exclusive_conflicts_with_other_process(mounted_fs: str):
 
 
 @pytest.mark.fuse
-def test_lockf_shared_allows_other_process_shared(mounted_fs: str):
-    f = os.path.join(mounted_fs, "lockf2")
+def test_lockf_shared_allows_other_process_shared(private_mount: str):
+    f = os.path.join(private_mount, "lockf2")
     with open(f, "wb") as fh:
         fh.write(b"x" * 512)
     try:
@@ -94,8 +94,8 @@ def test_lockf_shared_allows_other_process_shared(mounted_fs: str):
 
 
 @pytest.mark.fuse
-def test_flock_exclusive_conflicts_with_other_fd(mounted_fs: str):
-    f = os.path.join(mounted_fs, "flock1")
+def test_flock_exclusive_conflicts_with_other_fd(private_mount: str):
+    f = os.path.join(private_mount, "flock1")
     with open(f, "wb") as fh:
         fh.write(b"x")
     try:
@@ -118,8 +118,8 @@ def test_flock_exclusive_conflicts_with_other_fd(mounted_fs: str):
 
 
 @pytest.mark.fuse
-def test_flock_shared_allows_other_fd_shared(mounted_fs: str):
-    f = os.path.join(mounted_fs, "flock2")
+def test_flock_shared_allows_other_fd_shared(private_mount: str):
+    f = os.path.join(private_mount, "flock2")
     with open(f, "wb") as fh:
         fh.write(b"x")
     try:
@@ -147,8 +147,8 @@ def test_flock_shared_allows_other_fd_shared(mounted_fs: str):
 
 
 @pytest.mark.fuse
-def test_flock_release_drops_lock(mounted_fs: str):
-    f = os.path.join(mounted_fs, "flock3")
+def test_flock_release_drops_lock(private_mount: str):
+    f = os.path.join(private_mount, "flock3")
     with open(f, "wb") as fh:
         fh.write(b"x")
     try:
@@ -167,8 +167,8 @@ def test_flock_release_drops_lock(mounted_fs: str):
 
 
 @pytest.mark.fuse
-def test_lockf_getlk_reports_conflict(mounted_fs: str):
-    f = os.path.join(mounted_fs, "lockf3")
+def test_lockf_getlk_reports_conflict(private_mount: str):
+    f = os.path.join(private_mount, "lockf3")
     with open(f, "wb") as fh:
         fh.write(b"x" * 512)
     try:

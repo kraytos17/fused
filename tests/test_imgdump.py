@@ -141,12 +141,6 @@ def _plant_root_entries(src_image: str, dst_path: str, entries: list, rc: int, r
         f.write(sec)
 
 
-def _run_timeout(binary: str, *args: str, timeout: int = 30):
-    import subprocess
-
-    return subprocess.run([binary, *args], capture_output=True, text=True, check=False, timeout=timeout)
-
-
 @pytest.mark.tool
 def test_json_cycle_terminates(imgdump_bin: str, fused_image: str, tmp_path: str, check_bin: str):
     """A directory cycle must terminate the dumpers, not hang/crash them."""
@@ -157,11 +151,11 @@ def test_json_cycle_terminates(imgdump_bin: str, fused_image: str, tmp_path: str
     # Subdirectory whose chain IS the root chain: root -> loop -> root.
     _plant_root_entries(fused_image, dst, [(b"loop", 0x25, rc, ro)], rc, ro, cs)
 
-    r = _run_timeout(imgdump_bin, dst)
+    r = run_cli(imgdump_bin, dst, timeout=30)
     assert r.returncode == 0, r.stderr
     assert "<cycle>" in r.stdout
 
-    r = _run_timeout(imgdump_bin, "--json", dst)
+    r = run_cli(imgdump_bin, "--json", dst, timeout=30)
     assert r.returncode == 0, r.stderr
     d = json.loads(r.stdout)
     assert "loop" in d["root"]
@@ -188,13 +182,13 @@ def test_json_duplicate_names_surfaced(imgdump_bin: str, fused_image: str, tmp_p
         cs,
     )
 
-    r = _run_timeout(imgdump_bin, "--json", dst)
+    r = run_cli(imgdump_bin, "--json", dst, timeout=30)
     assert r.returncode == 0, r.stderr
     d = json.loads(r.stdout)
     assert "dup" in d["root"]
     assert "dup#dup2" in d["root"]
 
-    r = _run_timeout(imgdump_bin, dst)
+    r = run_cli(imgdump_bin, dst, timeout=30)
     assert r.returncode == 0, r.stderr
     assert r.stdout.count('"dup"') == 2
 

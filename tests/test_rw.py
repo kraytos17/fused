@@ -8,23 +8,23 @@ from fused_test.io import make_dir, make_file, read, write
 
 
 @pytest.mark.fuse
-def test_echo_cat(mounted_fs: str):
-    with make_file(os.path.join(mounted_fs, "file1"), b"hello\n") as f:
+def test_echo_cat(private_mount: str):
+    with make_file(os.path.join(private_mount, "file1"), b"hello\n") as f:
         assert read(f) == b"hello\n"
 
 
 @pytest.mark.fuse
-def test_append(mounted_fs: str):
-    with make_file(os.path.join(mounted_fs, "file1"), b"hello\n") as f:
+def test_append(private_mount: str):
+    with make_file(os.path.join(private_mount, "file1"), b"hello\n") as f:
         with open(f, "ab") as fh:
             fh.write(b"world\n")
         assert b"world" in read(f)
 
 
 @pytest.mark.fuse
-def test_cp_via_shell(mounted_fs: str):
-    f1 = os.path.join(mounted_fs, "file1")
-    f2 = os.path.join(mounted_fs, "file2")
+def test_cp_via_shell(private_mount: str):
+    f1 = os.path.join(private_mount, "file1")
+    f2 = os.path.join(private_mount, "file2")
     with make_file(f1, b"hello\n"):
         try:
             subprocess.run(["cp", f1, f2], check=True)
@@ -34,8 +34,8 @@ def test_cp_via_shell(mounted_fs: str):
 
 
 @pytest.mark.fuse
-def test_dd_10_sectors(mounted_fs: str):
-    path = os.path.join(mounted_fs, "big")
+def test_dd_10_sectors(private_mount: str):
+    path = os.path.join(private_mount, "big")
     subprocess.run(["dd", "if=/dev/zero", f"of={path}", "bs=512", "count=10"], check=True,
                    capture_output=True)
     try:
@@ -45,17 +45,17 @@ def test_dd_10_sectors(mounted_fs: str):
 
 
 @pytest.mark.fuse
-def test_mkdir_rmdir(mounted_fs: str):
-    with (make_dir(os.path.join(mounted_fs, "d1")) as d,
+def test_mkdir_rmdir(private_mount: str):
+    with (make_dir(os.path.join(private_mount, "d1")) as d,
           make_file(os.path.join(d, "f"), b"data\n") as f):
         assert read(f) == b"data\n"
-    assert not os.path.exists(os.path.join(mounted_fs, "d1"))
+    assert not os.path.exists(os.path.join(private_mount, "d1"))
 
 
 @pytest.mark.fuse
-def test_symlink(mounted_fs: str):
-    with make_file(os.path.join(mounted_fs, "target"), b"hello\n"):
-        link = os.path.join(mounted_fs, "link")
+def test_symlink(private_mount: str):
+    with make_file(os.path.join(private_mount, "target"), b"hello\n"):
+        link = os.path.join(private_mount, "link")
         try:
             os.symlink("target", link)
             assert os.readlink(link) == "target"
@@ -65,8 +65,8 @@ def test_symlink(mounted_fs: str):
 
 
 @pytest.mark.fuse
-def test_chmod(mounted_fs: str):
-    with make_file(os.path.join(mounted_fs, "chmod_file"), b"x") as f:
+def test_chmod(private_mount: str):
+    with make_file(os.path.join(private_mount, "chmod_file"), b"x") as f:
         os.chmod(f, 0o444)
         assert stat.S_IMODE(os.stat(f).st_mode) in (0o444, 0o440)
         os.chmod(f, 0o644)
@@ -74,17 +74,17 @@ def test_chmod(mounted_fs: str):
 
 
 @pytest.mark.fuse
-def test_fallocate_extend(mounted_fs: str):
-    with make_file(os.path.join(mounted_fs, "falloc_file"), b"x" * 100) as f:
+def test_fallocate_extend(private_mount: str):
+    with make_file(os.path.join(private_mount, "falloc_file"), b"x" * 100) as f:
         with open(f, "r+b") as fh:
             os.posix_fallocate(fh.fileno(), 0, 8192)
         assert os.stat(f).st_size == 8192
 
 
 @pytest.mark.fuse
-def test_copy_file_range(mounted_fs: str):
-    src = os.path.join(mounted_fs, "cp_src")
-    dst = os.path.join(mounted_fs, "cp_dst")
+def test_copy_file_range(private_mount: str):
+    src = os.path.join(private_mount, "cp_src")
+    dst = os.path.join(private_mount, "cp_dst")
     with make_file(src, b"hello_copy"):
         try:
             subprocess.run(["cp", src, dst], check=True)
@@ -94,8 +94,8 @@ def test_copy_file_range(mounted_fs: str):
 
 
 @pytest.mark.fuse
-def test_deep_nesting(mounted_fs: str):
-    d = os.path.join(mounted_fs, *["d"] * 10)
+def test_deep_nesting(private_mount: str):
+    d = os.path.join(private_mount, *["d"] * 10)
     os.makedirs(d, exist_ok=True)
     f = os.path.join(d, "f")
     try:
@@ -113,16 +113,16 @@ def test_deep_nesting(mounted_fs: str):
 
 
 @pytest.mark.fuse
-def test_fsync(mounted_fs: str):
-    with make_file(os.path.join(mounted_fs, "fsync_file"), b"fsynced\n") as f:
+def test_fsync(private_mount: str):
+    with make_file(os.path.join(private_mount, "fsync_file"), b"fsynced\n") as f:
         with open(f, "r+b") as fh:
             os.fsync(fh.fileno())
         assert read(f) == b"fsynced\n"
 
 
 @pytest.mark.fuse
-def test_truncate(mounted_fs: str):
-    with make_file(os.path.join(mounted_fs, "trunc_file"), b"hello world") as f:
+def test_truncate(private_mount: str):
+    with make_file(os.path.join(private_mount, "trunc_file"), b"hello world") as f:
         # Shrink
         with open(f, "r+") as fh:
             fh.truncate(5)
@@ -134,8 +134,8 @@ def test_truncate(mounted_fs: str):
 
 
 @pytest.mark.fuse
-def test_utimens(mounted_fs: str):
-    with make_file(os.path.join(mounted_fs, "utimens_file"), b"x") as f:
+def test_utimens(private_mount: str):
+    with make_file(os.path.join(private_mount, "utimens_file"), b"x") as f:
         atime = 1000000000
         mtime = 2000000000
         os.utime(f, (atime, mtime))

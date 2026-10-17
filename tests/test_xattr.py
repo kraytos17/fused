@@ -9,8 +9,8 @@ from fused_test.mount import mount_fuse
 
 
 @pytest.mark.fuse
-def test_xattr_set_get(mounted_fs: str):
-    with make_file(os.path.join(mounted_fs, "xfile"), b"data") as f:
+def test_xattr_set_get(private_mount: str):
+    with make_file(os.path.join(private_mount, "xfile"), b"data") as f:
         os.setxattr(f, "user.color", b"red")
         assert os.getxattr(f, "user.color") == b"red"
 
@@ -23,8 +23,8 @@ def test_xattr_set_get(mounted_fs: str):
 
 
 @pytest.mark.fuse
-def test_xattr_replace_flags(mounted_fs: str):
-    with make_file(os.path.join(mounted_fs, "xflag"), b"x") as f:
+def test_xattr_replace_flags(private_mount: str):
+    with make_file(os.path.join(private_mount, "xflag"), b"x") as f:
         os.setxattr(f, "user.a", b"1")
         with pytest.raises(FileExistsError):
             os.setxattr(f, "user.a", b"2", os.XATTR_CREATE)
@@ -36,16 +36,16 @@ def test_xattr_replace_flags(mounted_fs: str):
 
 
 @pytest.mark.fuse
-def test_xattr_get_missing_raises(mounted_fs: str):
-    with make_file(os.path.join(mounted_fs, "xmiss"), b"x") as f:
+def test_xattr_get_missing_raises(private_mount: str):
+    with make_file(os.path.join(private_mount, "xmiss"), b"x") as f:
         with pytest.raises(OSError) as exc:
             os.getxattr(f, "user.nope")
         assert exc.value.errno == errno.ENODATA
 
 
 @pytest.mark.fuse
-def test_xattr_list_empty_and_remove(mounted_fs: str):
-    with make_file(os.path.join(mounted_fs, "xlist"), b"x") as f:
+def test_xattr_list_empty_and_remove(private_mount: str):
+    with make_file(os.path.join(private_mount, "xlist"), b"x") as f:
         assert os.listxattr(f) == []
         os.setxattr(f, "user.k", b"v")
         os.setxattr(f, "user.j", b"w")
@@ -60,16 +60,16 @@ def test_xattr_list_empty_and_remove(mounted_fs: str):
 
 
 @pytest.mark.fuse
-def test_xattr_large_value_persists(mounted_fs: str):
-    with make_file(os.path.join(mounted_fs, "xbig"), b"x") as f:
+def test_xattr_large_value_persists(private_mount: str):
+    with make_file(os.path.join(private_mount, "xbig"), b"x") as f:
         big = bytes(range(256)) * 8  # 2048 bytes, spans multiple sectors
         os.setxattr(f, "user.big", big)
         assert os.getxattr(f, "user.big") == big
 
 
 @pytest.mark.fuse
-def test_xattr_on_directory(mounted_fs: str):
-    with make_dir(os.path.join(mounted_fs, "xdir")) as d:
+def test_xattr_on_directory(private_mount: str):
+    with make_dir(os.path.join(private_mount, "xdir")) as d:
         os.setxattr(d, "user.d", b"dirval")
         assert os.getxattr(d, "user.d") == b"dirval"
         assert "user.d" in os.listxattr(d)
