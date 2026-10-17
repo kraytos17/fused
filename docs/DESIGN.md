@@ -28,7 +28,7 @@ read-write FUSE mounting (all 43 `fuse_operations` callbacks implemented).
 | **`cmd/mount/`** | Binary entry point — `package main`, calls `mounter.run()`. | `src/mounter/` |
 | **`cmd/format/`** | Standalone image formatter. Produces valid disk images without libfuse3. | `src/fs/` |
 | **`cmd/dump/`** | Read-only image dumper. Walks the image structure and prints it in human-readable or JSON form. | `src/fs/` |
-| **`tests/`** | Odin unit tests (128), Python pytest integration (61), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
+| **`tests/`** | Odin unit tests (130), Python pytest integration (61), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
 
 ## On-disk format (rev 8)
 
@@ -494,7 +494,7 @@ tests/
 ├── journal_test.odin              3 journal-backend tests (rev-8 WAL image)
 ├── journal_txn_test.odin          4 journal transaction-bounds tests (slots/replay/chunking/collapse, isolated images)
 ├── io_error_test.odin             2 fault-injection tests (truncated + read-only images)
-├── fault_test.odin                7 deterministic fault tests (Nth read/write/sync fails, isolated images)
+├── fault_test.odin                8 deterministic fault tests (Nth read/write/sync fails, isolated images)
 ├── invalidation_test.odin         6 cache-invalidation tests
 ├── dir_op_test.odin               9 directory-operation tests
 ├── dir_test.odin                  6 directory tests
@@ -517,7 +517,7 @@ tests/
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `make test` (129 Odin tests) |
+| 2. Unit tests | `make test` (130 Odin tests) |
 | 3. Tool integration | `make pytest -m tool` (17 format + imgdump tests) |
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |

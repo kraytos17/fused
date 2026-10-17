@@ -387,3 +387,76 @@ test_fault_recover_aborts_on_home_write :: proc(t: ^testing.T) {
 	testing.expect_value(t, rerr2, fs.FS_Error.Entry_Not_Found)
 	testing.expect_value(t, fs.alloc_cache_count_free(&vol), f0 + cleared_size)
 }
+
+// test_fault_finish_fails_master_write_recovers_clean — home is applied
+// and durable, but the checkpoint write fails: the flush must still
+// report the error, and after remount (stale on-disk checkpoint) recover
+// must converge idempotently without double-applying.
+@(test)
+test_fault_finish_fails_master_write_recovers_clean :: proc(t: ^testing.T) {
+	vol, ok := fault_setup(t)
+	if !ok { return }
+	defer fault_teardown(&vol)
+
+	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
+	testing.expect_value(t, aerr, fs.FS_Error.None)
+	if aerr != .None { return }
+
+	// Single-entry deallocation plan, as in the sibling tests.
+	table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
+	idx := -1
+	entry, ferr := fs.find_cluster_entry(&vol, hc, ho, &table, &idx)
+	testing.expect_value(t, ferr, fs.FS_Error.None)
+	if ferr != .None { return }
+	cleared_size := u64(entry.allocation_size)
+	entry.state -= {.Allocated}
+	plan := [1]fs.Journal_Entry{fs.journal_entry_from_cluster_entry(entry, u64(hc), u8(idx))}
+
+	f0, seq0, wm0 := fault_state(&vol)
+	testing.expect_value(t, wm0, seq0 - 1)
+
+	// Budget: 1 record + 1 header + 1 home-table write, then the master
+	// write inside finish fails. In-memory state still advances.
+	vol.fault = fs.IO_Fault {
+		enabled           = true,
+		fail_reads_after  = max(u64),
+		fail_writes_after = 3,
+		fail_syncs_after  = max(u64),
+	}
+	serr := fs.journal_flush_chunk(&vol, plan[:])
+	testing.expect_value(t, serr, fs.FS_Error.Sector_Write_Error)
+	testing.expect_value(t, vol.fault.writes, u64(4))
+	testing.expect_value(t, vol.fault.syncs, u64(3))
+
+	// Home is applied (entry gone, free count exact) and the checkpoint
+	// advanced in memory — but nothing reached the master record.
+	_, seq1, wm1 := fault_state(&vol)
+	testing.expect_value(t, seq1, seq0 + 1)
+	testing.expect_value(t, wm1, wm0 + 1)
+	_, rerr := fs.find_cluster_entry(&vol, hc, ho)
+	testing.expect_value(t, rerr, fs.FS_Error.Entry_Not_Found)
+	testing.expect_value(t, fs.alloc_cache_count_free(&vol), f0 + cleared_size)
+
+	// Remount: the on-disk checkpoint is stale (pre-flush seq/wm).
+	close_test_volume(&vol)
+	fd2, oerr := os.open(FAULT_SCRATCH, {.Read, .Write})
+	testing.expect_value(t, oerr, nil)
+	if oerr != nil { return }
+	vol, ok = open_volume_on_fd(fd2)
+	testing.expect_value(t, ok, true)
+	if !ok { os.close(fd2); return }
+	d0, seqd, wmd := fault_state(&vol)
+	testing.expect_value(t, seqd, seq0)
+	testing.expect_value(t, wmd, wm0)
+	testing.expect_value(t, d0, f0 + cleared_size)
+
+	// Recover converges idempotently from the committed log: no
+	// double-apply, watermark advances past the chunk.
+	fs.journal_recover(&vol)
+	_, seq2, wm2 := fault_state(&vol)
+	testing.expect_value(t, seq2, seqd)
+	testing.expect_value(t, wm2, seqd + 1)
+	_, rerr2 := fs.find_cluster_entry(&vol, hc, ho)
+	testing.expect_value(t, rerr2, fs.FS_Error.Entry_Not_Found)
+	testing.expect_value(t, fs.alloc_cache_count_free(&vol), f0 + cleared_size)
+}
