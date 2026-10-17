@@ -107,6 +107,8 @@ test_mount_getattr :: proc(t: ^testing.T) {
 	testing.expect_value(t, rc, 0)
 	testing.expect(t, posix.Mode_Bits.IFDIR in st.st_mode, "root is dir")
 	testing.expect(t, posix.Mode_Bits.IRUSR in st.st_mode, "root r")
+	// The synthetic root entry carries no dates: unset maps to the epoch.
+	testing.expect_value(t, st.st_mtim.tv_sec, 0)
 
 	st = {}
 	rc = mounter.fused_getattr("/Kernel", &st, nil)
@@ -1469,4 +1471,100 @@ test_readlink_short_chain_fails :: proc(t: ^testing.T) {
 	out := make([]u8, 2048)
 	defer delete(out)
 	testing.expect_value(t, mounter.fused_readlink("/shortlink", ([^]c.char)(raw_data(out)), c.size_t(len(out))), -c.int(posix.EIO))
+}
+
+// test_mount_mtime_advances_on_mutation — mtime must advance on every
+// content or allocation change, not just size changes: same-size
+// overwrites (missed rebuilds otherwise), hole punches, and no-grow
+// fallocate. Backdating via utimens avoids sleeps and races.
+@(test)
+test_mount_mtime_advances_on_mutation :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !setup_mounter(t, &fsys) { return }
+	defer teardown_mounter(&fsys)
+	defer cleanup_root(&fsys, []string{"mtimefile"})
+
+	fi: fuse3.File_Info
+	testing.expect_value(t, mounter.fused_create("/mtimefile", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	ten := "0123456789"
+	testing.expect_value(t, mounter.fused_write("/mtimefile", raw_data(ten), c.size_t(len(ten)), 0, &fi), c.int(len(ten)))
+
+	backdate := proc(t: ^testing.T, fsys: ^mounter.FS) {
+		old := posix.timespec{tv_sec = 1000000000, tv_nsec = 0}
+		tv := [2]posix.timespec{old, old}
+		testing.expect_value(t, mounter.fused_utimens("/mtimefile", &tv[0], nil), 0)
+	}
+	check_advanced := proc(t: ^testing.T, fsys: ^mounter.FS, what: string) {
+		st: fuse3.Stat
+		testing.expect_value(t, mounter.fused_getattr("/mtimefile", &st, nil), 0)
+		testing.expect(t, i64(st.st_mtim.tv_sec) > 1000000000, what)
+	}
+
+	// Same-size overwrite must bump mtime.
+	backdate(t, &fsys)
+	ten2 := "9876543210"
+	testing.expect_value(t, mounter.fused_write("/mtimefile", raw_data(ten2), c.size_t(len(ten2)), 0, &fi), c.int(len(ten2)))
+	check_advanced(t, &fsys, "overwrite bumps mtime")
+
+	// Punching a hole destroys data without changing size.
+	backdate(t, &fsys)
+	testing.expect_value(t, mounter.fused_fallocate("/mtimefile", transmute(c.int)fuse3.Falloc_Flags{.Punch_Hole}, 0, 4, &fi), 0)
+	check_advanced(t, &fsys, "punch-hole bumps mtime")
+
+	// No-grow fallocate still allocates (KEEP_SIZE implied by no growth).
+	backdate(t, &fsys)
+	testing.expect_value(t, mounter.fused_fallocate("/mtimefile", 0, 0, 4, &fi), 0)
+	check_advanced(t, &fsys, "fallocate bumps mtime")
+}
+
+// test_getattr_corrupt_date_fails — out-of-range date fields fail closed
+// with EIO instead of surfacing a garbage timestamp.
+@(test)
+test_getattr_corrupt_date_fails :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !setup_mounter(t, &fsys) { return }
+	defer teardown_mounter(&fsys)
+	defer cleanup_root(&fsys, []string{"baddate"})
+
+	fi: fuse3.File_Info
+	testing.expect_value(t, mounter.fused_create("/baddate", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	res, rerr := fs.resolve_path(&fsys.vol, "/baddate")
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+	if rerr != .None { return }
+
+	// Month 13 fits the 4-bit field but is not a real month.
+	bad := res.entry
+	bad.date_time.month = 13
+	testing.expect(t, check_write_raw_dirent(t, &fsys.vol, u64(res.cluster), u16(res.offset), res.entry_index, &bad), "plant corrupt date")
+	mounter.path_cache_invalidate_all(&fsys)
+	fs.dir_cache_invalidate(&fsys.vol.dir_cache, fs.Chain_Location{res.cluster, res.offset})
+
+	st: fuse3.Stat
+	expect_errno(t, mounter.fused_getattr("/baddate", &st, nil), .EIO)
+}
+
+// test_getattr_corrupt_atime_fails — same fail-closed contract as mtime,
+// for the independent access-time fields.
+@(test)
+test_getattr_corrupt_atime_fails :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !setup_mounter(t, &fsys) { return }
+	defer teardown_mounter(&fsys)
+	defer cleanup_root(&fsys, []string{"baddate2"})
+
+	fi: fuse3.File_Info
+	testing.expect_value(t, mounter.fused_create("/baddate2", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	res, rerr := fs.resolve_path(&fsys.vol, "/baddate2")
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+	if rerr != .None { return }
+
+	// Day 0 fits the 5-bit field but is not a real day.
+	bad := res.entry
+	bad.atime_date_time.date = 0
+	testing.expect(t, check_write_raw_dirent(t, &fsys.vol, u64(res.cluster), u16(res.offset), res.entry_index, &bad), "plant corrupt atime")
+	mounter.path_cache_invalidate_all(&fsys)
+	fs.dir_cache_invalidate(&fsys.vol.dir_cache, fs.Chain_Location{res.cluster, res.offset})
+
+	st: fuse3.Stat
+	expect_errno(t, mounter.fused_getattr("/baddate2", &st, nil), .EIO)
 }

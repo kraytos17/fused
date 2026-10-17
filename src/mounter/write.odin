@@ -141,7 +141,9 @@ fused_write :: proc "c" (
 }
 
 // write_finish is the shared epilogue for write operations: updates file size
-// and timestamps, writes the entry back, and invalidates caches.
+// and timestamps, writes the entry back, and invalidates caches. The mtime
+// advances on every write that transfers bytes (POSIX: same-size overwrites
+// must bump mtime, or tools like make miss the change).
 write_finish :: proc(
 	fsys: ^FS,
 	entry: ^fs.Directory_Entry,
@@ -149,9 +151,15 @@ write_finish :: proc(
 	new_size: u64,
 	bytes_written: u64,
 ) -> c.int {
-	if new_size != u64(entry.file_size) {
+	touched := bytes_written > 0
+	if touched {
 		set_entry_time_to_now(entry)
+	}
+	if new_size != u64(entry.file_size) {
 		entry.file_size = new_size
+		touched = true
+	}
+	if touched {
 		if werr := write_entry_at(fsys, loc, entry); werr != .None {
 			return fs_error_to_errno(werr)
 		}
@@ -425,7 +433,9 @@ _fallocate_punch_hole :: proc(
 	if zerr != .None {
 		return fs_error_to_errno(zerr)
 	}
-	// Update file_size if needed (PUNCH_HOLE implies KEEP_SIZE)
+	// Punching a hole destroys data: advance the timestamps even though
+	// the size is unchanged (PUNCH_HOLE implies KEEP_SIZE).
+	set_entry_time_to_now(entry)
 	if werr := write_entry_at(fsys, fh_parts(fh), entry); werr != .None {
 		return fs_error_to_errno(werr)
 	}
@@ -476,10 +486,12 @@ _fallocate_grow :: proc(
 	if .Keep_Size not_in fmode {
 		new_size := max(u64(entry.file_size), span.end)
 		if new_size != u64(entry.file_size) {
-			set_entry_time_to_now(entry)
 			entry.file_size = new_size
 		}
 	}
+	// Any successful fallocate changes allocation: advance the timestamps
+	// even when the size itself is unchanged.
+	set_entry_time_to_now(entry)
 	if werr := write_entry_at(fsys, fh_parts(fh), entry); werr != .None {
 		return fs_error_to_errno(werr)
 	}

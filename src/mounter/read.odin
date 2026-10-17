@@ -17,6 +17,29 @@ import "core:time"
 import "src:fs"
 import "src:fuse3"
 
+// _dir_time_to_unix validates on-disk date fields for getattr. An all-zero
+// stamp means "unset" (synthetic entries like the mount root carry no
+// date) and maps to the Unix epoch; anything else out of range is
+// corruption and fails closed instead of surfacing a garbage time.
+@(private = "file")
+_dir_time_to_unix :: proc(year: u16, month, date, hour, minute, second: u32) -> (posix.time_t, bool) {
+	if year == 0 && month == 0 && date == 0 && hour == 0 && minute == 0 && second == 0 {
+		return 0, true
+	}
+	t, ok := time.components_to_time(
+		i64(year),
+		i64(month),
+		i64(date),
+		i64(hour),
+		i64(minute),
+		i64(second),
+	)
+	if !ok {
+		return 0, false
+	}
+	return posix.time_t(time.time_to_unix(t)), true
+}
+
 // fused_getattr returns file or directory attributes (stat) for a path (FUSE
 // getattr callback).
 fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Info) -> c.int {
@@ -69,29 +92,32 @@ fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Inf
 	}
 
 	dt := entry.date_time
-	t, _ := time.components_to_time(
-		i64(entry.year),
-		i64(dt.month),
-		i64(dt.date),
-		i64(dt.hour),
-		i64(dt.minute),
-		i64(dt.second),
+	mtim, mok := _dir_time_to_unix(
+		entry.year,
+		u32(dt.month),
+		u32(dt.date),
+		u32(dt.hour),
+		u32(dt.minute),
+		u32(dt.second),
 	)
-
-	ts := posix.time_t(time.time_to_unix(t))
-	stbuf.st_mtim.tv_sec = ts
-	stbuf.st_ctim.tv_sec = ts
+	if !mok {
+		return fuse3.nix(.EIO)
+	}
+	stbuf.st_mtim.tv_sec = mtim
+	stbuf.st_ctim.tv_sec = mtim
 	at := entry.atime_date_time
-	atime_t, _ := time.components_to_time(
-		i64(entry.atime_year),
-		i64(at.month),
-		i64(at.date),
-		i64(at.hour),
-		i64(at.minute),
-		i64(at.second),
+	atim, aok := _dir_time_to_unix(
+		entry.atime_year,
+		u32(at.month),
+		u32(at.date),
+		u32(at.hour),
+		u32(at.minute),
+		u32(at.second),
 	)
-
-	stbuf.st_atim.tv_sec = posix.time_t(time.time_to_unix(atime_t))
+	if !aok {
+		return fuse3.nix(.EIO)
+	}
+	stbuf.st_atim.tv_sec = atim
 	stbuf.st_uid = posix.uid_t(entry.uid)
 	stbuf.st_gid = posix.gid_t(entry.gid)
 	return 0
