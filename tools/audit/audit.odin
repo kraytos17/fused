@@ -33,6 +33,8 @@
 //       full free (a retained head aliases freed sectors on regrow).
 //   (s10) no checker name from a stack copy &e (stored short names
 //       must borrow the chain buffer, never a reused stack slot).
+//   (t1) no temp-arena caller buffers in tests/ (begin_op frees temp
+//       on entry; fused_* args must be stack or heap).
 package main
 
 import "base:runtime"
@@ -70,6 +72,9 @@ main :: proc() {
 	run_storage_audit()
 	run_persist_order_audit()
 	if audit_src_hygiene() > 0 {
+		os.exit(1)
+	}
+	if audit_tests_hygiene() > 0 {
 		os.exit(1)
 	}
 	if !audit_fs_attributes(f.strict) {
@@ -666,6 +671,47 @@ audit_src_hygiene :: proc() -> (failed: int) {
 	}
 
 	fmt.printf("=== Hygiene audit: %d failed ===\n", failed)
+	return failed
+}
+
+// Tests audit (rule t1): caller buffers handed to fused_* callbacks
+// must be stack or heap, never the temp arena — begin_op frees it on
+// entry, so a temp caller buffer is clobbered by the callee's own
+// temp allocations. Internal synchronous temp use (clone, format,
+// immediately consume) is fine; the matcher targets only the
+// clone_to_cstring-with-temp-allocator shape used for callback args.
+audit_tests_hygiene :: proc() -> (failed: int) {
+	dh, derr := os.open("tests")
+	if derr != nil {
+		fmt.eprintf("warning: cannot open tests: %v\n", derr)
+		return 1
+	}
+	defer os.close(dh)
+
+	fis, ferr := os.read_dir(dh, 0, context.temp_allocator)
+	if ferr != nil {
+		fmt.eprintf("warning: cannot list tests: %v\n", ferr)
+		return 1
+	}
+	defer os.file_info_slice_delete(fis, context.temp_allocator)
+	for fi in fis {
+		if !strings.has_suffix(fi.name, ".odin") { continue }
+		path, _ := filepath.join([]string{"tests", fi.name})
+		data, err := os.read_entire_file(path, context.temp_allocator)
+		if err != nil { continue }
+		lines := strings.split(string(data), "\n", context.temp_allocator)
+		for i in 0 ..< len(lines) {
+			trimmed := strings.trim_space(lines[i])
+			if strings.has_prefix(trimmed, "//") { continue }
+			if strings.contains(lines[i], "clone_to_cstring(") &&
+			   strings.contains(lines[i], "temp_allocator") {
+				fmt.printf("FAIL   %s:%d temp-arena caller buffer; use stack or heap (begin_op frees temp)\n", path, i + 1)
+				failed += 1
+			}
+		}
+	}
+
+	fmt.printf("=== Tests audit: %d failed ===\n", failed)
 	return failed
 }
 

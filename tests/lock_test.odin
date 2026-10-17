@@ -4,7 +4,6 @@
 package tests
 
 import "core:c"
-import "core:strings"
 import "core:sys/posix"
 import "core:testing"
 import "src:fuse3"
@@ -20,10 +19,13 @@ setup_lock_file :: proc(
 	ok: bool,
 ) {
 	fi = {}
-	// clone_to_cstring: string backing is not NUL-terminated, but the
-	// fused API takes cstring (temp lives through the call below).
-	path := strings.clone_to_cstring(name, context.temp_allocator)
-	rc := mounter.fused_create(path, posix.mode_t{.IRUSR, .IWUSR}, &fi)
+	// Stack buffer: string backing is not NUL-terminated but the fused
+	// API takes cstring; temp arena is forbidden (begin_op frees it).
+	// Names here are short ("/lockN"), well within the buffer.
+	pbuf: [64]u8
+	copy(pbuf[:], name)
+	pbuf[len(name)] = 0
+	rc := mounter.fused_create(cstring(raw_data(pbuf[:])), posix.mode_t{.IRUSR, .IWUSR}, &fi)
 	if rc != 0 {
 		testing.expect_value(t, rc, 0)
 		return {}, false

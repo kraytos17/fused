@@ -1,5 +1,15 @@
 // test_common.odin — Shared test helpers for the fused test suite.
 // All temp files go to /dev/shm for speed.
+//
+// Image strategies (pick one per test file, never mix within a file):
+//   shared  — open_test_volume: a cached /dev/shm copy of fused.img,
+//             used by the read-mostly fs suite and mounter callback
+//             tests (with cleanup_root for idempotency).
+//   scratch — jtxn_format + open_volume_on_fd on a per-file path:
+//             isolated images for tests that mutate freely (fault
+//             injection, checker seeds, lifetime, property runs).
+// Caller buffers passed to fused_* must be stack or heap, never the
+// temp arena: begin_op frees it on entry.
 #+build linux
 package tests
 
