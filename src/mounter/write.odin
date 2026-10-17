@@ -350,6 +350,14 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 			return fs_error_to_errno(terr)
 		}
 		fsys.free_sectors += current_sectors - new_sectors
+		if new_sectors == 0 {
+			// Fully freed: clear the head so the entry matches a
+			// never-allocated file. A stale head would fail the next
+			// grow (ENOENT walking the freed chain) or, worse, alias
+			// sectors reallocated to another file meanwhile.
+			entry.stored_cluster = 0
+			entry.sector_index = 0
+		}
 	}
 
 	set_entry_time_to_now(&entry)

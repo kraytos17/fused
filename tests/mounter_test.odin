@@ -242,6 +242,51 @@ test_mount_read_past_eof_is_short :: proc(t: ^testing.T) {
 	testing.expect_value(t, rc, 0)
 }
 
+// test_mount_truncate_zero_then_grow — shrinking a file to zero frees the
+// whole chain and clears the head: a later grow allocates fresh instead
+// of failing on (or aliasing) the freed sectors.
+@(test)
+test_mount_truncate_zero_then_grow :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	ok := setup_mounter(t, &fsys)
+	if !ok { return }
+	defer teardown_mounter(&fsys)
+	cleanup_root(&fsys, []string{"zfile"})
+	defer cleanup_root(&fsys, []string{"zfile"})
+
+	fi: fuse3.File_Info
+	rc := mounter.fused_create("/zfile", posix.mode_t{.IRUSR, .IWUSR}, &fi)
+	testing.expect_value(t, rc, 0)
+
+	data := "shrink me to zero and back"
+	rc = mounter.fused_write("/zfile", raw_data(data), c.size_t(len(data)), 0, &fi)
+	testing.expect_value(t, rc, c.int(len(data)))
+
+	rc = mounter.fused_truncate("/zfile", 0, &fi)
+	testing.expect_value(t, rc, 0)
+
+	// Growing the emptied file must allocate fresh, not ENOENT.
+	rc = mounter.fused_truncate("/zfile", 8, &fi)
+	testing.expect_value(t, rc, 0)
+
+	buf := make([]u8, 32)
+	defer delete(buf)
+	for i in 0 ..< len(buf) { buf[i] = 0xAA }
+	rc = mounter.fused_read("/zfile", raw_data(buf), 8, 0, &fi)
+	testing.expect_value(t, rc, 8)
+	testing.expect(t, string(buf[:8]) == "\x00\x00\x00\x00\x00\x00\x00\x00", "grown region is zero-filled")
+
+	// And a write past the old EOF lands exactly.
+	rc = mounter.fused_write("/zfile", raw_data(data), c.size_t(len(data)), 0, &fi)
+	testing.expect_value(t, rc, c.int(len(data)))
+	rc = mounter.fused_read("/zfile", raw_data(buf), c.size_t(len(data)), 0, &fi)
+	testing.expect_value(t, rc, c.int(len(data)))
+	testing.expect(t, string(buf[:rc]) == data, "rewritten content matches")
+
+	rc = mounter.fused_unlink("/zfile")
+	testing.expect_value(t, rc, 0)
+}
+
 // test_mount_mkdir_rmdir — directory lifecycle + ENOTEMPTY.
 @(test)
 test_mount_mkdir_rmdir :: proc(t: ^testing.T) {

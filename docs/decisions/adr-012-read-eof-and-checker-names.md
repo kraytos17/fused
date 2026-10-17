@@ -50,9 +50,9 @@ oracle, `tests/property_test.odin`):
 - No readahead/clamping changes in `read_range_from_runs` itself:
   the helper stays sector-granular; the EOF contract lives at the
   callback boundary where `file_size` is known.
-- No multi-directory or LFN-heavy property workloads yet; names
-  stay short and everything lives in the root. Extending the
-  generator (subdirectories, long names, symlinks) is future work.
+- No nested directories or symlinks in the property generator yet;
+  subdirectories are flat (one level) and moves refresh the handle
+  via `fused_open` (ADR-003: handles name slots).
 
 ## Consequences
 
@@ -70,6 +70,9 @@ oracle, `tests/property_test.odin`):
   straddling read returns a short count with exact tail bytes,
   at/past-EOF reads return 0, `read_buf` mirrors both (NULL bufp
   at EOF). Mutation-checked: fails with the clamp reverted.
-- `tests/property_test.odin::test_prop_random_ops`: 200-op model
-  run with a clean final scan. Caught both bugs (slack-zero
-  reads; 7 false `DupName` findings on 8 live files).
+- `tests/property_test.odin::test_prop_random_ops`: 300-op model
+  run (files + flat subdirectories, cross-directory moves with
+  handle refresh, short and LFN names, readdir oracle) with a clean
+  final scan. Caught both bugs (slack-zero reads; 7 false `DupName`
+  findings on 8 live files) plus the truncate-to-zero stale head
+  (ADR-013) on seed 0x12345678.
