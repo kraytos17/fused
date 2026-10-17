@@ -64,8 +64,12 @@ fused_access :: proc "c" (path: cstring, mask: c.int) -> c.int {
 	   (.No_Write in entry.flags || .Read_Only in entry.flags) {
 		return fuse3.nix(.EACCES)
 	}
-	if (posix.Mode_Flag_Bits.X_OK in m) && .No_Execute in entry.flags {
-		if .Directory not_in entry.flags {
+	// Execute/search mirrors getattr: only searchable directories pass.
+	// Files and links never carry exec bits (getattr strips them), so
+	// X_OK on them is denied even without .No_Execute set.
+	if posix.Mode_Flag_Bits.X_OK in m {
+		searchable := .Directory in entry.flags && .No_Execute not_in entry.flags
+		if !searchable {
 			return fuse3.nix(.EACCES)
 		}
 	}

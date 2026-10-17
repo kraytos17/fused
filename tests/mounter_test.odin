@@ -1282,3 +1282,24 @@ test_xattr_publish_free_failure_reports :: proc(t: ^testing.T) {
 	// Tidy the leak so the shared image stays clean.
 	testing.expect_value(t, fs.xattr_free_chain(&fsys.vol, oldc), fs.FS_Error.None)
 }
+
+// test_mount_access_xok — X_OK mirrors getattr: only searchable
+// directories pass; files never carry exec bits, so they are denied
+// with or without .No_Execute, as are non-searchable directories.
+@(test)
+test_mount_access_xok :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !setup_mounter(t, &fsys) { return }
+	defer teardown_mounter(&fsys)
+	defer cleanup_root(&fsys, []string{"xfile", "xdir"})
+
+	fi: fuse3.File_Info
+	testing.expect_value(t, mounter.fused_create("/xfile", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	expect_errno(t, mounter.fused_access("/xfile", 1), .EACCES) // X_OK on a file
+
+	testing.expect_value(t, mounter.fused_mkdir("/xdir", posix.mode_t{.IRUSR, .IWUSR, .IXUSR}), 0)
+	testing.expect_value(t, mounter.fused_access("/xdir", 1), 0) // searchable dir
+
+	testing.expect_value(t, mounter.fused_chmod("/xdir", posix.mode_t{.IRUSR, .IWUSR}, nil), 0)
+	expect_errno(t, mounter.fused_access("/xdir", 1), .EACCES) // No_Execute dir
+}

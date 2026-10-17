@@ -22,7 +22,9 @@ Fused implements a **constrained coarse-flag model**, not POSIX modes:
    that class is present in the requested mode, and sets it otherwise.
    Write clears/sets both `No_Write` and `Read_Only` together.
 3. **Enforcement is at open/access/getattr.** `fused_access` denies
-   `R_OK` under `No_Read`, `W_OK` under `No_Write`/`Read_Only`;
+   `R_OK` under `No_Read`, `W_OK` under `No_Write`/`Read_Only`, and
+   `X_OK` everywhere except searchable directories (`.Directory`
+   without `.No_Execute`), mirroring exactly what `getattr` reports;
    `fused_open` denies write opens under `No_Write`/`Read_Only` and
    read opens under `No_Read`; `fused_getattr` derives the display
    mode from fixed per-type profiles minus the denied classes
@@ -35,15 +37,6 @@ Fused implements a **constrained coarse-flag model**, not POSIX modes:
    `default_permissions` flag, so these callbacks are authoritative.
 5. **No ACLs, no special files.** Out of scope until mode bits exist
    on disk (requires a format revision).
-
-## Open question
-
-- `fused_access`'s `X_OK` branch (`src/mounter/misc.odin`): a
-  `No_Execute` *directory* returns success for `X_OK`, contradicting
-  the getattr display mode (exec stripped). The coherent rule is
-  deny `X_OK` for non-directories and for `No_Execute` directories.
-  Changing it is user-visible behavior: separate tested commit, not
-  part of this ADR.
 
 ## Consequences
 
