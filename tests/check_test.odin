@@ -66,11 +66,7 @@ check_write_raw_table :: proc(
 
 // check_open_scratch formats an isolated image and opens a volume on it.
 check_open_scratch :: proc(t: ^testing.T) -> (fs.Volume, bool) {
-	fd, ok := jtxn_format(t, JTXN_SCRATCH)
-	if !ok { return {}, false }
-	vol, vok := open_volume_on_fd(fd)
-	if !vok { os.close(fd); os.remove(JTXN_SCRATCH); return {}, false }
-	return vol, true
+	return scratch_volume(t, JTXN_SCRATCH)
 }
 
 // test_check_healthy_empty — a fresh format is clean.
@@ -78,7 +74,7 @@ check_open_scratch :: proc(t: ^testing.T) -> (fs.Volume, bool) {
 test_check_healthy_empty :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	r := fs.check_image(&vol)
 	defer fs.check_report_destroy(&r)
@@ -91,7 +87,7 @@ test_check_healthy_empty :: proc(t: ^testing.T) {
 test_check_healthy_alloc :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 3, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -111,7 +107,7 @@ test_check_healthy_alloc :: proc(t: ^testing.T) {
 test_check_double_ownership :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -151,7 +147,7 @@ test_check_double_ownership :: proc(t: ^testing.T) {
 test_check_stale_cache_free_mismatch :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -219,7 +215,7 @@ test_check_stale_cache_free_mismatch :: proc(t: ^testing.T) {
 test_check_zero_size :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -249,7 +245,7 @@ test_check_zero_size :: proc(t: ^testing.T) {
 test_check_out_of_range :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -279,7 +275,7 @@ test_check_out_of_range :: proc(t: ^testing.T) {
 test_check_bad_link :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -309,7 +305,7 @@ test_check_bad_link :: proc(t: ^testing.T) {
 test_check_cycle :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	ha, oa, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -361,7 +357,7 @@ test_check_cycle :: proc(t: ^testing.T) {
 test_check_flag_combo :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	// Reserved cluster 1 (never the root): flip on Allocated, keeping
 	// Reserved. Its table sector is zeroed by format, so no cascade.
@@ -394,7 +390,7 @@ test_check_flag_combo :: proc(t: ^testing.T) {
 test_check_journal_bounds :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	fs.journal_set_region_size(&vol.master, u64(1) << 62)
 	testing.expect_value(t, fs.write_master_record(&vol), fs.FS_Error.None)
@@ -466,7 +462,7 @@ check_make_dirent :: proc(name: string, c: fs.Cluster, o: fs.Sector_Offset, size
 test_check_dup_name :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	ha, oa, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -499,7 +495,7 @@ test_check_dup_name :: proc(t: ^testing.T) {
 test_check_dir_head_bad :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	sa, sok := check_free_dir_slot(t, &vol)
 	testing.expect(t, sok, "free slot found")
@@ -519,7 +515,7 @@ test_check_dir_head_bad :: proc(t: ^testing.T) {
 test_check_dir_cycle :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	sa, sok := check_free_dir_slot(t, &vol)
 	testing.expect(t, sok, "free slot found")
@@ -542,7 +538,7 @@ test_check_dir_cycle :: proc(t: ^testing.T) {
 test_check_orphan_chain :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	_, _, aerr := fs.allocate_sectors(&vol, {}, 2, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -560,7 +556,7 @@ test_check_orphan_chain :: proc(t: ^testing.T) {
 test_check_lfn_bad_pointer :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	sa, sok := check_free_dir_slot(t, &vol)
 	testing.expect(t, sok, "free slot found")
@@ -583,7 +579,7 @@ test_check_lfn_bad_pointer :: proc(t: ^testing.T) {
 test_check_xattr_dangling :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	sa, sok := check_free_dir_slot(t, &vol)
 	testing.expect(t, sok, "free slot found")
@@ -607,7 +603,7 @@ test_check_xattr_dangling :: proc(t: ^testing.T) {
 test_check_slot_state :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	sa, sok := check_free_dir_slot(t, &vol)
 	testing.expect(t, sok, "free slot found")
@@ -629,7 +625,7 @@ test_check_slot_state :: proc(t: ^testing.T) {
 test_check_resolve_lfn_guards :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .LFN)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -671,7 +667,7 @@ test_check_resolve_lfn_guards :: proc(t: ^testing.T) {
 test_check_journal_report :: proc(t: ^testing.T) {
 	vol, ok := check_open_scratch(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	empty := fs.check_journal_report(&vol)
 	defer fs.check_journal_report_destroy(empty)

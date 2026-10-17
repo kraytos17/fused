@@ -22,11 +22,9 @@ CE_SCRATCH := "/dev/shm/fused_ce_test.img"
 // leave slot 0 untouched (the old re-find cleared slot 0 and leaked slot 1).
 @(test)
 test_deallocate_clears_allocated_slot :: proc(t: ^testing.T) {
-	fd, ok := jtxn_format(t, CE_SCRATCH)
+	vol, ok := scratch_volume(t, CE_SCRATCH)
 	if !ok { return }
-	vol, vok := open_volume_on_fd(fd)
-	if !vok { os.close(fd); os.remove(CE_SCRATCH); return }
-	defer { close_test_volume(&vol); os.remove(CE_SCRATCH) }
+	defer close_scratch_volume(&vol, CE_SCRATCH)
 
 	// Fill the first data cluster; the spillover lands alone in a fresh
 	// table at slot 0.

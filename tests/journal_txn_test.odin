@@ -12,37 +12,6 @@ import "src:fs"
 
 JTXN_SCRATCH := "/dev/shm/fused_jtxn_test.img"
 
-// jtxn_format creates a fresh 1M scratch image at path and returns the
-// open handle. Ownership passes to the caller.
-jtxn_format :: proc(t: ^testing.T, path: string) -> (^os.File, bool) {
-	fd, ferr := os.open(path, {.Read, .Write, .Create, .Trunc})
-	testing.expect_value(t, ferr, nil)
-	if ferr != nil { return {}, false }
-	ferr2 := fs.format_image(
-		fd,
-		{
-			size = 1 << 20,
-			cluster_size = 16,
-			features = fs.Features{.Uid_Gid, .XAttr},
-			rev_min = 8,
-			rev_max = 8,
-			demo_data = {},
-		},
-	)
-	testing.expect_value(t, ferr2, fs.FS_Error.None)
-	if ferr2 != .None { os.close(fd); return {}, false }
-	return fd, true
-}
-
-// bytes_equal compares two byte slices without extra imports.
-bytes_equal :: proc(a, b: []u8) -> bool {
-	if len(a) != len(b) { return false }
-	for i in 0 ..< len(a) {
-		if a[i] != b[i] { return false }
-	}
-	return true
-}
-
 // jtxn_find_header scans the journal region for a header with the given
 // sequence number. Layout-agnostic: it finds the slot under either ring
 // placement, so the overlap test discriminates before and after the fix.
@@ -66,11 +35,9 @@ jtxn_find_header :: proc(vol: ^fs.Volume, seq: u64) -> (fs.Sector, bool) {
 // previous transaction's first record sector.
 @(test)
 test_journal_slots_do_not_overlap :: proc(t: ^testing.T) {
-	fd, ok := jtxn_format(t, JTXN_SCRATCH)
+	vol, ok := scratch_volume(t, JTXN_SCRATCH)
 	if !ok { return }
-	vol, vok := open_volume_on_fd(fd)
-	if !vok { os.close(fd); os.remove(JTXN_SCRATCH); return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	seq1 := u64(fs.journal_seq_get(&vol.master))
 	backend := fs.JOURNAL_BACKEND
@@ -119,11 +86,9 @@ test_journal_slots_do_not_overlap :: proc(t: ^testing.T) {
 // apply N+1 past the incomplete N, and the watermark must hold at N.
 @(test)
 test_journal_replay_stops_at_first_incomplete :: proc(t: ^testing.T) {
-	fd, ok := jtxn_format(t, JTXN_SCRATCH)
+	vol, ok := scratch_volume(t, JTXN_SCRATCH)
 	if !ok { return }
-	vol, vok := open_volume_on_fd(fd)
-	if !vok { os.close(fd); os.remove(JTXN_SCRATCH); return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	empty: fs.Cluster_Entry_State
 	s_c: fs.Cluster
@@ -185,11 +150,9 @@ test_journal_replay_stops_at_first_incomplete :: proc(t: ^testing.T) {
 // journal a prefix of the transaction.
 @(test)
 test_journal_chunks_large_allocations :: proc(t: ^testing.T) {
-	fd, ok := jtxn_format(t, JTXN_SCRATCH)
+	vol, ok := scratch_volume(t, JTXN_SCRATCH)
 	if !ok { return }
-	vol, vok := open_volume_on_fd(fd)
-	if !vok { os.close(fd); os.remove(JTXN_SCRATCH); return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	seq0 := u64(fs.journal_seq_get(&vol.master))
 	c, o, aerr := fs.allocate_sectors(&vol, {}, 600, .File_Content)
@@ -213,11 +176,9 @@ test_journal_chunks_large_allocations :: proc(t: ^testing.T) {
 // (log-before-home plan collection; the old immediate flow journaled 3).
 @(test)
 test_journal_collapses_link_patch :: proc(t: ^testing.T) {
-	fd, ok := jtxn_format(t, JTXN_SCRATCH)
+	vol, ok := scratch_volume(t, JTXN_SCRATCH)
 	if !ok { return }
-	vol, vok := open_volume_on_fd(fd)
-	if !vok { os.close(fd); os.remove(JTXN_SCRATCH); return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	seq0 := u64(fs.journal_seq_get(&vol.master))
 	c, o, aerr := fs.allocate_sectors(&vol, {}, 20, .File_Content)
@@ -246,11 +207,9 @@ test_journal_collapses_link_patch :: proc(t: ^testing.T) {
 // the watermark holds, and the later valid slot is not replayed past it.
 @(test)
 test_journal_replay_aborts_on_bad_ce_index :: proc(t: ^testing.T) {
-	fd, ok := jtxn_format(t, JTXN_SCRATCH)
+	vol, ok := scratch_volume(t, JTXN_SCRATCH)
 	if !ok { return }
-	vol, vok := open_volume_on_fd(fd)
-	if !vok { os.close(fd); os.remove(JTXN_SCRATCH); return }
-	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+	defer close_scratch_volume(&vol, JTXN_SCRATCH)
 
 	empty: fs.Cluster_Entry_State
 	s_c: fs.Cluster

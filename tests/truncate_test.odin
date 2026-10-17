@@ -31,10 +31,8 @@ trunc_fixture :: proc(
 	s2: u64,
 	ok: bool,
 ) {
-	fd, fok := jtxn_format(t, TRUNC_SCRATCH)
-	if !fok { return {}, {}, {}, {}, 0, 0, false }
-	v, vok := open_volume_on_fd(fd)
-	if !vok { os.close(fd); os.remove(TRUNC_SCRATCH); return {}, {}, {}, {}, 0, 0, false }
+	v, vok := scratch_volume(t, TRUNC_SCRATCH)
+	if !vok { return {}, {}, {}, {}, 0, 0, false }
 	fail := false
 	afc, afo, aerr := fs.allocate_sectors(&v, {}, 32, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -81,8 +79,7 @@ trunc_fixture :: proc(
 		}
 	}
 	if fail {
-		close_test_volume(&v)
-		os.remove(TRUNC_SCRATCH)
+		close_scratch_volume(&v, TRUNC_SCRATCH)
 		return {}, {}, {}, {}, 0, 0, false
 	}
 	return v, chead, e2loc, e3loc, s1, s2, true
@@ -95,7 +92,7 @@ trunc_fixture :: proc(
 test_truncate_at_extent_boundary :: proc(t: ^testing.T) {
 	vol, chead, e2loc, e3loc, s1, _, ok := trunc_fixture(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(TRUNC_SCRATCH) }
+	defer close_scratch_volume(&vol, TRUNC_SCRATCH)
 
 	seq0 := u64(fs.journal_seq_get(&vol.master))
 	terr := fs.truncate_chain_at(&vol, chead, s1)
@@ -124,7 +121,7 @@ test_truncate_at_extent_boundary :: proc(t: ^testing.T) {
 test_truncate_within_extent :: proc(t: ^testing.T) {
 	vol, chead, e2loc, e3loc, s1, s2, ok := trunc_fixture(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(TRUNC_SCRATCH) }
+	defer close_scratch_volume(&vol, TRUNC_SCRATCH)
 
 	seq0 := u64(fs.journal_seq_get(&vol.master))
 	terr := fs.truncate_chain_at(&vol, chead, s1 + s2 - 2)
@@ -155,7 +152,7 @@ test_truncate_within_extent :: proc(t: ^testing.T) {
 test_truncate_to_zero_frees_all :: proc(t: ^testing.T) {
 	vol, chead, _, _, _, _, ok := trunc_fixture(t)
 	if !ok { return }
-	defer { close_test_volume(&vol); os.remove(TRUNC_SCRATCH) }
+	defer close_scratch_volume(&vol, TRUNC_SCRATCH)
 
 	terr := fs.truncate_chain_at(&vol, chead, 0)
 	testing.expect_value(t, terr, fs.FS_Error.None)

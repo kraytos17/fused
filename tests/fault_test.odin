@@ -13,19 +13,6 @@ import "src:fs"
 
 FAULT_SCRATCH := "/dev/shm/fused_fault_test.img"
 
-fault_setup :: proc(t: ^testing.T) -> (fs.Volume, bool) {
-	fd, fok := jtxn_format(t, FAULT_SCRATCH)
-	if !fok { return {}, false }
-	vol, vok := open_volume_on_fd(fd)
-	if !vok { os.close(fd); os.remove(FAULT_SCRATCH); return {}, false }
-	return vol, true
-}
-
-fault_teardown :: proc(vol: ^fs.Volume) {
-	close_test_volume(vol)
-	os.remove(FAULT_SCRATCH)
-}
-
 // fault_state snapshots the externally visible allocation state.
 fault_state :: proc(vol: ^fs.Volume) -> (free: u64, seq: u64, wm: u64) {
 	free = fs.alloc_cache_count_free(vol)
@@ -40,9 +27,9 @@ fault_state :: proc(vol: ^fs.Volume) -> (free: u64, seq: u64, wm: u64) {
 // orphaned the prefix chain here.
 @(test)
 test_fault_sync_fails_alloc_clean :: proc(t: ^testing.T) {
-	vol, ok := fault_setup(t)
+	vol, ok := scratch_volume(t, FAULT_SCRATCH)
 	if !ok { return }
-	defer fault_teardown(&vol)
+	defer close_scratch_volume(&vol, FAULT_SCRATCH)
 
 	vol.fault = fs.IO_Fault {
 		enabled           = true,
@@ -71,9 +58,9 @@ test_fault_sync_fails_alloc_clean :: proc(t: ^testing.T) {
 // already-applied chunk.
 @(test)
 test_fault_sync_fails_home_sync_holds_watermark :: proc(t: ^testing.T) {
-	vol, ok := fault_setup(t)
+	vol, ok := scratch_volume(t, FAULT_SCRATCH)
 	if !ok { return }
-	defer fault_teardown(&vol)
+	defer close_scratch_volume(&vol, FAULT_SCRATCH)
 
 	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -128,9 +115,9 @@ test_fault_sync_fails_home_sync_holds_watermark :: proc(t: ^testing.T) {
 // op fails before persisting anything observable.
 @(test)
 test_fault_write_fails_alloc_clean :: proc(t: ^testing.T) {
-	vol, ok := fault_setup(t)
+	vol, ok := scratch_volume(t, FAULT_SCRATCH)
 	if !ok { return }
-	defer fault_teardown(&vol)
+	defer close_scratch_volume(&vol, FAULT_SCRATCH)
 
 	vol.fault = fs.IO_Fault {
 		enabled           = true,
@@ -157,9 +144,9 @@ test_fault_write_fails_alloc_clean :: proc(t: ^testing.T) {
 // complete the chunk from the committed log.
 @(test)
 test_fault_apply_fails_watermark_held :: proc(t: ^testing.T) {
-	vol, ok := fault_setup(t)
+	vol, ok := scratch_volume(t, FAULT_SCRATCH)
 	if !ok { return }
-	defer fault_teardown(&vol)
+	defer close_scratch_volume(&vol, FAULT_SCRATCH)
 
 	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -216,9 +203,9 @@ test_fault_apply_fails_watermark_held :: proc(t: ^testing.T) {
 // prefix work.
 @(test)
 test_fault_apply_fails_twice_recover_both :: proc(t: ^testing.T) {
-	vol, ok := fault_setup(t)
+	vol, ok := scratch_volume(t, FAULT_SCRATCH)
 	if !ok { return }
-	defer fault_teardown(&vol)
+	defer close_scratch_volume(&vol, FAULT_SCRATCH)
 
 	hc1, ho1, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -290,9 +277,9 @@ test_fault_apply_fails_twice_recover_both :: proc(t: ^testing.T) {
 // leaves the chain fully resolvable and the free count untouched.
 @(test)
 test_fault_write_fails_dealloc_clean :: proc(t: ^testing.T) {
-	vol, ok := fault_setup(t)
+	vol, ok := scratch_volume(t, FAULT_SCRATCH)
 	if !ok { return }
-	defer fault_teardown(&vol)
+	defer close_scratch_volume(&vol, FAULT_SCRATCH)
 
 	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 10, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -328,9 +315,9 @@ test_fault_write_fails_dealloc_clean :: proc(t: ^testing.T) {
 // fault-free recover must complete it from the committed log.
 @(test)
 test_fault_recover_aborts_on_home_write :: proc(t: ^testing.T) {
-	vol, ok := fault_setup(t)
+	vol, ok := scratch_volume(t, FAULT_SCRATCH)
 	if !ok { return }
-	defer fault_teardown(&vol)
+	defer close_scratch_volume(&vol, FAULT_SCRATCH)
 
 	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -397,9 +384,9 @@ test_fault_recover_aborts_on_home_write :: proc(t: ^testing.T) {
 // must converge idempotently without double-applying.
 @(test)
 test_fault_finish_fails_master_write_recovers_clean :: proc(t: ^testing.T) {
-	vol, ok := fault_setup(t)
+	vol, ok := scratch_volume(t, FAULT_SCRATCH)
 	if !ok { return }
-	defer fault_teardown(&vol)
+	defer close_scratch_volume(&vol, FAULT_SCRATCH)
 
 	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -470,9 +457,9 @@ test_fault_finish_fails_master_write_recovers_clean :: proc(t: ^testing.T) {
 // and a later fault-free recover must complete it from the committed log.
 @(test)
 test_fault_recover_aborts_on_record_read :: proc(t: ^testing.T) {
-	vol, ok := fault_setup(t)
+	vol, ok := scratch_volume(t, FAULT_SCRATCH)
 	if !ok { return }
-	defer fault_teardown(&vol)
+	defer close_scratch_volume(&vol, FAULT_SCRATCH)
 
 	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -548,9 +535,9 @@ test_fault_recover_aborts_on_record_read :: proc(t: ^testing.T) {
 // and a later fault-free recover must complete it from the committed log.
 @(test)
 test_fault_recover_aborts_on_home_read :: proc(t: ^testing.T) {
-	vol, ok := fault_setup(t)
+	vol, ok := scratch_volume(t, FAULT_SCRATCH)
 	if !ok { return }
-	defer fault_teardown(&vol)
+	defer close_scratch_volume(&vol, FAULT_SCRATCH)
 
 	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -627,9 +614,9 @@ test_fault_recover_aborts_on_home_read :: proc(t: ^testing.T) {
 // (the header slot carries no magic, so the scan skips it).
 @(test)
 test_fault_commit_header_write_leaves_nothing :: proc(t: ^testing.T) {
-	vol, ok := fault_setup(t)
+	vol, ok := scratch_volume(t, FAULT_SCRATCH)
 	if !ok { return }
-	defer fault_teardown(&vol)
+	defer close_scratch_volume(&vol, FAULT_SCRATCH)
 
 	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
@@ -688,9 +675,9 @@ test_fault_commit_header_write_leaves_nothing :: proc(t: ^testing.T) {
 // recover must converge from the log.
 @(test)
 test_fault_recover_scan_read_error_fails :: proc(t: ^testing.T) {
-	vol, ok := fault_setup(t)
+	vol, ok := scratch_volume(t, FAULT_SCRATCH)
 	if !ok { return }
-	defer fault_teardown(&vol)
+	defer close_scratch_volume(&vol, FAULT_SCRATCH)
 
 	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)

@@ -18,45 +18,6 @@ import "src:mounter"
 
 ZERO_SCRATCH := "/dev/shm/fused_zero_test.img"
 
-// zero_setup formats a fresh scratch image and initializes a test FS.
-zero_setup :: proc(t: ^testing.T, fsys: ^mounter.FS) -> bool {
-	fd, ferr := os.open(ZERO_SCRATCH, {.Read, .Write, .Create, .Trunc})
-	testing.expect_value(t, ferr, nil)
-	if ferr != nil { return false }
-	ferr2 := fs.format_image(
-		fd,
-		{
-			size = 1 << 20,
-			cluster_size = 16,
-			features = fs.Features{.Uid_Gid, .XAttr},
-			rev_min = 8,
-			rev_max = 8,
-			demo_data = {},
-		},
-	)
-	testing.expect_value(t, ferr2, fs.FS_Error.None)
-	if ferr2 != .None { os.close(fd); return false }
-
-	vol, vok := open_volume_on_fd(fd)
-	testing.expect(t, vok, "scratch volume opens")
-	if !vok { os.close(fd); return false }
-
-	mounter.init_fs_for_test(fsys, vol)
-	ctx := fuse3.Context{uid = 1000, gid = 1000, private_data = fsys}
-	fuse3.set_test_context(&ctx)
-	return true
-}
-
-zero_teardown :: proc(fsys: ^mounter.FS) {
-	v := fsys.vol
-	mounter.destroy_fs_for_test(fsys)
-	close_test_volume(&v)
-	os.remove(ZERO_SCRATCH)
-}
-
-// poison_free_sectors fills free data sectors with 0xA5 via a temporary
-// file, then unlinks it and resets the alloc hint so the next allocation
-// reuses the poisoned sectors.
 poison_free_sectors :: proc(t: ^testing.T, fsys: ^mounter.FS) {
 	fi: fuse3.File_Info
 	rc := mounter.fused_create("/poison", posix.mode_t{.IRUSR, .IWUSR}, &fi)
@@ -87,8 +48,8 @@ count_nonzero :: proc(b: []u8) -> int {
 @(test)
 test_write_past_eof_zeroes_gap :: proc(t: ^testing.T) {
 	fsys: mounter.FS
-	if !zero_setup(t, &fsys) { return }
-	defer zero_teardown(&fsys)
+	if !scratch_fs(t, ZERO_SCRATCH, &fsys) { return }
+	defer close_scratch_fs(&fsys, ZERO_SCRATCH)
 	poison_free_sectors(t, &fsys)
 
 	fi: fuse3.File_Info
@@ -112,8 +73,8 @@ test_write_past_eof_zeroes_gap :: proc(t: ^testing.T) {
 @(test)
 test_truncate_up_zeroes_gap :: proc(t: ^testing.T) {
 	fsys: mounter.FS
-	if !zero_setup(t, &fsys) { return }
-	defer zero_teardown(&fsys)
+	if !scratch_fs(t, ZERO_SCRATCH, &fsys) { return }
+	defer close_scratch_fs(&fsys, ZERO_SCRATCH)
 	poison_free_sectors(t, &fsys)
 
 	fi: fuse3.File_Info
@@ -141,8 +102,8 @@ test_truncate_up_zeroes_gap :: proc(t: ^testing.T) {
 @(test)
 test_zero_length_write_no_side_effects :: proc(t: ^testing.T) {
 	fsys: mounter.FS
-	if !zero_setup(t, &fsys) { return }
-	defer zero_teardown(&fsys)
+	if !scratch_fs(t, ZERO_SCRATCH, &fsys) { return }
+	defer close_scratch_fs(&fsys, ZERO_SCRATCH)
 
 	fi: fuse3.File_Info
 	rc := mounter.fused_create("/v3", posix.mode_t{.IRUSR, .IWUSR}, &fi)
@@ -167,8 +128,8 @@ test_zero_length_write_no_side_effects :: proc(t: ^testing.T) {
 @(test)
 test_fallocate_grow_zeroes_covered_gap :: proc(t: ^testing.T) {
 	fsys: mounter.FS
-	if !zero_setup(t, &fsys) { return }
-	defer zero_teardown(&fsys)
+	if !scratch_fs(t, ZERO_SCRATCH, &fsys) { return }
+	defer close_scratch_fs(&fsys, ZERO_SCRATCH)
 	poison_free_sectors(t, &fsys)
 
 	fi: fuse3.File_Info
@@ -204,8 +165,8 @@ test_fallocate_grow_zeroes_covered_gap :: proc(t: ^testing.T) {
 @(test)
 test_write_buf_past_eof_zeroes_gap :: proc(t: ^testing.T) {
 	fsys: mounter.FS
-	if !zero_setup(t, &fsys) { return }
-	defer zero_teardown(&fsys)
+	if !scratch_fs(t, ZERO_SCRATCH, &fsys) { return }
+	defer close_scratch_fs(&fsys, ZERO_SCRATCH)
 	poison_free_sectors(t, &fsys)
 
 	fi: fuse3.File_Info

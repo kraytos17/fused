@@ -22,8 +22,8 @@ import "src:mounter"
 // setup_mounter opens the shared test volume and initializes an FS in place
 // at fsys. It installs a fake FUSE context whose private_data points to
 // *fsys. Tests share the /dev/shm image (use cleanup_root for idempotency);
-// tests needing isolation use a scratch fixture (fault_setup, prop_setup,
-// zero_setup, ...). Caller must call teardown_mounter.
+// tests needing isolation use a scratch fixture (scratch_volume,
+// scratch_fs). Caller must call teardown_mounter.
 setup_mounter :: proc(t: ^testing.T, fsys: ^mounter.FS) -> (ok: bool) {
 	vol, vol_ok := open_test_volume()
 	if !vol_ok {

@@ -65,26 +65,13 @@ slow_free_scan :: proc(t: ^testing.T, vol: ^fs.Volume) -> u64 {
 	return total
 }
 
-free_setup :: proc(t: ^testing.T) -> (fs.Volume, bool) {
-	fd, fok := jtxn_format(t, FREE_SCRATCH)
-	if !fok { return {}, false }
-	vol, vok := open_volume_on_fd(fd)
-	if !vok { os.close(fd); os.remove(FREE_SCRATCH); return {}, false }
-	return vol, true
-}
-
-free_teardown :: proc(vol: ^fs.Volume) {
-	close_test_volume(vol)
-	os.remove(FREE_SCRATCH)
-}
-
 // test_free_count_matches_oracle_fresh — exact agreement on a fresh image
 // (was: reserved clusters inflated the count).
 @(test)
 test_free_count_matches_oracle_fresh :: proc(t: ^testing.T) {
-	vol, ok := free_setup(t)
+	vol, ok := scratch_volume(t, FREE_SCRATCH)
 	if !ok { return }
-	defer free_teardown(&vol)
+	defer close_scratch_volume(&vol, FREE_SCRATCH)
 
 	testing.expect_value(t, fs.alloc_cache_count_free(&vol), slow_free_scan(t, &vol))
 }
@@ -93,9 +80,9 @@ test_free_count_matches_oracle_fresh :: proc(t: ^testing.T) {
 // across allocate/deallocate churn.
 @(test)
 test_free_count_matches_oracle_churn :: proc(t: ^testing.T) {
-	vol, ok := free_setup(t)
+	vol, ok := scratch_volume(t, FREE_SCRATCH)
 	if !ok { return }
-	defer free_teardown(&vol)
+	defer close_scratch_volume(&vol, FREE_SCRATCH)
 
 	f0 := fs.alloc_cache_count_free(&vol)
 	testing.expect_value(t, f0, slow_free_scan(t, &vol))
@@ -116,9 +103,9 @@ test_free_count_matches_oracle_churn :: proc(t: ^testing.T) {
 // exactly its set-semantics contribution, and the oracle still agrees.
 @(test)
 test_free_count_ignores_full_clusters :: proc(t: ^testing.T) {
-	vol, ok := free_setup(t)
+	vol, ok := scratch_volume(t, FREE_SCRATCH)
 	if !ok { return }
-	defer free_teardown(&vol)
+	defer close_scratch_volume(&vol, FREE_SCRATCH)
 
 	hc, _, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)

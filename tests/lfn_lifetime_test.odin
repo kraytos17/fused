@@ -17,6 +17,8 @@ import "src:fs"
 import "src:fuse3"
 import "src:mounter"
 
+LFN_SCRATCH := "/dev/shm/fused_lfn_test.img"
+
 // lfn_mkpath builds a heap 65-byte "/"+64×ch path: buf backs the cstring,
 // full/base are owned copies for string-typed calls. Caller frees all three.
 lfn_mkpath :: proc(ch: u8) -> (buf: []u8, full, base: string) {
@@ -34,8 +36,8 @@ lfn_mkpath :: proc(ch: u8) -> (buf: []u8, full, base: string) {
 @(test)
 test_lfn_rename_preserves_sibling_name :: proc(t: ^testing.T) {
 	fsys: mounter.FS
-	if !zero_setup(t, &fsys) { return }
-	defer zero_teardown(&fsys)
+	if !scratch_fs(t, LFN_SCRATCH, &fsys) { return }
+	defer close_scratch_fs(&fsys, LFN_SCRATCH)
 
 	b1buf, p1, n1 := lfn_mkpath('a')
 	defer delete(b1buf)
@@ -95,8 +97,8 @@ test_lfn_rename_preserves_sibling_name :: proc(t: ^testing.T) {
 @(test)
 test_lfn_unlink_reclaims_sector :: proc(t: ^testing.T) {
 	fsys: mounter.FS
-	if !zero_setup(t, &fsys) { return }
-	defer zero_teardown(&fsys)
+	if !scratch_fs(t, LFN_SCRATCH, &fsys) { return }
+	defer close_scratch_fs(&fsys, LFN_SCRATCH)
 
 	free0 := fsys.free_sectors
 	b1buf, p1d, n1d := lfn_mkpath('d')

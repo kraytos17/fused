@@ -78,36 +78,6 @@ Prop_Dir :: struct {
 // paths always fit the stack buffers).
 PROP_MAX_DEPTH :: 3
 
-prop_setup :: proc(t: ^testing.T, fsys: ^mounter.FS, vol: ^fs.Volume) -> bool {
-	fd, ok := jtxn_format(t, PROP_SCRATCH)
-	if !ok { return false }
-	v, vok := open_volume_on_fd(fd)
-	if !vok {
-		os.close(fd)
-		os.remove(PROP_SCRATCH)
-		return false
-	}
-	vol^ = v
-	fsys^ = {}
-	mounter.init_fs_for_test(fsys, vol^)
-	ctx := fuse3.Context {
-		uid        = 1000,
-		gid        = 1000,
-		private_data = fsys,
-	}
-	fuse3.set_test_context(&ctx)
-	return true
-}
-
-prop_teardown :: proc(fsys: ^mounter.FS) {
-	// Mirror teardown_mounter: the live volume state (alloc cache) lives
-	// in fsys.vol after init_fs_state, not in the caller's by-value copy.
-	v := fsys.vol
-	mounter.destroy_fs_for_test(fsys)
-	close_test_volume(&v)
-	os.remove(PROP_SCRATCH)
-}
-
 // log_op records a human-readable op line (heap copy: temp arenas are
 // reset by begin_op, so tprintf results would dangle).
 log_op :: proc(oplog: ^[dynamic]string, msg: string) {
@@ -304,12 +274,11 @@ prop_verify_dir :: proc(
 @(test)
 test_prop_random_ops :: proc(t: ^testing.T) {
 	fsys: mounter.FS
-	vol: fs.Volume
-	if !prop_setup(t, &fsys, &vol) {
+	if !scratch_fs(t, PROP_SCRATCH, &fsys) {
 		testing.fail(t)
 		return
 	}
-	defer prop_teardown(&fsys)
+	defer close_scratch_fs(&fsys, PROP_SCRATCH)
 
 	files := make([dynamic]^Prop_File, 0, 8, context.allocator)
 	defer {
