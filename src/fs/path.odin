@@ -56,9 +56,8 @@ resolve_path :: proc(
 	for comp_idx in 0 ..< n_comps {
 		target := comps[comp_idx]
 		is_last := comp_idx == n_comps - 1
-		dirs, dirs_err := read_directory_entries(vol, current_cluster, current_offset)
+		dirs := read_directory_entries(vol, current_cluster, current_offset) or_return
 		defer delete(dirs)
-		if dirs_err != .None { return {}, dirs_err }
 
 		found := false
 		for &w in dirs {

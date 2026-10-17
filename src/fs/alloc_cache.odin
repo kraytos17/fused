@@ -92,9 +92,7 @@ alloc_cache_ensure :: proc(
 	if entry, hit := lru.get(&cache.lru, cluster); hit {
 		return entry.bitmap, entry.used, .None
 	}
-	if berr := _alloc_cache_build(cache, vol, Cluster(cluster)); berr != .None {
-		return {}, 0, berr
-	}
+	_alloc_cache_build(cache, vol, Cluster(cluster)) or_return
 
 	entry, hit := lru.get(&cache.lru, cluster)
 	if !hit {

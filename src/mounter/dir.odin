@@ -120,10 +120,7 @@ find_or_extend_dir :: proc(
 		current_count += u64(r.count)
 	}
 
-	_, _, ext_err := fs.allocate_sectors(&fsys.vol, dir, current_count + 1, .Directory)
-	if ext_err != .None {
-		return {}, ext_err
-	}
+	fs.allocate_sectors(&fsys.vol, dir, current_count + 1, .Directory) or_return
 
 	// The extension changed the chain on disk: drop the cached runs before
 	// re-resolving, or the lookup below would hit the pre-extend chain and
@@ -221,8 +218,7 @@ set_entry_name :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> (
 		entry.flags -= {.LFN}
 	}
 	if len(name) > len(entry.file_name) {
-		ptr, perr := fs.lfn_bump_write(&fsys.vol, &fsys.vol.lfn_bump, name)
-		if perr != .None { return {}, perr }
+		ptr := fs.lfn_bump_write(&fsys.vol, &fsys.vol.lfn_bump, name) or_return
 
 		reinit_free_sectors(fsys)
 		(^fs.LFN_Pointer)(&entry.file_name[0])^ = ptr

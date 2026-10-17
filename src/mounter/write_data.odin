@@ -38,10 +38,7 @@ ensure_chain_covers :: proc(
 		return start.cluster, start.offset, runs, false, .None
 	}
 
-	new_c, new_o, aerr := fs.allocate_sectors(&fsys.vol, start, total_sectors, .File_Content)
-	if aerr != .None {
-		return {}, 0, {}, false, aerr
-	}
+	new_c, new_o := fs.allocate_sectors(&fsys.vol, start, total_sectors, .File_Content) or_return
 	if start.cluster == 0 {
 		entry.stored_cluster = u64(new_c)
 		entry.sector_index = u16(new_o)

@@ -155,8 +155,7 @@ lfn_bump_write :: proc(
 	err: FS_Error,
 ) {
 	_ = bump
-	new_c, new_o, lerr := allocate_sectors(vol, {}, 1, .LFN)
-	if lerr != .None { return {}, lerr }
+	new_c, new_o := allocate_sectors(vol, {}, 1, .LFN) or_return
 
 	runs, rok := resolve_extents(vol, Chain_Location{new_c, new_o})
 	defer delete(runs)
