@@ -116,13 +116,16 @@ xattr_get :: proc(
 	found: bool,
 	err: FS_Error,
 ) {
-	attrs := xattr_load(vol, entry, allocator) or_return
+	attrs, load_err := xattr_load(vol, entry, allocator)
 	defer {
 		for &a in attrs {
 			delete(a.name, allocator)
 			delete(a.value, allocator)
 		}
 		delete(attrs)
+	}
+	if load_err != .None {
+		return {}, false, load_err
 	}
 	for &a in attrs {
 		if a.name == name {

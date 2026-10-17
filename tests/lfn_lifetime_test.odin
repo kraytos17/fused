@@ -13,6 +13,7 @@
 package tests
 
 import "core:sys/posix"
+import "core:strings"
 import "core:testing"
 import "src:fs"
 import "src:fuse3"
@@ -22,12 +23,14 @@ LFN_SCRATCH := "/dev/shm/fused_lfn_test.img"
 
 // lfn_mkpath builds a heap 65-byte "/"+64×ch path: buf backs the cstring,
 // full/base are owned copies for string-typed calls. Caller frees all three.
+// NOTE: full/base must be strings.clone copies — a plain string(slice)
+// conversion aliases buf, which would make the three deletes a double-free.
 lfn_mkpath :: proc(ch: u8) -> (buf: []u8, full, base: string) {
 	buf = make([]u8, 66)
 	buf[0] = '/'
 	for i in 1 ..< 65 { buf[i] = ch }
-	full = string(buf[:65])
-	base = string(buf[1:65])
+	full = strings.clone(string(buf[:65]))
+	base = strings.clone(string(buf[1:65]))
 	return buf, full, base
 }
 
