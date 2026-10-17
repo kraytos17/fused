@@ -19,8 +19,9 @@
 //   (s2) sector_write_bulk validates the transferred byte count.
 //   (s3) JOURNAL_BACKEND.recover's result is checked (an unknowable
 //       committed set or unwritten checkpoint must refuse the mount).
-//   (s4) no discarded slice.clone in src/ (a failed cache insert must fail
-//       the op, never cache an empty chain).
+//   (s4) no discarded clone results in src/ (a failed cache insert must
+//       fail the op, never cache an empty chain; a failed lookup clone
+//       must fail the lookup, never hand back a phantom value).
 //   (s5) every #packed struct has a size_of(Named) assert within 25 lines
 //       (on-disk and ABI layouts stay pinned).
 //   (s6) every ce_find_by_offset() call site checks .Allocated within 3
@@ -713,13 +714,21 @@ audit_storage_rules :: proc(path: string, lines: []string) -> (checked, failed: 
 			}
 		}
 
-		// s4: slice.clone results must not be discarded.
-		if strings.contains(line, "slice.clone") {
+		// s4: clone results must not be discarded. Matches any
+		// allocator-returning clone call (slice/string/cstring) used
+		// with an ignored error, or assigned to a single variable
+		// (which silently drops the error). Callers must check the
+		// status or use a form whose failure is impossible.
+		if strings.contains(line, ".clone(") || strings.contains(line, "clone_to_cstring(") {
 			checked += 1
-			if strings.contains(line, "_, _") ||
-			   strings.contains(line, ", _ :=") ||
-			   strings.contains(line, ", _ =") {
-				fmt.printf("FAIL   %s:%d discarded slice.clone status\n", path, i + 1)
+			head := line
+			if idx := strings.index(line, "clone("); idx >= 0 {
+				head = line[:idx]
+			}
+			discarded := strings.contains(line, ", _ :=") || strings.contains(line, ", _ =")
+			single := (strings.contains(head, ":=") || strings.contains(head, " = ")) && !strings.contains(head, ",")
+			if !strings.has_prefix(trimmed, "//") && (discarded || single) {
+				fmt.printf("FAIL   %s:%d discarded clone status\n", path, i + 1)
 				failed += 1
 			}
 		}

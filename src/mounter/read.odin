@@ -145,7 +145,14 @@ _readdir_fill :: proc(
 			lfn, l_ok := lfn_lookup_shared(fsys, cache_k, &fsys.vol, &ent)
 			lfn_cstr: cstring
 			if l_ok {
-				lfn_cstr, _ = strings.clone_to_cstring(lfn, context.temp_allocator)
+				cstr, cerr := strings.clone_to_cstring(lfn, context.temp_allocator)
+				if cerr != .None {
+					// A failed clone must skip the entry, not hand a nil
+					// name to the FUSE filler (fail-closed).
+					l_ok = false
+				} else {
+					lfn_cstr = cstr
+				}
 			}
 
 			sync.rw_mutex_shared_unlock(&fsys.mu)

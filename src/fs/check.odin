@@ -67,7 +67,12 @@ _check_add :: proc(
 	format: string,
 	args: ..any,
 ) {
-	detail := strings.clone(fmt.tprintf(format, ..args), allocator)
+	detail, derr := strings.clone(fmt.tprintf(format, ..args), allocator)
+	if derr != .None {
+		// The finding code and location survive; only the human text
+		// is unavailable. Never drop a finding over a detail string.
+		detail = "detail unavailable (out of memory)"
+	}
 	append(&r.findings, Check_Finding{severity = sev, code = code, cluster = cluster, index = index, detail = detail})
 	if sev == .Error {
 		r.errors += 1

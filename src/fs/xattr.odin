@@ -317,7 +317,10 @@ _xattr_deserialize_into :: proc(
 			}
 		}
 
-		name := strings.clone(string(data[pos:pos + name_len]), allocator)
+		name, nerr := strings.clone(string(data[pos:pos + name_len]), allocator)
+		if nerr != .None {
+			return .No_Space
+		}
 		pos += name_len
 		value := make([]u8, value_len, allocator)
 

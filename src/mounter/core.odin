@@ -420,8 +420,8 @@ lfn_lookup_shared :: proc(
 
 	lfn, l_ok := fs.resolve_lfn(vol, entry, context.temp_allocator)
 	if l_ok {
-		c, _ := strings.clone(lfn, fsys.allocator)
-		if c != "" {
+		c, cerr := strings.clone(lfn, fsys.allocator)
+		if cerr == .None && c != "" {
 			if lru.set(&fsys.lfn_cache, key, c) != nil {
 				delete(c, fsys.allocator)
 			}
@@ -461,7 +461,10 @@ path_cache_put :: proc(fsys: ^FS, path: string, val: Path_Cache_Value) {
 		return
 	}
 
-	key := strings.clone(path, fsys.allocator)
+	key, kerr := strings.clone(path, fsys.allocator)
+	if kerr != .None {
+		return
+	}
 	lru.set(&fsys.path_cache, key, val)
 }
 
