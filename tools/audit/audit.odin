@@ -27,6 +27,12 @@
 //   (s6) every ce_find_by_offset() call site checks .Allocated within 3
 //       lines (a stale freed slot may share the offset; mutation paths
 //       additionally cross-check the table index before journaling).
+//   (s8) fused_read/fused_read_buf bodies clamp with file_size - uoff
+//       (sector-granular runs must never leak slack zeros past EOF).
+//   (s9) fused_truncate body clears the head (stored_cluster = 0) on
+//       full free (a retained head aliases freed sectors on regrow).
+//   (s10) no checker name from a stack copy &e (stored short names
+//       must borrow the chain buffer, never a reused stack slot).
 package main
 
 import "base:runtime"
@@ -663,15 +669,50 @@ audit_src_hygiene :: proc() -> (failed: int) {
 	return failed
 }
 
-// Storage audit (rules s1..s5): journal-transaction and cache-ownership
-// guardrails from the audit §9 list. Line-based deliberately, like the
-// logger audit: every enforced shape is a fixed idiom, and the matchers
-// are narrow to avoid false positives.
+// Storage audit (rules s1..s6, s8..s10): journal-transaction and
+// cache-ownership guardrails from the audit §9 list, plus regression
+// pins for fixed bugs (s8: read EOF clamp, s9: truncate head-clear,
+// s10: checker stack-alias). Line-based deliberately, like the logger
+// audit: every enforced shape is a fixed idiom, and the matchers are
+// narrow to avoid false positives.
 audit_storage_rules :: proc(path: string, lines: []string) -> (checked, failed: int) {
+	// s8/s9 proc-body tracking: audited top-level procs open at
+	// column 0 and close with a column-0 "}"; the pinning idiom must
+	// appear in code (not comments) between them.
+	audited_body := ""
+	body_has_pin := false
 	for i in 0 ..< len(lines) {
 		line := lines[i]
 		trimmed := strings.trim_space(line)
 		if strings.has_prefix(trimmed, "//") { continue }
+
+		// s8/s9 proc tracking (column-0 open/close only, matching the
+		// persist-order audit's end detection).
+		if audited_body == "" {
+			if strings.has_prefix(line, "fused_read :: proc") ||
+			   strings.has_prefix(line, "fused_read_buf :: proc") {
+				audited_body = "read"
+				body_has_pin = false
+			} else if strings.has_prefix(line, "fused_truncate :: proc") {
+				audited_body = "truncate"
+				body_has_pin = false
+			}
+		} else if line == "}" {
+			checked += 1
+			if !body_has_pin {
+				if audited_body == "read" {
+					fmt.printf("FAIL   %s:%d read path without EOF clamp (file_size - uoff)\n", path, i + 1)
+				} else {
+					fmt.printf("FAIL   %s:%d fused_truncate without head clear (stored_cluster = 0)\n", path, i + 1)
+				}
+				failed += 1
+			}
+			audited_body = ""
+		} else if audited_body == "read" && strings.contains(line, "file_size - uoff") {
+			body_has_pin = true
+		} else if audited_body == "truncate" && strings.contains(line, "stored_cluster = 0") {
+			body_has_pin = true
+		}
 
 		// s1: backend.add() must be result-checked at the call site.
 		if strings.contains(line, "backend.add(") {
@@ -751,6 +792,17 @@ audit_storage_rules :: proc(path: string, lines: []string) -> (checked, failed: 
 			}
 		}
 
+		// s10: checker names must borrow from the chain-backed entry
+		// pointer (ep), never from a per-iteration stack copy (&e): a
+		// stored short name would alias stack and read back as
+		// whatever entry was visited last (false DupName on every
+		// multi-entry directory).
+		if strings.contains(line, "entry_short_name(&e)") ||
+		   strings.contains(line, "resolve_lfn(vol, &e") {
+			checked += 1
+			fmt.printf("FAIL   %s:%d checker name from stack copy &e (use chain-backed ep)\n", path, i + 1)
+			failed += 1
+		}
 		// s5: every #packed struct needs its own size_of(Name) assert.
 		if strings.contains(line, "#packed") &&
 		   strings.contains(line, "::") &&
