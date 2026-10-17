@@ -7,7 +7,6 @@
 #+build linux
 package tests
 
-import "core:os"
 import "core:testing"
 import "src:fs"
 
@@ -45,10 +44,18 @@ test_journal_slots_do_not_overlap :: proc(t: ^testing.T) {
 	h1: fs.Journal_Txn_Handle
 	testing.expect(t, backend.begin(&vol, &h1), "begin max txn")
 	for i in 0 ..< fs.MAX_JOURNAL_ENTRIES {
-		ce := fs.Cluster_Entry{state = {.Allocated}, allocation_size = 1, sector_start = u16(i)}
+		ce := fs.Cluster_Entry {
+			state           = {.Allocated},
+			allocation_size = 1,
+			sector_start    = u16(i),
+		}
 		testing.expect(
 			t,
-			backend.add(&vol, &h1, fs.journal_entry_from_cluster_entry(ce, u64(1000 + i), u8(i % 32))),
+			backend.add(
+				&vol,
+				&h1,
+				fs.journal_entry_from_cluster_entry(ce, u64(1000 + i), u8(i % 32)),
+			),
 			"add fills",
 		)
 	}
@@ -65,7 +72,11 @@ test_journal_slots_do_not_overlap :: proc(t: ^testing.T) {
 
 	h2: fs.Journal_Txn_Handle
 	testing.expect(t, backend.begin(&vol, &h2), "begin small txn")
-	ce2 := fs.Cluster_Entry{state = {.Allocated}, allocation_size = 1, sector_start = 7}
+	ce2 := fs.Cluster_Entry {
+		state           = {.Allocated},
+		allocation_size = 1,
+		sector_start    = 7,
+	}
 	testing.expect(
 		t,
 		backend.add(&vol, &h2, fs.journal_entry_from_cluster_entry(ce2, 2000, 3)),
@@ -113,7 +124,10 @@ test_journal_replay_stops_at_first_incomplete :: proc(t: ^testing.T) {
 	backend := fs.JOURNAL_BACKEND
 	hn: fs.Journal_Txn_Handle
 	testing.expect(t, backend.begin(&vol, &hn), "begin N")
-	bad := fs.Cluster_Entry{state = {.Allocated}, allocation_size = 1}
+	bad := fs.Cluster_Entry {
+		state           = {.Allocated},
+		allocation_size = 1,
+	}
 	testing.expect(
 		t,
 		backend.add(&vol, &hn, fs.journal_entry_from_cluster_entry(bad, u64(0xFFFFFFFF), 0)),
@@ -124,7 +138,11 @@ test_journal_replay_stops_at_first_incomplete :: proc(t: ^testing.T) {
 
 	hv: fs.Journal_Txn_Handle
 	testing.expect(t, backend.begin(&vol, &hv), "begin N+1")
-	good := fs.Cluster_Entry{state = {.Allocated}, allocation_size = 1, sector_start = 0}
+	good := fs.Cluster_Entry {
+		state           = {.Allocated},
+		allocation_size = 1,
+		sector_start    = 0,
+	}
 	testing.expect(
 		t,
 		backend.add(&vol, &hv, fs.journal_entry_from_cluster_entry(good, u64(s_c), u8(s_j))),
@@ -236,7 +254,10 @@ test_journal_replay_aborts_on_bad_ce_index :: proc(t: ^testing.T) {
 	testing.expect(t, backend.begin(&vol, &hn), "begin N")
 	// Valid cluster (its table reads fine) but index one past the end:
 	// the replay guard is `>= len(table)`, so this is the boundary.
-	bad := fs.Cluster_Entry{state = {.Allocated}, allocation_size = 1}
+	bad := fs.Cluster_Entry {
+		state           = {.Allocated},
+		allocation_size = 1,
+	}
 	testing.expect(
 		t,
 		backend.add(
@@ -251,7 +272,11 @@ test_journal_replay_aborts_on_bad_ce_index :: proc(t: ^testing.T) {
 
 	hv: fs.Journal_Txn_Handle
 	testing.expect(t, backend.begin(&vol, &hv), "begin N+1")
-	good := fs.Cluster_Entry{state = {.Allocated}, allocation_size = 1, sector_start = 0}
+	good := fs.Cluster_Entry {
+		state           = {.Allocated},
+		allocation_size = 1,
+		sector_start    = 0,
+	}
 	testing.expect(
 		t,
 		backend.add(&vol, &hv, fs.journal_entry_from_cluster_entry(good, u64(s_c), u8(s_j))),

@@ -37,7 +37,11 @@ test_lfn_create_and_read :: proc(t: ^testing.T) {
 		t,
 		fs.write_directory_entry_at(
 			&vol,
-			fs.File_Identity{fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(rce.sector_start), 0},
+			fs.File_Identity {
+				fs.Cluster(vol.master.root_cluster),
+				fs.Sector_Offset(rce.sector_start),
+				0,
+			},
 			&entry,
 		) ==
 		.None,
@@ -79,7 +83,11 @@ test_resolve_path_extended_dir :: proc(t: ^testing.T) {
 			t,
 			fs.write_directory_entry_at(
 				&vol,
-				fs.File_Identity{fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(rce.sector_start), i},
+				fs.File_Identity {
+					fs.Cluster(vol.master.root_cluster),
+					fs.Sector_Offset(rce.sector_start),
+					i,
+				},
 				&entry,
 			) ==
 			.None,
@@ -187,7 +195,11 @@ test_resolve_lfn_actual_resolution :: proc(t: ^testing.T) {
 		t,
 		fs.write_directory_entry_at(
 			&vol,
-			fs.File_Identity{fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(rce.sector_start), 1},
+			fs.File_Identity {
+				fs.Cluster(vol.master.root_cluster),
+				fs.Sector_Offset(rce.sector_start),
+				1,
+			},
 			&entry,
 		) ==
 		.None,

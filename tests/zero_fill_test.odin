@@ -10,7 +10,6 @@
 package tests
 
 import "core:c"
-import "core:os"
 import "core:sys/posix"
 import "core:testing"
 import "src:fs"
@@ -178,7 +177,10 @@ test_write_buf_past_eof_zeroes_gap :: proc(t: ^testing.T) {
 	data := "0123456789"
 	bv: fuse3.Bufvec
 	bv.count = 1
-	bv._buf[0] = fuse3.Buf{size = c.size_t(len(data)), mem = rawptr(raw_data(data))}
+	bv._buf[0] = fuse3.Buf {
+		size = c.size_t(len(data)),
+		mem  = rawptr(raw_data(data)),
+	}
 	rc = mounter.fused_write_buf("/v5", &bv, 800, &fi)
 	testing.expect_value(t, rc, c.int(len(data)))
 

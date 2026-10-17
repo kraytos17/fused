@@ -12,7 +12,6 @@
 #+build linux
 package tests
 
-import "core:os"
 import "core:testing"
 import "src:fs"
 
@@ -99,7 +98,11 @@ test_truncate_at_extent_boundary :: proc(t: ^testing.T) {
 	terr := fs.truncate_chain_at(&vol, chead, s1)
 	testing.expect_value(t, terr, fs.FS_Error.None)
 	if terr != .None { return }
-	testing.expect(t, u64(fs.journal_seq_get(&vol.master)) - seq0 >= 2, "detach + free journal separately")
+	testing.expect(
+		t,
+		u64(fs.journal_seq_get(&vol.master)) - seq0 >= 2,
+		"detach + free journal separately",
+	)
 
 	e1, _ := fs.find_cluster_entry(&vol, chead.cluster, chead.offset)
 	testing.expect(t, e1.next_cluster == 0, "predecessor detached")
@@ -128,7 +131,11 @@ test_truncate_within_extent :: proc(t: ^testing.T) {
 	terr := fs.truncate_chain_at(&vol, chead, s1 + s2 - 2)
 	testing.expect_value(t, terr, fs.FS_Error.None)
 	if terr != .None { return }
-	testing.expect(t, u64(fs.journal_seq_get(&vol.master)) - seq0 >= 2, "shrink + free journal separately")
+	testing.expect(
+		t,
+		u64(fs.journal_seq_get(&vol.master)) - seq0 >= 2,
+		"shrink + free journal separately",
+	)
 
 	e1, _ := fs.find_cluster_entry(&vol, chead.cluster, chead.offset)
 	testing.expect(t, u64(e1.next_cluster) == u64(e2loc.cluster), "link to e2 kept")

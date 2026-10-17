@@ -152,11 +152,7 @@ test_recover_replays_committed_txn :: proc(t: ^testing.T) {
 	testing.expect_value(t, after[s_j].allocation_size, crafted.allocation_size)
 
 	// Restore the scratch slot; the test image must be undisturbed.
-	testing.expect_value(
-		t,
-		fs.write_cluster_entry_table(&vol, s_c, &saved),
-		fs.FS_Error.None,
-	)
+	testing.expect_value(t, fs.write_cluster_entry_table(&vol, s_c, &saved), fs.FS_Error.None)
 	check: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
 	testing.expect_value(t, fs.read_cluster_entry_table(&vol, s_c, &check), fs.FS_Error.None)
 	testing.expect(t, check[s_j].state == empty, "slot restored")

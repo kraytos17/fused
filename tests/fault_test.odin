@@ -482,7 +482,7 @@ test_fault_recover_aborts_on_record_read :: proc(t: ^testing.T) {
 
 	// Commit the chunk, fail the home-table write: logged but unapplied,
 	// watermark held, seq advanced once.
-	vol.fault = fs.IO_Fault{
+	vol.fault = fs.IO_Fault {
 		enabled           = true,
 		fail_reads_after  = max(u64),
 		fail_writes_after = 2,
@@ -560,7 +560,7 @@ test_fault_recover_aborts_on_home_read :: proc(t: ^testing.T) {
 
 	// Commit the chunk, fail the home-table write: logged but unapplied,
 	// watermark held, seq advanced once.
-	vol.fault = fs.IO_Fault{
+	vol.fault = fs.IO_Fault {
 		enabled           = true,
 		fail_reads_after  = max(u64),
 		fail_writes_after = 2,
@@ -637,7 +637,7 @@ test_fault_commit_header_write_leaves_nothing :: proc(t: ^testing.T) {
 
 	// Budget: 1 record write lands, the records sync lands, then the
 	// header write fails. Home is never touched; no finish runs.
-	vol.fault = fs.IO_Fault{
+	vol.fault = fs.IO_Fault {
 		enabled           = true,
 		fail_reads_after  = max(u64),
 		fail_writes_after = 1,
@@ -700,7 +700,7 @@ test_fault_recover_scan_read_error_fails :: proc(t: ^testing.T) {
 
 	// Commit the chunk, fail the home-table write: logged but unapplied,
 	// watermark held, seq advanced once.
-	vol.fault = fs.IO_Fault{
+	vol.fault = fs.IO_Fault {
 		enabled           = true,
 		fail_reads_after  = max(u64),
 		fail_writes_after = 2,

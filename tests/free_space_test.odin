@@ -14,7 +14,6 @@
 #+build linux
 package tests
 
-import "core:os"
 import "core:testing"
 import "src:fs"
 
@@ -121,11 +120,7 @@ test_free_count_ignores_full_clusters :: proc(t: ^testing.T) {
 	testing.expect_value(t, fs.read_cluster_entry_table(&vol, hc, &ctable), fs.FS_Error.None)
 	expected_drop := cluster_free_count(u64(vol.master.cluster_size), cme.sector_index, &ctable)
 	cme.flags += {.Full}
-	testing.expect_value(
-		t,
-		fs.write_cluster_map_entry(&vol, hc, &cme),
-		fs.FS_Error.None,
-	)
+	testing.expect_value(t, fs.write_cluster_map_entry(&vol, hc, &cme), fs.FS_Error.None)
 
 	f1 := fs.alloc_cache_count_free(&vol)
 	testing.expect_value(t, f1, slow_free_scan(t, &vol))

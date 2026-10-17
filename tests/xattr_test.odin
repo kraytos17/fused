@@ -34,7 +34,11 @@ test_xattr_roundtrip :: proc(t: ^testing.T) {
 	testing.expect_value(t, entry.xattr_cluster != 0, true)
 	testing.expect(
 		t,
-		fs.write_directory_entry_at(&vol, fs.File_Identity{res.cluster, res.offset, res.entry_index}, &entry) ==
+		fs.write_directory_entry_at(
+			&vol,
+			fs.File_Identity{res.cluster, res.offset, res.entry_index},
+			&entry,
+		) ==
 		.None,
 		"persist entry",
 	)
@@ -78,7 +82,11 @@ test_xattr_roundtrip :: proc(t: ^testing.T) {
 	testing.expect_value(t, rerr, fs.FS_Error.None)
 	testing.expect(
 		t,
-		fs.write_directory_entry_at(&vol, fs.File_Identity{res.cluster, res.offset, res.entry_index}, &entry3) ==
+		fs.write_directory_entry_at(
+			&vol,
+			fs.File_Identity{res.cluster, res.offset, res.entry_index},
+			&entry3,
+		) ==
 		.None,
 		"persist after remove",
 	)
@@ -97,7 +105,11 @@ test_xattr_roundtrip :: proc(t: ^testing.T) {
 	testing.expect_value(t, entry3.xattr_cluster, u64(0))
 	testing.expect(
 		t,
-		fs.write_directory_entry_at(&vol, fs.File_Identity{res.cluster, res.offset, res.entry_index}, &entry3) ==
+		fs.write_directory_entry_at(
+			&vol,
+			fs.File_Identity{res.cluster, res.offset, res.entry_index},
+			&entry3,
+		) ==
 		.None,
 		"persist clear",
 	)
@@ -127,7 +139,11 @@ test_xattr_large_value :: proc(t: ^testing.T) {
 	testing.expect_value(t, serr, fs.FS_Error.None)
 	testing.expect(
 		t,
-		fs.write_directory_entry_at(&vol, fs.File_Identity{res.cluster, res.offset, res.entry_index}, &entry) ==
+		fs.write_directory_entry_at(
+			&vol,
+			fs.File_Identity{res.cluster, res.offset, res.entry_index},
+			&entry,
+		) ==
 		.None,
 		"persist entry",
 	)
@@ -150,7 +166,11 @@ test_xattr_large_value :: proc(t: ^testing.T) {
 	testing.expect_value(t, entry.xattr_cluster, u64(0))
 	testing.expect(
 		t,
-		fs.write_directory_entry_at(&vol, fs.File_Identity{res.cluster, res.offset, res.entry_index}, &entry) ==
+		fs.write_directory_entry_at(
+			&vol,
+			fs.File_Identity{res.cluster, res.offset, res.entry_index},
+			&entry,
+		) ==
 		.None,
 		"persist clear",
 	)
@@ -249,7 +269,9 @@ test_xattr_malformed_blob_rejected :: proc(t: ^testing.T) {
 	defer fs.deallocate_sectors(&vol, fs.Chain_Location{c, o})
 
 	// Control: the helper-built blob loads exactly one attribute.
-	entry := fs.Directory_Entry{xattr_cluster = u64(c)}
+	entry := fs.Directory_Entry {
+		xattr_cluster = u64(c),
+	}
 	loaded, lerr := fs.xattr_load(&vol, &entry)
 	testing.expect_value(t, lerr, fs.FS_Error.None)
 	testing.expect_value(t, len(loaded), 1)
@@ -262,7 +284,7 @@ test_xattr_malformed_blob_rejected :: proc(t: ^testing.T) {
 	cases := []struct {
 		label: string,
 		blob:  []u8,
-	}{
+	} {
 		{"truncated header", short},
 		{"bad magic", bad_magic},
 		{"count without record", head_only},
@@ -274,7 +296,9 @@ test_xattr_malformed_blob_rejected :: proc(t: ^testing.T) {
 		werr := fs.write_chain(&vol, fs.Chain_Location{c, o}, cs.blob)
 		testing.expect_value(t, werr, fs.FS_Error.None)
 		if werr != .None { continue }
-		bad_entry := fs.Directory_Entry{xattr_cluster = u64(c)}
+		bad_entry := fs.Directory_Entry {
+			xattr_cluster = u64(c),
+		}
 		attrs, derr := fs.xattr_load(&vol, &bad_entry)
 		testing.expectf(t, derr == fs.FS_Error.Corrupt_XAttr_Blob, "%s rejected", cs.label)
 		for &a in attrs {
@@ -307,7 +331,9 @@ test_xattr_malformed_blob_rejected :: proc(t: ^testing.T) {
 	tc, to, tok := xattr_plant_blob(t, &vol, torn)
 	if tok {
 		defer fs.deallocate_sectors(&vol, fs.Chain_Location{tc, to})
-		torn_entry := fs.Directory_Entry{xattr_cluster = u64(tc)}
+		torn_entry := fs.Directory_Entry {
+			xattr_cluster = u64(tc),
+		}
 		tattrs, terr := fs.xattr_load(&vol, &torn_entry)
 		testing.expect_value(t, terr, fs.FS_Error.Corrupt_XAttr_Blob)
 		testing.expect_value(t, len(tattrs), 0)
@@ -321,15 +347,14 @@ test_xattr_malformed_blob_rejected :: proc(t: ^testing.T) {
 		label: string,
 		blob:  []u8,
 		want:  int,
-	}{
-		{"trailing byte", trailing, 1},
-		{"payload under zero count", stray, 0},
-	}
+	}{{"trailing byte", trailing, 1}, {"payload under zero count", stray, 0}}
 	for &cs in padded {
 		werr := fs.write_chain(&vol, fs.Chain_Location{c, o}, cs.blob)
 		testing.expect_value(t, werr, fs.FS_Error.None)
 		if werr != .None { continue }
-		ok_entry := fs.Directory_Entry{xattr_cluster = u64(c)}
+		ok_entry := fs.Directory_Entry {
+			xattr_cluster = u64(c),
+		}
 		attrs, derr := fs.xattr_load(&vol, &ok_entry)
 		testing.expectf(t, derr == fs.FS_Error.None, "%s accepted", cs.label)
 		testing.expectf(t, len(attrs) == cs.want, "%s attr count", cs.label)
@@ -364,7 +389,9 @@ test_xattr_clear_defers_free :: proc(t: ^testing.T) {
 	testing.expect_value(t, entry.xattr_cluster, u64(0))
 
 	// Old chain still live and readable (not yet freed).
-	via_old := fs.Directory_Entry{xattr_cluster = cleared}
+	via_old := fs.Directory_Entry {
+		xattr_cluster = cleared,
+	}
 	loaded, lerr := fs.xattr_load(&vol, &via_old)
 	testing.expect_value(t, lerr, fs.FS_Error.None)
 	testing.expect_value(t, len(loaded), 1)
@@ -389,7 +416,7 @@ test_xattr_store_alloc_failure_keeps_old :: proc(t: ^testing.T) {
 	defer close_test_volume(&vol)
 
 	f0 := fs.alloc_cache_count_free(&vol)
-	vol.fault = fs.IO_Fault{
+	vol.fault = fs.IO_Fault {
 		enabled           = true,
 		fail_reads_after  = max(u64),
 		fail_writes_after = 0,
@@ -434,7 +461,9 @@ test_xattr_crash_window_sound :: proc(t: ^testing.T) {
 	testing.expect(t, c2 != 0 && c2 != c1, "V2 chain allocated")
 
 	// Old chain fully intact and readable.
-	via_old := fs.Directory_Entry{xattr_cluster = c1}
+	via_old := fs.Directory_Entry {
+		xattr_cluster = c1,
+	}
 	old_attrs, oerr := fs.xattr_load(&vol, &via_old)
 	testing.expect_value(t, oerr, fs.FS_Error.None)
 	testing.expect_value(t, len(old_attrs), 1)

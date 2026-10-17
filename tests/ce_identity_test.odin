@@ -12,7 +12,6 @@
 #+build linux
 package tests
 
-import "core:os"
 import "core:testing"
 import "src:fs"
 
@@ -54,11 +53,7 @@ test_deallocate_clears_allocated_slot :: proc(t: ^testing.T) {
 	crafted := live
 	crafted[1] = live[0]
 	crafted[0].state -= {.Allocated}
-	testing.expect_value(
-		t,
-		fs.write_cluster_entry_table(&vol, c, &crafted),
-		fs.FS_Error.None,
-	)
+	testing.expect_value(t, fs.write_cluster_entry_table(&vol, c, &crafted), fs.FS_Error.None)
 
 	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{c, o})
 	testing.expect_value(t, derr, fs.FS_Error.None)

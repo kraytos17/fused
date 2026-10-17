@@ -41,7 +41,7 @@ check_read_raw_table :: proc(
 		testing.expect_value(t, serr, fs.FS_Error.None)
 		return {}, false
 	}
-	raw := (^ [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry)(raw_data(buf[:]))
+	raw := (^[fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry)(raw_data(buf[:]))
 	return raw^, true
 }
 
@@ -58,7 +58,7 @@ check_write_raw_table :: proc(
 	if cerr != .None { return false }
 	sec := fs.sector_for(c, fs.Sector_Offset(cme.sector_index), vol.master.cluster_size)
 	buf: [fs.SECTOR_SIZE]u8
-	dst := (^ [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry)(raw_data(buf[:]))
+	dst := (^[fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry)(raw_data(buf[:]))
 	dst^ = table^
 	werr := fs.sector_write(vol, sec, buf[:])
 	testing.expect_value(t, werr, fs.FS_Error.None)
@@ -190,7 +190,7 @@ test_check_stale_cache_free_mismatch :: proc(t: ^testing.T) {
 			if clash { break }
 		}
 		if !clash {
-			table[dst] = fs.Cluster_Entry{
+			table[dst] = fs.Cluster_Entry {
 				state           = {.Allocated, .File_Content},
 				allocation_size = 1,
 				sector_start    = u16(s),
@@ -363,7 +363,7 @@ test_check_flag_combo :: proc(t: ^testing.T) {
 	// Reserved cluster 1 (never the root): flip on Allocated, keeping
 	// Reserved. Its table sector is zeroed by format, so no cascade.
 	rc := fs.Cluster(1)
-	cme, cerr := fs.read_cluster_map_entry(&vol, rc)
+	_, cerr := fs.read_cluster_map_entry(&vol, rc)
 	testing.expect_value(t, cerr, fs.FS_Error.None)
 	if cerr != .None { return }
 	sec := fs.Sector(vol.master.cluster_map_offset + u64(rc) / fs.CLUSTER_MAP_ENTRIES_PER_SECTOR)
@@ -372,7 +372,7 @@ test_check_flag_combo :: proc(t: ^testing.T) {
 		testing.expect_value(t, serr, fs.FS_Error.None)
 		return
 	}
-	entries := (^ [fs.CLUSTER_MAP_ENTRIES_PER_SECTOR]fs.Cluster_Map_Entry)(raw_data(buf[:]))
+	entries := (^[fs.CLUSTER_MAP_ENTRIES_PER_SECTOR]fs.Cluster_Map_Entry)(raw_data(buf[:]))
 	entries[u64(rc) % fs.CLUSTER_MAP_ENTRIES_PER_SECTOR].flags += {.Allocated}
 	if werr := fs.sector_write(&vol, sec, buf[:]); werr != .None {
 		testing.expect_value(t, werr, fs.FS_Error.None)
@@ -434,7 +434,11 @@ check_write_raw_dirent :: proc(
 check_free_dir_slot :: proc(t: ^testing.T, vol: ^fs.Volume) -> (int, bool) {
 	des := int(fs.dir_entry_size(vol.master.features))
 	for slot in 0 ..< 64 {
-		id := fs.File_Identity{fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(vol.master.root_sector_index), slot}
+		id := fs.File_Identity {
+			fs.Cluster(vol.master.root_cluster),
+			fs.Sector_Offset(vol.master.root_sector_index),
+			slot,
+		}
 		sec, idx, ferr := fs.entry_sector_for_index(vol, id)
 		if ferr != .None { return -1, false }
 		buf: [fs.SECTOR_SIZE]u8
@@ -448,7 +452,12 @@ check_free_dir_slot :: proc(t: ^testing.T, vol: ^fs.Volume) -> (int, bool) {
 }
 
 // check_make_dirent builds a regular-file entry for a chain head.
-check_make_dirent :: proc(name: string, c: fs.Cluster, o: fs.Sector_Offset, size: u64) -> fs.Directory_Entry {
+check_make_dirent :: proc(
+	name: string,
+	c: fs.Cluster,
+	o: fs.Sector_Offset,
+	size: u64,
+) -> fs.Directory_Entry {
 	e: fs.Directory_Entry
 	e.flags = {.Allocated, .Exists}
 	copy(e.file_name[:], name)
@@ -476,13 +485,27 @@ test_check_dup_name :: proc(t: ^testing.T) {
 	testing.expect(t, sok, "free slot found")
 	if !sok { return }
 	ea := check_make_dirent("dupfile", ha, oa, 512)
-	if !check_write_raw_dirent(t, &vol, vol.master.root_cluster, vol.master.root_sector_index, sa, &ea) { return }
+	if !check_write_raw_dirent(
+		t,
+		&vol,
+		vol.master.root_cluster,
+		vol.master.root_sector_index,
+		sa,
+		&ea,
+	) { return }
 	sb, sok2 := check_free_dir_slot(t, &vol)
 	testing.expect(t, sok2, "second free slot found")
 	if !sok2 { return }
 	testing.expect(t, sa != sb, "distinct slots")
 	eb := check_make_dirent("dupfile", hb, ob, 512)
-	if !check_write_raw_dirent(t, &vol, vol.master.root_cluster, vol.master.root_sector_index, sb, &eb) { return }
+	if !check_write_raw_dirent(
+		t,
+		&vol,
+		vol.master.root_cluster,
+		vol.master.root_sector_index,
+		sb,
+		&eb,
+	) { return }
 
 	r := fs.check_image(&vol)
 	defer fs.check_report_destroy(&r)
@@ -501,8 +524,20 @@ test_check_dir_head_bad :: proc(t: ^testing.T) {
 	sa, sok := check_free_dir_slot(t, &vol)
 	testing.expect(t, sok, "free slot found")
 	if !sok { return }
-	ea := check_make_dirent("badhead", fs.Cluster(u64(vol.master.cluster_map_size) + 5), fs.Sector_Offset(0), 512)
-	if !check_write_raw_dirent(t, &vol, vol.master.root_cluster, vol.master.root_sector_index, sa, &ea) { return }
+	ea := check_make_dirent(
+		"badhead",
+		fs.Cluster(u64(vol.master.cluster_map_size) + 5),
+		fs.Sector_Offset(0),
+		512,
+	)
+	if !check_write_raw_dirent(
+		t,
+		&vol,
+		vol.master.root_cluster,
+		vol.master.root_sector_index,
+		sa,
+		&ea,
+	) { return }
 
 	r := fs.check_image(&vol)
 	defer fs.check_report_destroy(&r)
@@ -523,9 +558,21 @@ test_check_dir_cycle :: proc(t: ^testing.T) {
 	if !sok { return }
 	// Subdirectory whose chain IS the root chain: walking root reaches
 	// itself as a child.
-	ea := check_make_dirent("sub", fs.Cluster(vol.master.root_cluster), fs.Sector_Offset(vol.master.root_sector_index), 512)
+	ea := check_make_dirent(
+		"sub",
+		fs.Cluster(vol.master.root_cluster),
+		fs.Sector_Offset(vol.master.root_sector_index),
+		512,
+	)
 	ea.flags += {.Directory}
-	if !check_write_raw_dirent(t, &vol, vol.master.root_cluster, vol.master.root_sector_index, sa, &ea) { return }
+	if !check_write_raw_dirent(
+		t,
+		&vol,
+		vol.master.root_cluster,
+		vol.master.root_sector_index,
+		sa,
+		&ea,
+	) { return }
 
 	r := fs.check_image(&vol)
 	defer fs.check_report_destroy(&r)
@@ -564,9 +611,19 @@ test_check_lfn_bad_pointer :: proc(t: ^testing.T) {
 	if !sok { return }
 	ea := check_make_dirent("x", fs.Cluster(0), fs.Sector_Offset(0), 0)
 	ea.flags += {.LFN}
-	ptr := fs.LFN_Pointer{cluster = u64(vol.master.cluster_map_size) + 5, size = 4}
+	ptr := fs.LFN_Pointer {
+		cluster = u64(vol.master.cluster_map_size) + 5,
+		size    = 4,
+	}
 	(^fs.LFN_Pointer)(&ea.file_name[0])^ = ptr
-	if !check_write_raw_dirent(t, &vol, vol.master.root_cluster, vol.master.root_sector_index, sa, &ea) { return }
+	if !check_write_raw_dirent(
+		t,
+		&vol,
+		vol.master.root_cluster,
+		vol.master.root_sector_index,
+		sa,
+		&ea,
+	) { return }
 
 	r := fs.check_image(&vol)
 	defer fs.check_report_destroy(&r)
@@ -590,7 +647,14 @@ test_check_xattr_dangling :: proc(t: ^testing.T) {
 	if aerr != .None { return }
 	ea := check_make_dirent("x", ha, oa, 512)
 	ea.xattr_cluster = u64(vol.master.cluster_map_size) + 5
-	if !check_write_raw_dirent(t, &vol, vol.master.root_cluster, vol.master.root_sector_index, sa, &ea) { return }
+	if !check_write_raw_dirent(
+		t,
+		&vol,
+		vol.master.root_cluster,
+		vol.master.root_sector_index,
+		sa,
+		&ea,
+	) { return }
 
 	r := fs.check_image(&vol)
 	defer fs.check_report_destroy(&r)
@@ -612,7 +676,14 @@ test_check_slot_state :: proc(t: ^testing.T) {
 	ea: fs.Directory_Entry
 	ea.flags = {.Exists}
 	copy(ea.file_name[:], "ghost")
-	if !check_write_raw_dirent(t, &vol, vol.master.root_cluster, vol.master.root_sector_index, sa, &ea) { return }
+	if !check_write_raw_dirent(
+		t,
+		&vol,
+		vol.master.root_cluster,
+		vol.master.root_sector_index,
+		sa,
+		&ea,
+	) { return }
 
 	r := fs.check_image(&vol)
 	defer fs.check_report_destroy(&r)
@@ -639,7 +710,12 @@ test_check_resolve_lfn_guards :: proc(t: ^testing.T) {
 	mkentry := proc(cluster: u64, size: u32, sector: u16, pad: u16) -> fs.Directory_Entry {
 		e: fs.Directory_Entry
 		e.flags = {.Allocated, .Exists, .LFN}
-		ptr := fs.LFN_Pointer{cluster = cluster, size = size, sector = sector, _pad = pad}
+		ptr := fs.LFN_Pointer {
+			cluster = cluster,
+			size    = size,
+			sector  = sector,
+			_pad    = pad,
+		}
 		(^fs.LFN_Pointer)(&e.file_name[0])^ = ptr
 		return e
 	}
@@ -734,7 +810,7 @@ test_volume_open_readonly_skips_recovery :: proc(t: ^testing.T) {
 
 	// Dirty the journal: an allocation's last chunk stays pending until
 	// a checkpoint finishes it.
-	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
+	_, _, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
 	testing.expect_value(t, aerr, fs.FS_Error.None)
 	if aerr != .None {
 		close_test_volume(&vol)

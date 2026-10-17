@@ -23,10 +23,9 @@
 #+build linux
 package tests
 
+import "base:runtime"
 import "core:c"
 import "core:fmt"
-import "core:os"
-import "base:runtime"
 import "core:strings"
 import "core:sys/posix"
 import "core:testing"
@@ -248,7 +247,14 @@ prop_verify_dir :: proc(
 		}
 	}
 	if list.count != len(want) {
-		testing.expectf(t, false, "readdir dir %d: got %d entries, want %d", dir, list.count, len(want))
+		testing.expectf(
+			t,
+			false,
+			"readdir dir %d: got %d entries, want %d",
+			dir,
+			list.count,
+			len(want),
+		)
 		return false
 	}
 	for i in 0 ..< list.count {
@@ -305,7 +311,9 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 	// Entity ids start at 1: id 0 is the implicit root, so no real
 	// file or directory may claim it (path formatting keys off 0).
 	next_id := 1
-	rng := Prop_Rng{s = PROP_SEED}
+	rng := Prop_Rng {
+		s = PROP_SEED,
+	}
 
 	for op := 0; op < PROP_OPS && !failed; op += 1 {
 		choice := prop_below(&rng, 100)
@@ -422,18 +430,36 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			if T == dirs[di].parent {
 				log_op(&oolog, fmt.tprintf("op %d: dirmove %d no-op (same parent)", op, D))
 				if rc := mounter.fused_rename(old, new, 0); rc != -c.int(posix.EISDIR) {
-					testing.expectf(t, false, "op %d: dirmove no-op want=-EISDIR got=%d", op, int(rc))
+					testing.expectf(
+						t,
+						false,
+						"op %d: dirmove no-op want=-EISDIR got=%d",
+						op,
+						int(rc),
+					)
 					failed = true
 				}
 			} else if prop_is_descendant(dirs, D, T) {
 				log_op(&oolog, fmt.tprintf("op %d: dirmove %d -> dir %d (circular)", op, D, T))
 				if rc := mounter.fused_rename(old, new, 0); rc != -c.int(posix.EINVAL) {
-					testing.expectf(t, false, "op %d: dirmove circular want=-EINVAL got=%d", op, int(rc))
+					testing.expectf(
+						t,
+						false,
+						"op %d: dirmove circular want=-EINVAL got=%d",
+						op,
+						int(rc),
+					)
 					failed = true
 					continue
 				}
 				if rc := mounter.fused_getattr(old, &st, nil); rc != 0 {
-					testing.expectf(t, false, "op %d: moved-away source still resolves rc=%d", op, int(rc))
+					testing.expectf(
+						t,
+						false,
+						"op %d: moved-away source still resolves rc=%d",
+						op,
+						int(rc),
+					)
 					failed = true
 				}
 			} else {
@@ -485,7 +511,10 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 				}
 				tbuf[n] = 0
 				f.target = strings.clone(string(tbuf[:n]))
-				log_op(&oolog, fmt.tprintf("op %d: symlink %d -> %d bytes in dir %d", op, id, n, parent))
+				log_op(
+					&oolog,
+					fmt.tprintf("op %d: symlink %d -> %d bytes in dir %d", op, id, n, parent),
+				)
 				if rc := mounter.fused_symlink(cstring(raw_data(tbuf[:])), p); rc != 0 {
 					testing.expect(t, false, oolog[len(oolog) - 1])
 					failed = true
@@ -568,7 +597,8 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			if f.is_link {
 				lbuf: [1024]u8
 				log_op(&oolog, fmt.tprintf("op %d: readlink %d", op, f.id))
-				if rc := mounter.fused_readlink(p, raw_data(lbuf[:]), c.size_t(len(lbuf))); rc != 0 {
+				if rc := mounter.fused_readlink(p, raw_data(lbuf[:]), c.size_t(len(lbuf)));
+				   rc != 0 {
 					testing.expectf(t, false, "op %d: readlink %d rc=%d", op, f.id, int(rc))
 					failed = true
 					continue
@@ -591,7 +621,17 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			log_op(&oolog, fmt.tprintf("op %d: read %d off=%d n=%d", op, f.id, off, n))
 			got := mounter.fused_read(p, raw_data(buf), c.size_t(n), posix.off_t(off), &f.fi)
 			if int(got) != want_len || !bytes_equal(buf[:int(got)], f.data[off:off + want_len]) {
-				testing.expectf(t, false, "op %d: read %d off=%d n=%d want=%d got=%d", op, f.id, off, n, want_len, int(got))
+				testing.expectf(
+					t,
+					false,
+					"op %d: read %d off=%d n=%d want=%d got=%d",
+					op,
+					f.id,
+					off,
+					n,
+					want_len,
+					int(got),
+				)
 				failed = true
 			}
 		} else if choice < 73 && len(files) > 0 {
@@ -713,7 +753,8 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 					val[i] = u8(prop_next(&rng) & 0xff)
 				}
 				log_op(&oolog, fmt.tprintf("op %d: setxattr %d len=%d", op, f.id, n))
-				if rc := mounter.fused_setxattr(path, "user.k", raw_data(val), c.size_t(n), 0); rc != 0 {
+				if rc := mounter.fused_setxattr(path, "user.k", raw_data(val), c.size_t(n), 0);
+				   rc != 0 {
 					testing.expect(t, false, oolog[len(oolog) - 1])
 					failed = true
 					continue
@@ -737,11 +778,26 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			got := mounter.fused_getxattr(path, "user.k", raw_data(probe), c.size_t(len(probe)))
 			if f.has_xattr {
 				if int(got) != len(f.xattr) || !bytes_equal(probe[:int(got)], f.xattr[:]) {
-					testing.expectf(t, false, "op %d: getxattr %d want=%d got=%d", op, f.id, len(f.xattr), int(got))
+					testing.expectf(
+						t,
+						false,
+						"op %d: getxattr %d want=%d got=%d",
+						op,
+						f.id,
+						len(f.xattr),
+						int(got),
+					)
 					failed = true
 				}
 			} else if got != -c.int(posix.ENODATA) {
-				testing.expectf(t, false, "op %d: getxattr %d after remove want=-ENODATA got=%d", op, f.id, int(got))
+				testing.expectf(
+					t,
+					false,
+					"op %d: getxattr %d after remove want=-ENODATA got=%d",
+					op,
+					f.id,
+					int(got),
+				)
 				failed = true
 			}
 		}
@@ -763,7 +819,11 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			lbuf: [1024]u8
 			rc := mounter.fused_readlink(path, raw_data(lbuf[:]), c.size_t(len(lbuf)))
 			testing.expect(t, rc == 0, "final readlink ok")
-			testing.expect(t, string(lbuf[:len(f.target)]) == f.target, "final target matches model")
+			testing.expect(
+				t,
+				string(lbuf[:len(f.target)]) == f.target,
+				"final target matches model",
+			)
 			testing.expect(t, lbuf[len(f.target)] == 0, "final target NUL-terminated")
 			continue
 		}

@@ -3,7 +3,6 @@
 #+build linux
 package tests
 
-import "core:os"
 import "core:strings"
 import "core:testing"
 import "src:fs"

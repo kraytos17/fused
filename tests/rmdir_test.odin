@@ -46,7 +46,11 @@ test_rmdir_data_read_fails_is_eio :: proc(t: ^testing.T) {
 
 	fsys: mounter.FS
 	mounter.init_fs_for_test(&fsys, vol)
-	ctx := fuse3.Context{uid = 1000, gid = 1000, private_data = &fsys}
+	ctx := fuse3.Context {
+		uid          = 1000,
+		gid          = 1000,
+		private_data = &fsys,
+	}
 	fuse3.set_test_context(&ctx)
 	defer {
 		v := fsys.vol
@@ -103,7 +107,11 @@ test_rmdir_data_read_fails_is_eio :: proc(t: ^testing.T) {
 	ctable: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
 	testing.expect_value(
 		t,
-		fs.read_cluster_entry_table(&fsys.vol, fs.Cluster(u64(smax) / fsys.vol.master.cluster_size), &ctable),
+		fs.read_cluster_entry_table(
+			&fsys.vol,
+			fs.Cluster(u64(smax) / fsys.vol.master.cluster_size),
+			&ctable,
+		),
 		fs.FS_Error.None,
 	)
 

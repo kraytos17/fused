@@ -160,7 +160,11 @@ test_directory_entry_persistence :: proc(t: ^testing.T) {
 	testing.expect(t, name == "HELLO", "entry name matches")
 
 	re.flags -= {.Exists, .Allocated}
-	fs.write_directory_entry_at(&vol, fs.File_Identity{root_cluster, fs.Sector_Offset(dir_sector), free_idx}, &re)
+	fs.write_directory_entry_at(
+		&vol,
+		fs.File_Identity{root_cluster, fs.Sector_Offset(dir_sector), free_idx},
+		&re,
+	)
 	derr := fs.deallocate_sectors(&vol, fs.Chain_Location{fc, fo})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
@@ -490,7 +494,12 @@ test_chain_extension_from_nonzero :: proc(t: ^testing.T) {
 	for r in runs { total += u64(r.count) }
 
 	testing.expect_value(t, total, u64(10))
-	fc3, fo3, aerr3 := fs.allocate_sectors(&vol, fs.Chain_Location{fc, fo}, vol.master.cluster_size, .File_Content)
+	fc3, fo3, aerr3 := fs.allocate_sectors(
+		&vol,
+		fs.Chain_Location{fc, fo},
+		vol.master.cluster_size,
+		.File_Content,
+	)
 
 	testing.expect_value(t, aerr3, fs.FS_Error.None)
 	testing.expect_value(t, fc, fc3)

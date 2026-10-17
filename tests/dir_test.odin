@@ -44,7 +44,11 @@ test_dir_many_entries_across_extents :: proc(t: ^testing.T) {
 		}
 		copy(e.file_name[:], name)
 		e.file_name[min(15, len(name))] = 0
-		fs.write_directory_entry_at(vol, fs.File_Identity{dc, fs.Sector_Offset(ce.sector_start), didx}, &e)
+		fs.write_directory_entry_at(
+			vol,
+			fs.File_Identity{dc, fs.Sector_Offset(ce.sector_start), didx},
+			&e,
+		)
 	}
 
 	// Write entries to fill the first sector (9 entries, rev 5 format)
@@ -71,7 +75,12 @@ test_dir_many_entries_across_extents :: proc(t: ^testing.T) {
 	// Need at least existing_total + 1 sectors; the two extra entries may already
 	// have triggered extension if they went past the first sector.
 	if existing_total == 1 {
-		_, _, ext_err := fs.allocate_sectors(&vol, fs.Chain_Location{dc, d_o}, existing_total + 1, .Directory)
+		_, _, ext_err := fs.allocate_sectors(
+			&vol,
+			fs.Chain_Location{dc, d_o},
+			existing_total + 1,
+			.Directory,
+		)
 		testing.expect_value(t, ext_err, fs.FS_Error.None)
 	}
 
@@ -170,7 +179,11 @@ test_dir_reuse_slot_in_extended_sector :: proc(t: ^testing.T) {
 	}
 	for i in 0 ..< fs.DIR_ENTRIES_PER_SECTOR {
 		copy(e.file_name[:], fmt.tprintf("F%d", i))
-		fs.write_directory_entry_at(&vol, fs.File_Identity{dc, fs.Sector_Offset(ce.sector_start), i}, &e)
+		fs.write_directory_entry_at(
+			&vol,
+			fs.File_Identity{dc, fs.Sector_Offset(ce.sector_start), i},
+			&e,
+		)
 	}
 
 	// Extend
@@ -191,7 +204,11 @@ test_dir_reuse_slot_in_extended_sector :: proc(t: ^testing.T) {
 	// Write one entry in the new sector, then free it
 	fs.write_directory_entry_at(
 		&vol,
-		fs.File_Identity{dc, fs.Sector_Offset(u64(last_sec) - u64(dc) * vol.master.cluster_size), 0},
+		fs.File_Identity {
+			dc,
+			fs.Sector_Offset(u64(last_sec) - u64(dc) * vol.master.cluster_size),
+			0,
+		},
 		&e,
 	)
 	buf: [fs.SECTOR_SIZE]u8
@@ -254,7 +271,11 @@ test_dir_rename_to_extended_target :: proc(t: ^testing.T) {
 	}
 	copy(fe.file_name[:], "MOVEME")
 	fe.file_name[6] = 0
-	fs.write_directory_entry_at(&vol, fs.File_Identity{src_c, fs.Sector_Offset(src_ce.sector_start), 0}, &fe)
+	fs.write_directory_entry_at(
+		&vol,
+		fs.File_Identity{src_c, fs.Sector_Offset(src_ce.sector_start), 0},
+		&fe,
+	)
 
 	// Create dst dir and fill its first sector
 	dst_c, dst_o, derr2 := fs.allocate_sectors(&vol, {}, 1, .Directory)
@@ -273,7 +294,11 @@ test_dir_rename_to_extended_target :: proc(t: ^testing.T) {
 		nm := fmt.tprintf("D%d", i)
 		copy(dst_e.file_name[:], nm)
 		dst_e.file_name[min(15, len(nm))] = 0
-		fs.write_directory_entry_at(&vol, fs.File_Identity{dst_c, fs.Sector_Offset(dst_ce.sector_start), i}, &dst_e)
+		fs.write_directory_entry_at(
+			&vol,
+			fs.File_Identity{dst_c, fs.Sector_Offset(dst_ce.sector_start), i},
+			&dst_e,
+		)
 	}
 
 	// Extend dst dir
@@ -303,7 +328,11 @@ test_dir_rename_to_extended_target :: proc(t: ^testing.T) {
 					// Found free slot in dst — write the moved entry here
 					fs.write_directory_entry_at(
 						&vol,
-						fs.File_Identity{dst_c, fs.Sector_Offset(u64(s) - u64(dst_c) * vol.master.cluster_size), j},
+						fs.File_Identity {
+							dst_c,
+							fs.Sector_Offset(u64(s) - u64(dst_c) * vol.master.cluster_size),
+							j,
+						},
 						&fe,
 					)
 					found_free = true
@@ -376,7 +405,9 @@ test_dir_cache_hit_and_invalidate :: proc(t: ^testing.T) {
 	delete(e0)
 
 	// Slip an entry in behind the cache's back.
-	sneak := fs.Directory_Entry{flags = {.Allocated, .Exists}}
+	sneak := fs.Directory_Entry {
+		flags = {.Allocated, .Exists},
+	}
 	copy(sneak.file_name[:], "SNEAK")
 	sneak.file_name[5] = 0
 	buf: [fs.SECTOR_SIZE]u8
@@ -432,7 +463,9 @@ test_dir_cache_evicts_at_cap :: proc(t: ^testing.T) {
 	// locs[0] no longer fits: slip an entry in and re-read. A miss
 	// rebuilds fresh; a stale empty listing would mean eviction failed.
 	sec0 := fs.Sector(u64(locs[0].cluster) * vol.master.cluster_size + u64(locs[0].offset))
-	sneak := fs.Directory_Entry{flags = {.Allocated, .Exists}}
+	sneak := fs.Directory_Entry {
+		flags = {.Allocated, .Exists},
+	}
 	copy(sneak.file_name[:], "EVICT")
 	sneak.file_name[5] = 0
 	buf: [fs.SECTOR_SIZE]u8
@@ -496,7 +529,9 @@ test_dir_cache_drop_covers_extended_sectors :: proc(t: ^testing.T) {
 	dsec := fs.Sector_Offset(u64(last_sec) - u64(dlc) * vol.master.cluster_size)
 	testing.expect(t, dlc != dc || dsec != d_o, "far sector differs from head")
 
-	sneak := fs.Directory_Entry{flags = {.Allocated, .Exists}}
+	sneak := fs.Directory_Entry {
+		flags = {.Allocated, .Exists},
+	}
 	copy(sneak.file_name[:], "FAR")
 	sneak.file_name[3] = 0
 	testing.expect(
@@ -514,7 +549,11 @@ test_dir_cache_drop_covers_extended_sectors :: proc(t: ^testing.T) {
 		testing.expect(t, fs.entry_short_name(&e1[0].entry) == "FAR", "name")
 		total := 0
 		for r in runs { total += int(r.count) }
-		testing.expect(t, e1[0].index == (total-1)*fs.DIR_ENTRIES_PER_SECTOR+3, "far slot index")
+		testing.expect(
+			t,
+			e1[0].index == (total - 1) * fs.DIR_ENTRIES_PER_SECTOR + 3,
+			"far slot index",
+		)
 	}
 	delete(e1)
 }

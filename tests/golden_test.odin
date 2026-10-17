@@ -35,27 +35,49 @@ Golden_Image :: struct {
 
 GOLDENS := [2]Golden_Image {
 	{
-		rev_min = 7, rev_max = 7,
+		rev_min = 7,
+		rev_max = 7,
 		full = 0x64359bbc07aa41a6,
 		chunks = {
 			0xbde039a20ac241a6,
-			0xeb05052ea5b62325, 0xeb05052ea5b62325, 0xeb05052ea5b62325,
-			0xeb05052ea5b62325, 0xeb05052ea5b62325, 0xeb05052ea5b62325,
-			0xeb05052ea5b62325, 0xeb05052ea5b62325, 0xeb05052ea5b62325,
-			0xeb05052ea5b62325, 0xeb05052ea5b62325, 0xeb05052ea5b62325,
-			0xeb05052ea5b62325, 0xeb05052ea5b62325, 0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
 		},
 	},
 	{
-		rev_min = 8, rev_max = 8,
+		rev_min = 8,
+		rev_max = 8,
 		full = 0xf6380274d5fe82ec,
 		chunks = {
 			0xa7062bec92ae82ec,
-			0xeb05052ea5b62325, 0xeb05052ea5b62325, 0xeb05052ea5b62325,
-			0xeb05052ea5b62325, 0xeb05052ea5b62325, 0xeb05052ea5b62325,
-			0xeb05052ea5b62325, 0xeb05052ea5b62325, 0xeb05052ea5b62325,
-			0xeb05052ea5b62325, 0xeb05052ea5b62325, 0xeb05052ea5b62325,
-			0xeb05052ea5b62325, 0xeb05052ea5b62325, 0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
+			0xeb05052ea5b62325,
 		},
 	},
 }
@@ -83,7 +105,11 @@ golden_format :: proc(t: ^testing.T, rev_min, rev_max: u8) -> bool {
 	return ferr2 == .None
 }
 
-golden_hash_image :: proc(t: ^testing.T, full: ^u64, chunks: ^[GOLDEN_SIZE / GOLDEN_CHUNK]u64) -> bool {
+golden_hash_image :: proc(
+	t: ^testing.T,
+	full: ^u64,
+	chunks: ^[GOLDEN_SIZE / GOLDEN_CHUNK]u64,
+) -> bool {
 	data, rerr := os.read_entire_file(GOLDEN_SCRATCH, context.allocator)
 	if rerr != nil {
 		testing.expect(t, false, "read golden image")
@@ -113,17 +139,34 @@ test_golden_format_bytes :: proc(t: ^testing.T) {
 		testing.expect_value(t, rerr, nil)
 		if rerr == nil && len(raw) >= fs.SECTOR_SIZE {
 			master := (^fs.Master_Record)(raw_data(raw[:fs.SECTOR_SIZE]))^
-			testing.expect_value(t, fs.validate_master(&master, fs.Byte_Offset(len(raw))), fs.FS_Error.None)
+			testing.expect_value(
+				t,
+				fs.validate_master(&master, fs.Byte_Offset(len(raw))),
+				fs.FS_Error.None,
+			)
 		}
 
 		full: u64
 		chunks: [GOLDEN_SIZE / GOLDEN_CHUNK]u64
 		if !golden_hash_image(t, &full, &chunks) { continue }
 		if full != g.full {
-			fmt.println("GOLDEN MISMATCH rev", g.rev_min, ": full", fmt.tprintf("%16x", full), "want", fmt.tprintf("%16x", g.full))
+			fmt.println(
+				"GOLDEN MISMATCH rev",
+				g.rev_min,
+				": full",
+				fmt.tprintf("%16x", full),
+				"want",
+				fmt.tprintf("%16x", g.full),
+			)
 			for i in 0 ..< len(chunks) {
 				if chunks[i] != g.chunks[i] {
-					fmt.println("  first differing chunk:", i, "(offset", fmt.tprintf("0x%x", i * GOLDEN_CHUNK), ")")
+					fmt.println(
+						"  first differing chunk:",
+						i,
+						"(offset",
+						fmt.tprintf("0x%x", i * GOLDEN_CHUNK),
+						")",
+					)
 					break
 				}
 			}
@@ -136,7 +179,13 @@ test_golden_format_bytes :: proc(t: ^testing.T) {
 			// remove then finds nothing to delete).
 			keep := fmt.tprintf("%s.rev%d.keep", GOLDEN_SCRATCH, g.rev_min)
 			os.rename(GOLDEN_SCRATCH, keep)
-			testing.expectf(t, false, "golden bytes drifted for rev %d (image kept at %s)", g.rev_min, keep)
+			testing.expectf(
+				t,
+				false,
+				"golden bytes drifted for rev %d (image kept at %s)",
+				g.rev_min,
+				keep,
+			)
 			continue
 		}
 		testing.expect(t, true, "golden matches")

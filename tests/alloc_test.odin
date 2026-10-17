@@ -5,7 +5,6 @@
 #+build linux
 package tests
 
-import "core:os"
 import "core:testing"
 import "src:fs"
 

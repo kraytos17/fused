@@ -95,8 +95,8 @@ scratch_fs :: proc(t: ^testing.T, path: string, fsys: ^mounter.FS) -> bool {
 	fsys^ = {}
 	mounter.init_fs_for_test(fsys, vol)
 	ctx := fuse3.Context {
-		uid        = 1000,
-		gid        = 1000,
+		uid          = 1000,
+		gid          = 1000,
 		private_data = fsys,
 	}
 	fuse3.set_test_context(&ctx)

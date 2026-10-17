@@ -266,7 +266,11 @@ test_mount_truncate_zero_then_grow :: proc(t: ^testing.T) {
 	for i in 0 ..< len(buf) { buf[i] = 0xAA }
 	rc = mounter.fused_read("/zfile", raw_data(buf), 8, 0, &fi)
 	testing.expect_value(t, rc, 8)
-	testing.expect(t, string(buf[:8]) == "\x00\x00\x00\x00\x00\x00\x00\x00", "grown region is zero-filled")
+	testing.expect(
+		t,
+		string(buf[:8]) == "\x00\x00\x00\x00\x00\x00\x00\x00",
+		"grown region is zero-filled",
+	)
 
 	// And a write past the old EOF lands exactly.
 	rc = mounter.fused_write("/zfile", raw_data(data), c.size_t(len(data)), 0, &fi)
@@ -483,11 +487,23 @@ test_mount_xattr :: proc(t: ^testing.T) {
 
 	// CREATE on existing → EEXIST. The ABI word is built from the typed
 	// set (positions transmute back to wire values), never spelled raw.
-	rc = mounter.fused_setxattr("/Kernel", "user.color", raw_data(blue), 4, transmute(c.int)(fuse3.Xattr_Flags{.Create}))
+	rc = mounter.fused_setxattr(
+		"/Kernel",
+		"user.color",
+		raw_data(blue),
+		4,
+		transmute(c.int)(fuse3.Xattr_Flags{.Create}),
+	)
 	expect_errno(t, rc, .EEXIST)
 
 	// REPLACE on missing → ENODATA.
-	rc = mounter.fused_setxattr("/Kernel", "user.nope", raw_data(one_char), 1, transmute(c.int)(fuse3.Xattr_Flags{.Replace}))
+	rc = mounter.fused_setxattr(
+		"/Kernel",
+		"user.nope",
+		raw_data(one_char),
+		1,
+		transmute(c.int)(fuse3.Xattr_Flags{.Replace}),
+	)
 	expect_errno(t, rc, .ENODATA)
 
 	// List.
@@ -660,7 +676,7 @@ test_mount_write_buf_fd_backed_partial_is_eio :: proc(t: ^testing.T) {
 
 	bv: fuse3.Bufvec
 	bv.count = 1
-	bv._buf[0] = fuse3.Buf{
+	bv._buf[0] = fuse3.Buf {
 		size  = 10,
 		flags = {.Is_Fd},
 		fd    = -1,
@@ -742,10 +758,19 @@ test_mount_negative_offsets_are_einval :: proc(t: ^testing.T) {
 // entries per directory. Identical triples still match.
 @(test)
 test_lfn_cache_key_distinct :: proc(t: ^testing.T) {
-	a := mounter.Lfn_Cache_Key{dir = {7, 0}, index = 0x20000}
-	b := mounter.Lfn_Cache_Key{dir = {7, 2}, index = 0}
+	a := mounter.Lfn_Cache_Key {
+		dir   = {7, 0},
+		index = 0x20000,
+	}
+	b := mounter.Lfn_Cache_Key {
+		dir   = {7, 2},
+		index = 0,
+	}
 	testing.expect(t, a != b, "distinct entries must differ")
-	c := mounter.Lfn_Cache_Key{dir = {7, 2}, index = 0}
+	c := mounter.Lfn_Cache_Key {
+		dir   = {7, 2},
+		index = 0,
+	}
 	testing.expect(t, b == c, "identical entries must match")
 }
 
@@ -772,7 +797,11 @@ test_mount_create_past_dir_extend :: proc(t: ^testing.T) {
 		path_buf[9] = u8('0' + (i / 10))
 		path_buf[10] = u8('0' + (i % 10))
 		path_buf[11] = 0
-		rc = mounter.fused_create(cstring(raw_data(path_buf[:])), posix.mode_t{.IRUSR, .IWUSR}, &fi)
+		rc = mounter.fused_create(
+			cstring(raw_data(path_buf[:])),
+			posix.mode_t{.IRUSR, .IWUSR},
+			&fi,
+		)
 		testing.expect_value(t, rc, 0)
 	}
 
@@ -890,7 +919,11 @@ test_mount_readdir_resume :: proc(t: ^testing.T) {
 		path_buf[7] = u8('0' + (i / 10))
 		path_buf[8] = u8('0' + (i % 10))
 		path_buf[9] = 0
-		rc = mounter.fused_create(cstring(raw_data(path_buf[:])), posix.mode_t{.IRUSR, .IWUSR}, &fi)
+		rc = mounter.fused_create(
+			cstring(raw_data(path_buf[:])),
+			posix.mode_t{.IRUSR, .IWUSR},
+			&fi,
+		)
 		testing.expect_value(t, rc, 0)
 	}
 
@@ -972,7 +1005,11 @@ test_dir_extend_zeroes_new_sector :: proc(t: ^testing.T) {
 		path_buf[7] = u8('0' + (i / 10))
 		path_buf[8] = u8('0' + (i % 10))
 		path_buf[9] = 0
-		rc = mounter.fused_create(cstring(raw_data(path_buf[:])), posix.mode_t{.IRUSR, .IWUSR}, &fi)
+		rc = mounter.fused_create(
+			cstring(raw_data(path_buf[:])),
+			posix.mode_t{.IRUSR, .IWUSR},
+			&fi,
+		)
 		testing.expect_value(t, rc, 0)
 	}
 	path_buf[7] = '0'
@@ -1104,7 +1141,10 @@ fail_allocator_proc :: proc(
 	old_memory: rawptr,
 	old_size: int,
 	location := #caller_location,
-) -> ([]byte, mem.Allocator_Error) {
+) -> (
+	[]byte,
+	mem.Allocator_Error,
+) {
 	_ = allocator_data
 	_ = mode
 	_ = size
@@ -1157,7 +1197,11 @@ test_lfn_lookup_clone_failure_no_name :: proc(t: ^testing.T) {
 
 	long := "llongname-0123456789-abcdef"
 	fi: fuse3.File_Info
-	testing.expect_value(t, mounter.fused_create("/llongname-0123456789-abcdef", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	testing.expect_value(
+		t,
+		mounter.fused_create("/llongname-0123456789-abcdef", posix.mode_t{.IRUSR, .IWUSR}, &fi),
+		0,
+	)
 
 	res, rerr := fs.resolve_path(&fsys.vol, "/llongname-0123456789-abcdef")
 	testing.expect_value(t, rerr, fs.FS_Error.None)
@@ -1194,7 +1238,11 @@ test_xattr_publish_rollback_restores_old :: proc(t: ^testing.T) {
 	fi: fuse3.File_Info
 	testing.expect_value(t, mounter.fused_create("/pubfile", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
 	v1 := "v1"
-	testing.expect_value(t, mounter.fused_setxattr("/pubfile", "user.k", raw_data(v1), len(v1), 0), 0)
+	testing.expect_value(
+		t,
+		mounter.fused_setxattr("/pubfile", "user.k", raw_data(v1), len(v1), 0),
+		0,
+	)
 
 	res, rerr := fs.resolve_path(&fsys.vol, "/pubfile")
 	testing.expect_value(t, rerr, fs.FS_Error.None)
@@ -1213,14 +1261,25 @@ test_xattr_publish_rollback_restores_old :: proc(t: ^testing.T) {
 	testing.expect(t, newc != 0 && newc != oldc, "V2 chain staged")
 
 	// Fail the persist write (write_entry_at is a single sector write).
-	fsys.vol.fault = fs.IO_Fault{enabled = true, fail_reads_after = max(u64), fail_writes_after = fsys.vol.fault.writes, fail_syncs_after = max(u64)}
+	fsys.vol.fault = fs.IO_Fault {
+		enabled           = true,
+		fail_reads_after  = max(u64),
+		fail_writes_after = fsys.vol.fault.writes,
+		fail_syncs_after  = max(u64),
+	}
 	loc := fs.File_Identity{res.cluster, res.offset, res.entry_index}
-	testing.expect(t, mounter.xattr_publish(&fsys, &entry, loc, newc, reclaim) != 0, "persist failure surfaces")
+	testing.expect(
+		t,
+		mounter.xattr_publish(&fsys, &entry, loc, newc, reclaim) != 0,
+		"persist failure surfaces",
+	)
 	fsys.vol.fault.enabled = false
 
 	// Rollback: in-memory pointer restored, old chain live with V1.
 	testing.expect_value(t, entry.xattr_cluster, oldc)
-	check_old := fs.Directory_Entry{xattr_cluster = oldc}
+	check_old := fs.Directory_Entry {
+		xattr_cluster = oldc,
+	}
 	loaded, lerr := fs.xattr_load(&fsys.vol, &check_old)
 	testing.expect_value(t, lerr, fs.FS_Error.None)
 	testing.expect_value(t, len(loaded), 1)
@@ -1234,7 +1293,9 @@ test_xattr_publish_rollback_restores_old :: proc(t: ^testing.T) {
 	// The unpublished new chain was best-effort reclaimed under fault;
 	// reclaim it deterministically now (a double fault leaks it).
 	_ = fs.xattr_free_chain(&fsys.vol, newc)
-	check_new := fs.Directory_Entry{xattr_cluster = newc}
+	check_new := fs.Directory_Entry {
+		xattr_cluster = newc,
+	}
 	gone, lerr2 := fs.xattr_load(&fsys.vol, &check_new)
 	testing.expect(t, lerr2 != .None, "new chain gone")
 	delete(gone)
@@ -1252,7 +1313,11 @@ test_xattr_replace_reclaims_old :: proc(t: ^testing.T) {
 	fi: fuse3.File_Info
 	testing.expect_value(t, mounter.fused_create("/repfile", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
 	v1 := "v1"
-	testing.expect_value(t, mounter.fused_setxattr("/repfile", "user.k", raw_data(v1), len(v1), 0), 0)
+	testing.expect_value(
+		t,
+		mounter.fused_setxattr("/repfile", "user.k", raw_data(v1), len(v1), 0),
+		0,
+	)
 	res1, rerr1 := fs.resolve_path(&fsys.vol, "/repfile")
 	testing.expect_value(t, rerr1, fs.FS_Error.None)
 	if rerr1 != .None { return }
@@ -1260,14 +1325,24 @@ test_xattr_replace_reclaims_old :: proc(t: ^testing.T) {
 	testing.expect(t, oldc != 0, "V1 chain on disk")
 
 	v2 := "v22222"
-	testing.expect_value(t, mounter.fused_setxattr("/repfile", "user.k", raw_data(v2), len(v2), 0), 0)
+	testing.expect_value(
+		t,
+		mounter.fused_setxattr("/repfile", "user.k", raw_data(v2), len(v2), 0),
+		0,
+	)
 	res2, rerr2 := fs.resolve_path(&fsys.vol, "/repfile")
 	testing.expect_value(t, rerr2, fs.FS_Error.None)
 	if rerr2 != .None { return }
-	testing.expect(t, res2.entry.xattr_cluster != 0 && res2.entry.xattr_cluster != oldc, "pointer moved to new chain")
+	testing.expect(
+		t,
+		res2.entry.xattr_cluster != 0 && res2.entry.xattr_cluster != oldc,
+		"pointer moved to new chain",
+	)
 
 	// Old chain freed, new chain readable with V2.
-	check_old := fs.Directory_Entry{xattr_cluster = oldc}
+	check_old := fs.Directory_Entry {
+		xattr_cluster = oldc,
+	}
 	gone, lerr := fs.xattr_load(&fsys.vol, &check_old)
 	testing.expect(t, lerr != .None, "old chain freed")
 	delete(gone)
@@ -1289,10 +1364,34 @@ test_unlink_rollback_restores_entry :: proc(t: ^testing.T) {
 	defer cleanup_root(&fsys, []string{"unlink-rollback-long-file-name"})
 
 	fi: fuse3.File_Info
-	testing.expect_value(t, mounter.fused_create("/unlink-rollback-long-file-name", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	testing.expect_value(
+		t,
+		mounter.fused_create("/unlink-rollback-long-file-name", posix.mode_t{.IRUSR, .IWUSR}, &fi),
+		0,
+	)
 	data := "rollback-me"
-	testing.expect_value(t, mounter.fused_write("/unlink-rollback-long-file-name", raw_data(data), c.size_t(len(data)), 0, &fi), c.int(len(data)))
-	testing.expect_value(t, mounter.fused_setxattr("/unlink-rollback-long-file-name", "user.k", raw_data(data), c.size_t(len(data)), 0), 0)
+	testing.expect_value(
+		t,
+		mounter.fused_write(
+			"/unlink-rollback-long-file-name",
+			raw_data(data),
+			c.size_t(len(data)),
+			0,
+			&fi,
+		),
+		c.int(len(data)),
+	)
+	testing.expect_value(
+		t,
+		mounter.fused_setxattr(
+			"/unlink-rollback-long-file-name",
+			"user.k",
+			raw_data(data),
+			c.size_t(len(data)),
+			0,
+		),
+		0,
+	)
 
 	// Fail the persist write (the cleared-entry write is the next one).
 	// Call remove_directory_entry directly so the in-memory rollback is
@@ -1302,8 +1401,17 @@ test_unlink_rollback_restores_entry :: proc(t: ^testing.T) {
 	if rerr0 != .None { return }
 	entry := res0.entry
 	loc := fs.File_Identity{res0.cluster, res0.offset, res0.entry_index}
-	fsys.vol.fault = fs.IO_Fault{enabled = true, fail_reads_after = max(u64), fail_writes_after = fsys.vol.fault.writes, fail_syncs_after = max(u64)}
-	testing.expect(t, mounter.remove_directory_entry(&fsys, &entry, loc) != .None, "unlink reports persist failure")
+	fsys.vol.fault = fs.IO_Fault {
+		enabled           = true,
+		fail_reads_after  = max(u64),
+		fail_writes_after = fsys.vol.fault.writes,
+		fail_syncs_after  = max(u64),
+	}
+	testing.expect(
+		t,
+		mounter.remove_directory_entry(&fsys, &entry, loc) != .None,
+		"unlink reports persist failure",
+	)
 	fsys.vol.fault.enabled = false
 	testing.expect(t, entry == res0.entry, "in-memory entry restored")
 
@@ -1318,7 +1426,13 @@ test_unlink_rollback_restores_entry :: proc(t: ^testing.T) {
 	testing.expect(t, found, "xattr still present")
 	rbuf := make([]u8, 16)
 	defer delete(rbuf)
-	nread := mounter.fused_read("/unlink-rollback-long-file-name", raw_data(rbuf), c.size_t(len(data)), 0, &fi)
+	nread := mounter.fused_read(
+		"/unlink-rollback-long-file-name",
+		raw_data(rbuf),
+		c.size_t(len(data)),
+		0,
+		&fi,
+	)
 	testing.expect_value(t, nread, c.int(len(data)))
 	testing.expect_value(t, string(rbuf[:nread]), data)
 
@@ -1340,7 +1454,11 @@ test_xattr_publish_free_failure_reports :: proc(t: ^testing.T) {
 	fi: fuse3.File_Info
 	testing.expect_value(t, mounter.fused_create("/pubfree", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
 	v1 := "v1"
-	testing.expect_value(t, mounter.fused_setxattr("/pubfree", "user.k", raw_data(v1), c.size_t(len(v1)), 0), 0)
+	testing.expect_value(
+		t,
+		mounter.fused_setxattr("/pubfree", "user.k", raw_data(v1), c.size_t(len(v1)), 0),
+		0,
+	)
 	res, rerr := fs.resolve_path(&fsys.vol, "/pubfree")
 	testing.expect_value(t, rerr, fs.FS_Error.None)
 	if rerr != .None { return }
@@ -1357,16 +1475,27 @@ test_xattr_publish_free_failure_reports :: proc(t: ^testing.T) {
 	newc := entry.xattr_cluster
 	testing.expect(t, newc != 0 && newc != oldc, "V2 staged")
 
-	fsys.vol.fault = fs.IO_Fault{enabled = true, fail_reads_after = max(u64), fail_writes_after = fsys.vol.fault.writes + 1, fail_syncs_after = max(u64)}
+	fsys.vol.fault = fs.IO_Fault {
+		enabled           = true,
+		fail_reads_after  = max(u64),
+		fail_writes_after = fsys.vol.fault.writes + 1,
+		fail_syncs_after  = max(u64),
+	}
 	loc := fs.File_Identity{res.cluster, res.offset, res.entry_index}
-	testing.expect(t, mounter.xattr_publish(&fsys, &entry, loc, newc, reclaim) != 0, "reclaim failure surfaces")
+	testing.expect(
+		t,
+		mounter.xattr_publish(&fsys, &entry, loc, newc, reclaim) != 0,
+		"reclaim failure surfaces",
+	)
 	fsys.vol.fault.enabled = false
 
 	// Persist landed (entry points at V2); the old chain leaked for the checker.
 	chk, cerr := fs.resolve_path(&fsys.vol, "/pubfree")
 	testing.expect_value(t, cerr, fs.FS_Error.None)
 	testing.expect_value(t, chk.entry.xattr_cluster, newc)
-	check_old := fs.Directory_Entry{xattr_cluster = oldc}
+	check_old := fs.Directory_Entry {
+		xattr_cluster = oldc,
+	}
 	leaked, lerr := fs.xattr_load(&fsys.vol, &check_old)
 	testing.expect_value(t, lerr, fs.FS_Error.None)
 	for &a in leaked {
@@ -1410,10 +1539,18 @@ test_mount_rename_lfn_reclaims_old :: proc(t: ^testing.T) {
 	defer cleanup_root(&fsys, []string{"rename-old-long-file-name", "rename-new-long-file-name"})
 
 	fi: fuse3.File_Info
-	testing.expect_value(t, mounter.fused_create("/rename-old-long-file-name", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	testing.expect_value(
+		t,
+		mounter.fused_create("/rename-old-long-file-name", posix.mode_t{.IRUSR, .IWUSR}, &fi),
+		0,
+	)
 
 	f0 := fs.alloc_cache_count_free(&fsys.vol)
-	testing.expect_value(t, mounter.fused_rename("/rename-old-long-file-name", "/rename-new-long-file-name", 0), 0)
+	testing.expect_value(
+		t,
+		mounter.fused_rename("/rename-old-long-file-name", "/rename-new-long-file-name", 0),
+		0,
+	)
 	testing.expect_value(t, fs.alloc_cache_count_free(&fsys.vol), f0)
 
 	res, rerr := fs.resolve_path(&fsys.vol, "/rename-new-long-file-name")
@@ -1436,11 +1573,24 @@ test_mount_rename_lfn_rollback :: proc(t: ^testing.T) {
 	defer cleanup_root(&fsys, []string{"rollback-old-long-file-name", "rb-new"})
 
 	fi: fuse3.File_Info
-	testing.expect_value(t, mounter.fused_create("/rollback-old-long-file-name", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	testing.expect_value(
+		t,
+		mounter.fused_create("/rollback-old-long-file-name", posix.mode_t{.IRUSR, .IWUSR}, &fi),
+		0,
+	)
 
 	f0 := fs.alloc_cache_count_free(&fsys.vol)
-	fsys.vol.fault = fs.IO_Fault{enabled = true, fail_reads_after = max(u64), fail_writes_after = fsys.vol.fault.writes, fail_syncs_after = max(u64)}
-	testing.expect(t, mounter.fused_rename("/rollback-old-long-file-name", "/rb-new", 0) != 0, "rename reports persist failure")
+	fsys.vol.fault = fs.IO_Fault {
+		enabled           = true,
+		fail_reads_after  = max(u64),
+		fail_writes_after = fsys.vol.fault.writes,
+		fail_syncs_after  = max(u64),
+	}
+	testing.expect(
+		t,
+		mounter.fused_rename("/rollback-old-long-file-name", "/rb-new", 0) != 0,
+		"rename reports persist failure",
+	)
 	fsys.vol.fault.enabled = false
 
 	// Old name resolves with its LFN intact; new name absent; no change.
@@ -1474,8 +1624,17 @@ test_rename_publish_restores_entry :: proc(t: ^testing.T) {
 	saved := entry
 	entry.file_size = 1234
 	loc := fs.File_Identity{res.cluster, res.offset, res.entry_index}
-	fsys.vol.fault = fs.IO_Fault{enabled = true, fail_reads_after = max(u64), fail_writes_after = fsys.vol.fault.writes, fail_syncs_after = max(u64)}
-	testing.expect(t, mounter.rename_publish(&fsys, &entry, saved, loc, fs.LFN_Pointer{}) != 0, "publish reports failure")
+	fsys.vol.fault = fs.IO_Fault {
+		enabled           = true,
+		fail_reads_after  = max(u64),
+		fail_writes_after = fsys.vol.fault.writes,
+		fail_syncs_after  = max(u64),
+	}
+	testing.expect(
+		t,
+		mounter.rename_publish(&fsys, &entry, saved, loc, fs.LFN_Pointer{}) != 0,
+		"publish reports failure",
+	)
 	fsys.vol.fault.enabled = false
 	testing.expect(t, entry == saved, "in-memory entry restored")
 }
@@ -1489,12 +1648,24 @@ test_mount_rename_lfn_cross_dir :: proc(t: ^testing.T) {
 	defer teardown_mounter(&fsys)
 	defer cleanup_root(&fsys, []string{"xdst/moved-long-file-name", "xsrcdir", "xdst"})
 
-	testing.expect_value(t, mounter.fused_mkdir("/xsrcdir", posix.mode_t{.IRUSR, .IWUSR, .IXUSR}), 0)
+	testing.expect_value(
+		t,
+		mounter.fused_mkdir("/xsrcdir", posix.mode_t{.IRUSR, .IWUSR, .IXUSR}),
+		0,
+	)
 	testing.expect_value(t, mounter.fused_mkdir("/xdst", posix.mode_t{.IRUSR, .IWUSR, .IXUSR}), 0)
 	fi: fuse3.File_Info
-	testing.expect_value(t, mounter.fused_create("/xsrcdir/move-me-long-file-name", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	testing.expect_value(
+		t,
+		mounter.fused_create("/xsrcdir/move-me-long-file-name", posix.mode_t{.IRUSR, .IWUSR}, &fi),
+		0,
+	)
 
-	testing.expect_value(t, mounter.fused_rename("/xsrcdir/move-me-long-file-name", "/xdst/moved-long-file-name", 0), 0)
+	testing.expect_value(
+		t,
+		mounter.fused_rename("/xsrcdir/move-me-long-file-name", "/xdst/moved-long-file-name", 0),
+		0,
+	)
 	res, rerr := fs.resolve_path(&fsys.vol, "/xdst/moved-long-file-name")
 	testing.expect_value(t, rerr, fs.FS_Error.None)
 	if rerr != .None { return }
@@ -1518,12 +1689,25 @@ test_unlink_free_after_persist :: proc(t: ^testing.T) {
 	defer cleanup_root(&fsys, []string{"freepersist"})
 
 	fi: fuse3.File_Info
-	testing.expect_value(t, mounter.fused_create("/freepersist", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	testing.expect_value(
+		t,
+		mounter.fused_create("/freepersist", posix.mode_t{.IRUSR, .IWUSR}, &fi),
+		0,
+	)
 	ten := "0123456789"
-	testing.expect_value(t, mounter.fused_write("/freepersist", raw_data(ten), c.size_t(len(ten)), 0, &fi), c.int(len(ten)))
+	testing.expect_value(
+		t,
+		mounter.fused_write("/freepersist", raw_data(ten), c.size_t(len(ten)), 0, &fi),
+		c.int(len(ten)),
+	)
 
 	// Persist is the next write and succeeds; the free's first write fails.
-	fsys.vol.fault = fs.IO_Fault{enabled = true, fail_reads_after = max(u64), fail_writes_after = fsys.vol.fault.writes + 1, fail_syncs_after = max(u64)}
+	fsys.vol.fault = fs.IO_Fault {
+		enabled           = true,
+		fail_reads_after  = max(u64),
+		fail_writes_after = fsys.vol.fault.writes + 1,
+		fail_syncs_after  = max(u64),
+	}
 	testing.expect(t, mounter.fused_unlink("/freepersist") != 0, "free failure surfaces")
 	fsys.vol.fault.enabled = false
 
@@ -1559,11 +1743,26 @@ test_readlink_short_chain_fails :: proc(t: ^testing.T) {
 	if !sok { return }
 	ea := check_make_dirent("shortlink", hc, ho, 1000)
 	ea.flags += {.Link}
-	testing.expect(t, check_write_raw_dirent(t, &fsys.vol, fsys.vol.master.root_cluster, u16(fsys.vol.master.root_sector_index), sa, &ea), "entry written")
+	testing.expect(
+		t,
+		check_write_raw_dirent(
+			t,
+			&fsys.vol,
+			fsys.vol.master.root_cluster,
+			u16(fsys.vol.master.root_sector_index),
+			sa,
+			&ea,
+		),
+		"entry written",
+	)
 
 	out := make([]u8, 2048)
 	defer delete(out)
-	testing.expect_value(t, mounter.fused_readlink("/shortlink", ([^]c.char)(raw_data(out)), c.size_t(len(out))), -c.int(posix.EIO))
+	testing.expect_value(
+		t,
+		mounter.fused_readlink("/shortlink", ([^]c.char)(raw_data(out)), c.size_t(len(out))),
+		-c.int(posix.EIO),
+	)
 }
 
 // test_mount_mtime_advances_on_mutation — mtime must advance on every
@@ -1578,12 +1777,23 @@ test_mount_mtime_advances_on_mutation :: proc(t: ^testing.T) {
 	defer cleanup_root(&fsys, []string{"mtimefile"})
 
 	fi: fuse3.File_Info
-	testing.expect_value(t, mounter.fused_create("/mtimefile", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	testing.expect_value(
+		t,
+		mounter.fused_create("/mtimefile", posix.mode_t{.IRUSR, .IWUSR}, &fi),
+		0,
+	)
 	ten := "0123456789"
-	testing.expect_value(t, mounter.fused_write("/mtimefile", raw_data(ten), c.size_t(len(ten)), 0, &fi), c.int(len(ten)))
+	testing.expect_value(
+		t,
+		mounter.fused_write("/mtimefile", raw_data(ten), c.size_t(len(ten)), 0, &fi),
+		c.int(len(ten)),
+	)
 
 	backdate := proc(t: ^testing.T, fsys: ^mounter.FS) {
-		old := posix.timespec{tv_sec = 1000000000, tv_nsec = 0}
+		old := posix.timespec {
+			tv_sec  = 1000000000,
+			tv_nsec = 0,
+		}
 		tv := [2]posix.timespec{old, old}
 		testing.expect_value(t, mounter.fused_utimens("/mtimefile", &tv[0], nil), 0)
 	}
@@ -1596,12 +1806,26 @@ test_mount_mtime_advances_on_mutation :: proc(t: ^testing.T) {
 	// Same-size overwrite must bump mtime.
 	backdate(t, &fsys)
 	ten2 := "9876543210"
-	testing.expect_value(t, mounter.fused_write("/mtimefile", raw_data(ten2), c.size_t(len(ten2)), 0, &fi), c.int(len(ten2)))
+	testing.expect_value(
+		t,
+		mounter.fused_write("/mtimefile", raw_data(ten2), c.size_t(len(ten2)), 0, &fi),
+		c.int(len(ten2)),
+	)
 	check_advanced(t, &fsys, "overwrite bumps mtime")
 
 	// Punching a hole destroys data without changing size.
 	backdate(t, &fsys)
-	testing.expect_value(t, mounter.fused_fallocate("/mtimefile", transmute(c.int)fuse3.Falloc_Flags{.Punch_Hole}, 0, 4, &fi), 0)
+	testing.expect_value(
+		t,
+		mounter.fused_fallocate(
+			"/mtimefile",
+			transmute(c.int)fuse3.Falloc_Flags{.Punch_Hole},
+			0,
+			4,
+			&fi,
+		),
+		0,
+	)
 	check_advanced(t, &fsys, "punch-hole bumps mtime")
 
 	// No-grow fallocate still allocates (KEEP_SIZE implied by no growth).
@@ -1628,7 +1852,18 @@ test_getattr_corrupt_date_fails :: proc(t: ^testing.T) {
 	// Month 13 fits the 4-bit field but is not a real month.
 	bad := res.entry
 	bad.date_time.month = 13
-	testing.expect(t, check_write_raw_dirent(t, &fsys.vol, u64(res.cluster), u16(res.offset), res.entry_index, &bad), "plant corrupt date")
+	testing.expect(
+		t,
+		check_write_raw_dirent(
+			t,
+			&fsys.vol,
+			u64(res.cluster),
+			u16(res.offset),
+			res.entry_index,
+			&bad,
+		),
+		"plant corrupt date",
+	)
 	mounter.path_cache_invalidate_all(&fsys)
 	fs.dir_cache_invalidate(&fsys.vol.dir_cache, fs.Chain_Location{res.cluster, res.offset})
 
@@ -1646,7 +1881,11 @@ test_getattr_corrupt_atime_fails :: proc(t: ^testing.T) {
 	defer cleanup_root(&fsys, []string{"baddate2"})
 
 	fi: fuse3.File_Info
-	testing.expect_value(t, mounter.fused_create("/baddate2", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	testing.expect_value(
+		t,
+		mounter.fused_create("/baddate2", posix.mode_t{.IRUSR, .IWUSR}, &fi),
+		0,
+	)
 	res, rerr := fs.resolve_path(&fsys.vol, "/baddate2")
 	testing.expect_value(t, rerr, fs.FS_Error.None)
 	if rerr != .None { return }
@@ -1654,7 +1893,18 @@ test_getattr_corrupt_atime_fails :: proc(t: ^testing.T) {
 	// Day 0 fits the 5-bit field but is not a real day.
 	bad := res.entry
 	bad.atime_date_time.date = 0
-	testing.expect(t, check_write_raw_dirent(t, &fsys.vol, u64(res.cluster), u16(res.offset), res.entry_index, &bad), "plant corrupt atime")
+	testing.expect(
+		t,
+		check_write_raw_dirent(
+			t,
+			&fsys.vol,
+			u64(res.cluster),
+			u16(res.offset),
+			res.entry_index,
+			&bad,
+		),
+		"plant corrupt atime",
+	)
 	mounter.path_cache_invalidate_all(&fsys)
 	fs.dir_cache_invalidate(&fsys.vol.dir_cache, fs.Chain_Location{res.cluster, res.offset})
 
