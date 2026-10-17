@@ -998,3 +998,54 @@ test_mount_symlink_multisector_roundtrip :: proc(t: ^testing.T) {
 	testing.expect(t, bytes_equal(out[:tlen], tbuf), "target round-trips")
 	testing.expect_value(t, out[tlen], 0)
 }
+
+// fail_allocator_proc backs an allocator in which every allocation fails.
+fail_allocator_proc :: proc(
+	allocator_data: rawptr,
+	mode: mem.Allocator_Mode,
+	size: int,
+	alignment: int,
+	old_memory: rawptr,
+	old_size: int,
+	location := #caller_location,
+) -> ([]byte, mem.Allocator_Error) {
+	_ = allocator_data
+	_ = mode
+	_ = size
+	_ = alignment
+	_ = old_memory
+	_ = old_size
+	_ = location
+	return nil, .Out_Of_Memory
+}
+
+// test_extent_cache_clone_failure_no_space — a failed extent-cache insert
+// (clone OOM) must fail the op with .No_Space, not cache an empty chain:
+// the retry below would otherwise hit the poisoned entry and resolve 0.
+@(test)
+test_extent_cache_clone_failure_no_space :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !setup_mounter(t, &fsys) { return }
+	defer teardown_mounter(&fsys)
+
+	hc, ho, aerr := fs.allocate_sectors(&fsys.vol, {}, 3, .File_Content)
+	testing.expect_value(t, aerr, fs.FS_Error.None)
+	if aerr != .None { return }
+
+	good_alloc := fsys.allocator
+	fsys.allocator = mem.Allocator{fail_allocator_proc, nil}
+	_, cerr := mounter.resolve_extents_cached(&fsys, fs.Chain_Location{hc, ho})
+	testing.expect_value(t, cerr, fs.FS_Error.No_Space)
+	fsys.allocator = good_alloc
+
+	// Nothing was cached: the retry resolves the full chain (cache-owned
+	// slice — must NOT be deleted by the caller).
+	runs, rerr := mounter.resolve_extents_cached(&fsys, fs.Chain_Location{hc, ho})
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+	total: u64
+	for r in runs { total += u64(r.count) }
+	testing.expect_value(t, total, u64(3))
+
+	derr := fs.deallocate_sectors(&fsys.vol, fs.Chain_Location{hc, ho})
+	testing.expect_value(t, derr, fs.FS_Error.None)
+}

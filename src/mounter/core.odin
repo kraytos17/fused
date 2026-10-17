@@ -596,7 +596,13 @@ resolve_extents_cached :: proc(
 	}
 
 	r := fs.resolve_extents(&fsys.vol, loc) or_return
-	slice_copy, _ := slice.clone(r[:], fsys.allocator)
+	// A failed cache insert must fail the op, not cache an empty chain:
+	// callers treat .None as a complete resolution (fail-closed).
+	slice_copy, cerr := slice.clone(r[:], fsys.allocator)
+	if cerr != .None {
+		delete(r)
+		return nil, .No_Space
+	}
 	delete(r)
 
 	fsys.extents[key] = slice_copy
@@ -620,14 +626,22 @@ resolve_extents_shared :: proc(
 ) {
 	key := Extent_Cache_Key{u64(loc.cluster), u16(loc.offset)}
 	if cached, hit := fsys.extents[key]; hit {
-		out, _ := slice.clone(cached, context.temp_allocator)
+		out, oerr := slice.clone(cached, context.temp_allocator)
+		if oerr != .None {
+			return nil, .No_Space
+		}
 		return out, .None
 	}
 
 	sync.rw_mutex_shared_unlock(&fsys.mu)
 	sync.rw_mutex_lock(&fsys.mu)
 	if cached, hit := fsys.extents[key]; hit {
-		out, _ := slice.clone(cached, context.temp_allocator)
+		out, oerr := slice.clone(cached, context.temp_allocator)
+		if oerr != .None {
+			sync.rw_mutex_unlock(&fsys.mu)
+			sync.rw_mutex_shared_lock(&fsys.mu)
+			return nil, .No_Space
+		}
 		sync.rw_mutex_unlock(&fsys.mu)
 		sync.rw_mutex_shared_lock(&fsys.mu)
 		return out, .None
@@ -640,11 +654,22 @@ resolve_extents_shared :: proc(
 		return nil, rerr
 	}
 
-	slice_copy, _ := slice.clone(r[:], fsys.allocator)
+	slice_copy, cerr := slice.clone(r[:], fsys.allocator)
+	if cerr != .None {
+		delete(r)
+		sync.rw_mutex_unlock(&fsys.mu)
+		sync.rw_mutex_shared_lock(&fsys.mu)
+		return nil, .No_Space
+	}
 	delete(r)
 
 	fsys.extents[key] = slice_copy
-	out, _ := slice.clone(slice_copy, context.temp_allocator)
+	out, oerr := slice.clone(slice_copy, context.temp_allocator)
+	if oerr != .None {
+		sync.rw_mutex_unlock(&fsys.mu)
+		sync.rw_mutex_shared_lock(&fsys.mu)
+		return nil, .No_Space
+	}
 	sync.rw_mutex_unlock(&fsys.mu)
 	sync.rw_mutex_shared_lock(&fsys.mu)
 	return out, .None

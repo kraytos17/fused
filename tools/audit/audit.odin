@@ -14,6 +14,15 @@
 //   (d) no (&x[0]) reinterpret casts in src/ (use the raw_data form).
 //   (e) no auto_cast in src/ (prototyping-only); cast() only on pointers,
 //       values use the T(v) form.
+//   (s1) every backend.add() call checks its result (a dropped transaction
+//       record must fail the op, never journal a prefix).
+//   (s2) sector_write_bulk validates the transferred byte count.
+//   (s3) JOURNAL_BACKEND.recover's result is checked (an unknowable
+//       committed set or unwritten checkpoint must refuse the mount).
+//   (s4) no discarded slice.clone in src/ (a failed cache insert must fail
+//       the op, never cache an empty chain).
+//   (s5) every #packed struct has a size_of(Named) assert within 25 lines
+//       (on-disk and ABI layouts stay pinned).
 package main
 
 import "base:runtime"
@@ -48,6 +57,7 @@ main :: proc() {
 	run_locking_audit()
 
 	run_logger_audit()
+	run_storage_audit()
 	if audit_src_hygiene() > 0 {
 		os.exit(1)
 	}
@@ -646,4 +656,125 @@ audit_src_hygiene :: proc() -> (failed: int) {
 
 	fmt.printf("=== Hygiene audit: %d failed ===\n", failed)
 	return failed
+}
+
+// Storage audit (rules s1..s5): journal-transaction and cache-ownership
+// guardrails from the audit §9 list. Line-based deliberately, like the
+// logger audit: every enforced shape is a fixed idiom, and the matchers
+// are narrow to avoid false positives.
+audit_storage_rules :: proc(path: string, lines: []string) -> (checked, failed: int) {
+	for i in 0 ..< len(lines) {
+		line := lines[i]
+		trimmed := strings.trim_space(line)
+		if strings.has_prefix(trimmed, "//") { continue }
+
+		// s1: backend.add() must be result-checked at the call site.
+		if strings.contains(line, "backend.add(") {
+			checked += 1
+			if !strings.contains(line, "if !") {
+				fmt.printf("FAIL   %s:%d backend.add() result unchecked\n", path, i + 1)
+				failed += 1
+			}
+		}
+
+		// s2: sector_write_bulk must validate the byte count.
+		if strings.contains(line, "sector_write_bulk :: proc") {
+			checked += 1
+			found := false
+			for k in i ..< min(i + 12, len(lines)) {
+				if strings.contains(lines[k], "len(buf)") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				fmt.printf("FAIL   %s:%d sector_write_bulk missing byte-count check\n", path, i + 1)
+				failed += 1
+			}
+		}
+
+		// s3: JOURNAL_BACKEND.recover's result must be checked.
+		if strings.contains(line, "JOURNAL_BACKEND.recover") {
+			checked += 1
+			found := false
+			for k in i ..< min(i + 3, len(lines)) {
+				if strings.contains(lines[k], "!= .None") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				fmt.printf("FAIL   %s:%d JOURNAL_BACKEND.recover result unchecked\n", path, i + 1)
+				failed += 1
+			}
+		}
+
+		// s4: slice.clone results must not be discarded.
+		if strings.contains(line, "slice.clone") {
+			checked += 1
+			if strings.contains(line, "_, _") ||
+			   strings.contains(line, ", _ :=") ||
+			   strings.contains(line, ", _ =") {
+				fmt.printf("FAIL   %s:%d discarded slice.clone status\n", path, i + 1)
+				failed += 1
+			}
+		}
+
+		// s5: every #packed struct needs its own size_of(Name) assert.
+		if strings.contains(line, "#packed") &&
+		   strings.contains(line, "::") &&
+		   strings.contains(line, "struct") {
+			end := strings.index(line, " ::")
+			if end <= 0 { continue }
+			name := strings.trim_space(line[:end])
+			if name == "" || strings.contains_any(name, " \t") { continue }
+			checked += 1
+			want := fmt.tprintf("size_of(%s)", name)
+			found := false
+			for k in max(0, i - 25) ..< min(i + 26, len(lines)) {
+				if strings.contains(lines[k], want) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				fmt.printf("FAIL   %s:%d #packed %s missing size_of assert\n", path, i + 1, name)
+				failed += 1
+			}
+		}
+	}
+	return
+}
+
+run_storage_audit :: proc() {
+	total_c, total_f := 0, 0
+	dirs := []string{"src/fs", "src/fuse3", "src/mounter"}
+	for dir in dirs {
+		dh, derr := os.open(dir)
+		if derr != nil {
+			fmt.eprintf("warning: cannot open %s: %v\n", dir, derr)
+			total_f += 1
+			continue
+		}
+		fis, ferr := os.read_dir(dh, 0, context.temp_allocator)
+		os.close(dh)
+		if ferr != nil {
+			fmt.eprintf("warning: cannot list %s: %v\n", dir, ferr)
+			total_f += 1
+			continue
+		}
+		for fi in fis {
+			if !strings.has_suffix(fi.name, ".odin") { continue }
+			path, _ := filepath.join([]string{dir, fi.name})
+			data, err := os.read_entire_file(path, context.temp_allocator)
+			if err != nil { continue }
+			lines := strings.split(string(data), "\n", context.temp_allocator)
+			c, f := audit_storage_rules(path, lines)
+			total_c += c
+			total_f += f
+		}
+	}
+
+	fmt.printf("=== Storage audit: %d checked, %d failed ===\n", total_c, total_f)
+	if total_f > 0 { os.exit(1) }
 }
