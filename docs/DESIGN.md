@@ -492,7 +492,7 @@ tests/
 ├── rmdir_test.odin                1 rmdir-on-unreadable-listing test (isolated image)
 ├── lock_test.odin                 5 lock/flock unit tests (direct fused_lock/fused_flock calls)
 ├── journal_test.odin              3 journal-backend tests (rev-8 WAL image)
-├── journal_txn_test.odin          4 journal transaction-bounds tests (slots/replay/chunking/collapse, isolated images)
+├── journal_txn_test.odin          5 journal transaction-bounds tests (slots/replay/chunking/collapse, isolated images)
 ├── io_error_test.odin             2 fault-injection tests (truncated + read-only images)
 ├── fault_test.odin                11 deterministic fault tests (Nth read/write/sync fails, isolated images)
 ├── invalidation_test.odin         6 cache-invalidation tests
@@ -517,7 +517,7 @@ tests/
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `make test` (133 Odin tests) |
+| 2. Unit tests | `make test` (134 Odin tests) |
 | 3. Tool integration | `make pytest -m tool` (17 format + imgdump tests) |
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |

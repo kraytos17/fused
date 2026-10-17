@@ -239,3 +239,75 @@ test_journal_collapses_link_patch :: proc(t: ^testing.T) {
 	for r in runs { total += u64(r.count) }
 	testing.expect_value(t, total, u64(20))
 }
+
+// test_journal_replay_aborts_on_bad_ce_index — a committed slot whose
+// entry names a valid cluster but an out-of-range table index must abort
+// the slot (not skip the entry, not index out of bounds): replay stops,
+// the watermark holds, and the later valid slot is not replayed past it.
+@(test)
+test_journal_replay_aborts_on_bad_ce_index :: proc(t: ^testing.T) {
+	fd, ok := jtxn_format(t, JTXN_SCRATCH)
+	if !ok { return }
+	vol, vok := open_volume_on_fd(fd)
+	if !vok { os.close(fd); os.remove(JTXN_SCRATCH); return }
+	defer { close_test_volume(&vol); os.remove(JTXN_SCRATCH) }
+
+	empty: fs.Cluster_Entry_State
+	s_c: fs.Cluster
+	s_j := 0
+	found := false
+	for ci in 1 ..< int(vol.master.cluster_map_size) {
+		table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
+		if fs.read_cluster_entry_table(&vol, fs.Cluster(ci), &table) != .None { continue }
+		for j in 0 ..< len(table) {
+			if table[j].state == empty {
+				s_c, s_j, found = fs.Cluster(ci), j, true
+				break
+			}
+		}
+		if found { break }
+	}
+	testing.expect(t, found, "scratch slot found")
+	if !found { return }
+
+	seqN := u64(fs.journal_seq_get(&vol.master))
+	backend := fs.JOURNAL_BACKEND
+	hn: fs.Journal_Txn_Handle
+	testing.expect(t, backend.begin(&vol, &hn), "begin N")
+	// Valid cluster (its table reads fine) but index one past the end:
+	// the replay guard is `>= len(table)`, so this is the boundary.
+	bad := fs.Cluster_Entry{state = {.Allocated}, allocation_size = 1}
+	testing.expect(
+		t,
+		backend.add(
+			&vol,
+			&hn,
+			fs.journal_entry_from_cluster_entry(bad, u64(s_c), u8(fs.CLUSTER_ENTRIES_PER_SECTOR)),
+		),
+		"add bad",
+	)
+	testing.expect(t, backend.commit(&vol, &hn), "commit N")
+	testing.expect(t, backend.finish(&vol, &hn, true), "finish")
+
+	hv: fs.Journal_Txn_Handle
+	testing.expect(t, backend.begin(&vol, &hv), "begin N+1")
+	good := fs.Cluster_Entry{state = {.Allocated}, allocation_size = 1, sector_start = 0}
+	testing.expect(
+		t,
+		backend.add(&vol, &hv, fs.journal_entry_from_cluster_entry(good, u64(s_c), u8(s_j))),
+		"add good",
+	)
+	testing.expect(t, backend.commit(&vol, &hv), "commit N+1")
+	testing.expect(t, backend.finish(&vol, &hv, true), "finish")
+
+	// Simulate the crash window: both transactions still need replay.
+	fs.journal_set_watermark(&vol.master, u64(seqN))
+	testing.expect_value(t, fs.write_master_record(&vol), fs.FS_Error.None)
+
+	fs.journal_recover(&vol)
+
+	after: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
+	testing.expect_value(t, fs.read_cluster_entry_table(&vol, s_c, &after), fs.FS_Error.None)
+	testing.expect(t, after[s_j].state == empty, "N+1 not replayed past bad-index N")
+	testing.expect_value(t, fs.journal_watermark(&vol.master), u64(seqN))
+}
