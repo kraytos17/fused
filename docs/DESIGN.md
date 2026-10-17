@@ -526,7 +526,7 @@ tests/
 │   └── io.py                      read/write/sync helpers, run_cli (+timeout), assert helpers, make_file/make_dir context managers
 ├── conftest.py                    Pytest binary-path fixtures (shared by all suites)
 ├── pyproject.toml                 Pytest markers (tool, fuse, static) + pythonpath
-├── fuse/                          FUSE suites (own conftest: mounted_fs, clean_image, private_mount)
+├── fuse/                          FUSE suites (own conftest: clean_image, private_mount; no shared mounts)
 │   ├── test_basic.py              7 smoke tests on the shared demo image (asserts /Kernel)
 │   ├── test_crash.py              5 kill -9 crash-consistency tests (data, truncate-extend/shrink, unlink, long-name rename)
 │   ├── test_errors.py             6 error-path tests

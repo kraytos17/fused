@@ -1,22 +1,8 @@
 # tests/fuse/conftest.py — Mount and image fixtures for FUSE tests.
-import os
-
 import pytest
 
 from fused_test.io import run_cli
 from fused_test.mount import mount_fuse
-
-
-@pytest.fixture
-def mounted_fs(fused_bin: str, fused_image: str, mount_dir: str, logs_dir: str):
-    """Mount the shared demo filesystem and yield the mount point path.
-
-    Only test_basic.py uses this (it asserts the embedded /Kernel);
-    everything else mounts a private image via private_mount.
-    """
-    os.makedirs(mount_dir, exist_ok=True)
-    with mount_fuse(fused_bin, fused_image, mount_dir, logs_dir) as mp:
-        yield mp
 
 
 @pytest.fixture
@@ -37,7 +23,8 @@ def private_mount(fused_bin: str, clean_image: str, tmp_path):
     """Mount a private image and yield the mount point.
 
     Hermetic mount per test: format + mount + unmount, all under
-    tmp_path. Prefer over mounted_fs for any test that writes.
+    tmp_path. Every fuse test uses this; the shared fused.img is
+    read-only input for tool tests only.
     """
     mount = str(tmp_path / "mnt")
     logs = str(tmp_path / "logs")
