@@ -13,6 +13,7 @@ import "core:c"
 import "core:c/libc"
 import "core:container/bit_array"
 import "core:mem"
+import "core:slice"
 import "core:strings"
 import "core:sys/posix"
 import "core:testing"
@@ -1128,7 +1129,7 @@ test_mount_symlink_multisector_roundtrip :: proc(t: ^testing.T) {
 	defer delete(out)
 	n := mounter.fused_readlink("/mlink", ([^]c.char)(raw_data(out)), c.size_t(len(out)))
 	testing.expect_value(t, n, 0)
-	testing.expect(t, bytes_equal(out[:tlen], tbuf), "target round-trips")
+	testing.expect(t, slice.equal(out[:tlen], tbuf), "target round-trips")
 	testing.expect_value(t, out[tlen], 0)
 }
 

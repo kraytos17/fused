@@ -10,6 +10,7 @@
 package tests
 
 import "core:c"
+import "core:slice"
 import "core:sys/posix"
 import "core:testing"
 import "src:fs"
@@ -66,7 +67,7 @@ test_write_past_eof_zeroes_gap :: proc(t: ^testing.T) {
 	n := mounter.fused_read("/v1", raw_data(out), c.size_t(len(out)), 0, &fi)
 	testing.expect_value(t, n, c.int(len(out)))
 	testing.expect_value(t, count_nonzero(out[:1000]), 0)
-	testing.expect(t, bytes_equal(out[1000:], transmute([]u8)data), "tail matches write")
+	testing.expect(t, slice.equal(out[1000:], transmute([]u8)data), "tail matches write")
 }
 
 // test_truncate_up_zeroes_gap — extending truncate must expose zeros.
@@ -93,7 +94,7 @@ test_truncate_up_zeroes_gap :: proc(t: ^testing.T) {
 	defer delete(out)
 	n := mounter.fused_read("/v2", raw_data(out), c.size_t(len(out)), 0, &fi)
 	testing.expect_value(t, n, c.int(len(out)))
-	testing.expect(t, bytes_equal(out[:2], transmute([]u8)data), "head intact")
+	testing.expect(t, slice.equal(out[:2], transmute([]u8)data), "head intact")
 	testing.expect_value(t, count_nonzero(out[2:]), 0)
 }
 
@@ -189,5 +190,5 @@ test_write_buf_past_eof_zeroes_gap :: proc(t: ^testing.T) {
 	n := mounter.fused_read("/v5", raw_data(out), c.size_t(len(out)), 0, &fi)
 	testing.expect_value(t, n, c.int(len(out)))
 	testing.expect_value(t, count_nonzero(out[:800]), 0)
-	testing.expect(t, bytes_equal(out[800:], transmute([]u8)data), "tail matches")
+	testing.expect(t, slice.equal(out[800:], transmute([]u8)data), "tail matches")
 }

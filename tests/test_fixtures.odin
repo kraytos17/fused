@@ -45,15 +45,6 @@ jtxn_format :: proc(t: ^testing.T, path: string) -> (^os.File, bool) {
 	return fd, true
 }
 
-// bytes_equal compares two byte slices without extra imports.
-bytes_equal :: proc(a, b: []u8) -> bool {
-	if len(a) != len(b) { return false }
-	for i in 0 ..< len(a) {
-		if a[i] != b[i] { return false }
-	}
-	return true
-}
-
 // tpath formats a test path into a stack buffer (NUL-terminated) and
 // returns it as a cstring. Caller buffers for fused_* must be stack or
 // heap, never the temp arena (begin_op frees it on entry).

@@ -26,6 +26,7 @@ package tests
 import "base:runtime"
 import "core:c"
 import "core:fmt"
+import "core:slice"
 import "core:strings"
 import "core:sys/posix"
 import "core:testing"
@@ -44,6 +45,8 @@ Prop_Rng :: struct {
 }
 
 // prop_next advances a Knuth MMIX LCG; high bits are the usable output.
+// Hand-rolled deliberately: the generator is version-pinned (exact replay
+// across Odin versions), which core:math/rand cannot promise.
 prop_next :: proc(rng: ^Prop_Rng) -> u64 {
 	rng.s = rng.s * 6364136223846793005 + 1442695040888963407
 	return rng.s >> 33
@@ -620,7 +623,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			buf := rbuf[:]
 			log_op(&oolog, fmt.tprintf("op %d: read %d off=%d n=%d", op, f.id, off, n))
 			got := mounter.fused_read(p, raw_data(buf), c.size_t(n), posix.off_t(off), &f.fi)
-			if int(got) != want_len || !bytes_equal(buf[:int(got)], f.data[off:off + want_len]) {
+			if int(got) != want_len || !slice.equal(buf[:int(got)], f.data[off:off + want_len]) {
 				testing.expectf(
 					t,
 					false,
@@ -777,7 +780,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 			probe := pb[:]
 			got := mounter.fused_getxattr(path, "user.k", raw_data(probe), c.size_t(len(probe)))
 			if f.has_xattr {
-				if int(got) != len(f.xattr) || !bytes_equal(probe[:int(got)], f.xattr[:]) {
+				if int(got) != len(f.xattr) || !slice.equal(probe[:int(got)], f.xattr[:]) {
 					testing.expectf(
 						t,
 						false,
@@ -831,13 +834,13 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 		defer delete(buf)
 		got := mounter.fused_read(path, raw_data(buf), c.size_t(len(buf)), 0, &f.fi)
 		testing.expect(t, int(got) == len(f.data), "final content length matches model")
-		testing.expect(t, bytes_equal(buf[:int(got)], f.data[:]), "final content matches model")
+		testing.expect(t, slice.equal(buf[:int(got)], f.data[:]), "final content matches model")
 		if f.has_xattr {
 			probe := make([]u8, 64, context.allocator)
 			defer delete(probe)
 			n := mounter.fused_getxattr(path, "user.k", raw_data(probe), c.size_t(len(probe)))
 			testing.expect(t, int(n) == len(f.xattr), "final xattr size matches model")
-			testing.expect(t, bytes_equal(probe[:int(n)], f.xattr[:]), "final xattr matches model")
+			testing.expect(t, slice.equal(probe[:int(n)], f.xattr[:]), "final xattr matches model")
 		}
 	}
 	if !prop_verify_dir(t, &fsys, files, dirs, 0) {

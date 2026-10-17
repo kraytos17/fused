@@ -9,6 +9,7 @@
 package tests
 
 import "core:os"
+import "core:slice"
 import "core:testing"
 import "src:fs"
 
@@ -852,7 +853,7 @@ test_volume_open_readonly_skips_recovery :: proc(t: ^testing.T) {
 	testing.expect(t, aread == nil, "re-read image")
 	if aread == nil {
 		defer delete(after)
-		testing.expect(t, bytes_equal(before, after), "readonly open writes nothing")
+		testing.expect(t, slice.equal(before, after), "readonly open writes nothing")
 	}
 
 	// The RW open replays the same journal: pending slots clear.

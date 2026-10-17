@@ -7,6 +7,7 @@
 #+build linux
 package tests
 
+import "core:slice"
 import "core:testing"
 import "src:fs"
 
@@ -89,8 +90,8 @@ test_journal_slots_do_not_overlap :: proc(t: ^testing.T) {
 	after1: [fs.SECTOR_SIZE]u8
 	testing.expect_value(t, fs.sector_read(&vol, pos1 + 1, after0[:]), fs.FS_Error.None)
 	testing.expect_value(t, fs.sector_read(&vol, pos1 + 2, after1[:]), fs.FS_Error.None)
-	testing.expect(t, bytes_equal(snap0[:], after0[:]), "record sector 0 intact")
-	testing.expect(t, bytes_equal(snap1[:], after1[:]), "record sector 1 intact")
+	testing.expect(t, slice.equal(snap0[:], after0[:]), "record sector 0 intact")
+	testing.expect(t, slice.equal(snap1[:], after1[:]), "record sector 1 intact")
 }
 
 // test_journal_replay_stops_at_first_incomplete — txn N carries an entry
