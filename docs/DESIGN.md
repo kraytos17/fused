@@ -28,7 +28,7 @@ read-write FUSE mounting (all 43 `fuse_operations` callbacks implemented).
 | **`cmd/mount/`** | Binary entry point — `package main`, calls `mounter.run()`. | `src/mounter/` |
 | **`cmd/format/`** | Standalone image formatter. Produces valid disk images without libfuse3. | `src/fs/` |
 | **`cmd/dump/`** | Read-only image dumper. Walks the image structure and prints it in human-readable or JSON form. | `src/fs/` |
-| **`tests/`** | Odin unit tests (177), Python pytest integration (63), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
+| **`tests/`** | Odin unit tests (178), Python pytest integration (65), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
 
 ## On-disk format (rev 8)
 
@@ -526,7 +526,7 @@ tests/
 ├── test_crash.py                  5 kill -9 crash-consistency tests (pytest: data, truncate-extend/shrink, unlink, long-name rename)
 ├── test_disker.py                 7 format tool CLI tests (pytest)
 ├── test_errors.py                 6 FUSE error path tests (pytest)
-├── test_imgdump.py                12 imgdump tool tests (pytest: 10 dump + 2 corrupt-image guards)
+├── test_imgdump.py                14 tool tests (pytest: 10 dump + 2 corrupt-image guards + 2 check --read-only)
 ├── test_lock.py                   6 lock/flock tests (pytest, cross-process)
 ├── test_rw.py                     13 read-write tests (pytest)
 ├── test_xattr.py                  7 xattr tests (pytest)
@@ -548,7 +548,7 @@ tests/
 ├── alloc_test.odin                8 allocator property tests
 ├── alloc_write_test.odin          17 allocator + write-path tests
 ├── ce_identity_test.odin          1 CE slot-identity test (stale-duplicate clear, isolated image)
-├── check_test.odin                19 checker tests (Stage A ownership/links/bounds/free + Stage B reachability/orphans/journal, isolated images)
+├── check_test.odin                20 checker tests (Stage A ownership/links/bounds/free + Stage B reachability/orphans/journal + read-only open, isolated images)
 ├── property_test.odin             1 model-based property test (300 deterministic ops: files + subdirs, cross-dir moves, LFN names, readdir oracle, clean final scan)
 ├── truncate_test.odin             3 truncate-boundary tests (fragmented chain + journal pins, isolated image)
 ├── zero_fill_test.odin            5 extension zero-fill + zero-length-write tests (poison-reuse images)
@@ -564,7 +564,7 @@ tests/
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `make test` (177 Odin tests) |
+| 2. Unit tests | `make test` (178 Odin tests) |
 | 3. Tool integration | `make pytest -m tool` (17 format + imgdump tests) |
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |

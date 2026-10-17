@@ -37,6 +37,21 @@ Volume :: struct {
 	fault:      IO_Fault,
 }
 
+// volume_open_readonly opens a fused disk image without running journal
+// recovery and without write access: the fd is opened read-only (the OS
+// refuses any write), so inspecting a damaged image never mutates the
+// patient (ADR-009). The checker scan then reflects on-disk home state,
+// which may lag committed-but-uncheckpointed journal slots — callers
+// must consult check_journal_report to qualify the findings. Master
+// validation and cache initialisation match volume_open.
+volume_open_readonly :: proc(path: string, cache := DEFAULT_CACHE_CONFIG) -> (vol: Volume, err: FS_Error) {
+	fd, open_err := os.open(path, {.Read})
+	if open_err != nil {
+		return {}, .Sector_Read_Error
+	}
+	return _volume_open_inner(fd, path, cache, do_recovery = false)
+}
+
 // volume_open opens a fused disk image, reads and validates the
 // MasterRecord, runs journal recovery, and initialises the alloc
 // cache.  Returns an FS_Error on failure (the caller should check
@@ -46,6 +61,19 @@ volume_open :: proc(path: string, cache := DEFAULT_CACHE_CONFIG) -> (vol: Volume
 	if open_err != nil {
 		return {}, .Sector_Read_Error
 	}
+	return _volume_open_inner(fd, path, cache, do_recovery = true)
+}
+
+// _volume_open_inner shares the validate-and-init body of both open
+// paths; only recovery is conditional. Takes ownership of fd on all
+// paths (closes it on failure).
+@(private = "file")
+_volume_open_inner :: proc(
+	fd: ^os.File,
+	path: string,
+	cache: Cache_Config,
+	do_recovery: bool,
+) -> (vol: Volume, err: FS_Error) {
 
 	vol.disk = fd
 	master, merr := read_master_record(fd)
@@ -69,6 +97,9 @@ volume_open :: proc(path: string, cache := DEFAULT_CACHE_CONFIG) -> (vol: Volume
 
 	dir_cap := cache.dir_cap if cache.dir_cap > 0 else DEFAULT_CACHE_CONFIG.dir_cap
 	dir_cache_init(&vol.dir_cache, dir_cap)
+	if !do_recovery {
+		return vol, .None
+	}
 	// Recovery failure means the committed set is unknowable or the
 	// checkpoint cannot persist: refuse the mount rather than run
 	// writable on an unrecovered image (ADR-001 §7).

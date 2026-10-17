@@ -17,6 +17,7 @@ Flags :: struct {
 	path:      string `args:"pos=0,required" usage:"Path to fused disk image"`,
 	log_level: log.Level `args:"name=log-level" usage:"Log level: debug, info, warn, error (default: debug)"`,
 	verbose:   bool `args:"name=verbose" usage:"Verbose output"`,
+	read_only: bool `args:"name=read-only" usage:"Open read-only: skip journal recovery, never write to the image (scan may lag uncheckpointed slots)"`,
 	overflow:  [dynamic]string `args:"hidden"`,
 }
 
@@ -37,10 +38,22 @@ main :: proc() {
 		fmt.printf("check: opening %s (verbose)\n", f.path)
 	}
 
-	vol, err := fs.volume_open(f.path)
-	if err != .None {
-		fmt.eprintf("check: %s: open failed: %v\n", f.path, err)
-		os.exit(1)
+	vol: fs.Volume
+	if f.read_only {
+		fmt.printf("check: read-only mode (recovery skipped; findings may lag uncheckpointed journal slots)\n")
+		v, rerr := fs.volume_open_readonly(f.path)
+		if rerr != .None {
+			fmt.eprintf("check: %s: open failed: %v\n", f.path, rerr)
+			os.exit(1)
+		}
+		vol = v
+	} else {
+		v, rerr := fs.volume_open(f.path)
+		if rerr != .None {
+			fmt.eprintf("check: %s: open failed: %v\n", f.path, rerr)
+			os.exit(1)
+		}
+		vol = v
 	}
 
 	defer fs.volume_close(&vol)

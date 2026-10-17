@@ -718,3 +718,84 @@ test_check_journal_report :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, found, "unapplied chunk pending")
 }
+
+// test_volume_open_readonly_skips_recovery — a dirty journal survives a
+// read-only open byte-for-byte (no replay, no checkpoint write): the
+// scan still runs and the slots stay pending. A RW open of the same
+// image replays and clears them. This pins ADR-009's forensics path:
+// inspecting a damaged image never mutates the patient.
+@(test)
+test_volume_open_readonly_skips_recovery :: proc(t: ^testing.T) {
+	fd, ok := jtxn_format(t, JTXN_SCRATCH)
+	if !ok { return }
+	vol, vok := open_volume_on_fd(fd)
+	if !vok {
+		os.close(fd)
+		os.remove(JTXN_SCRATCH)
+		return
+	}
+
+	// Dirty the journal: an allocation's last chunk stays pending until
+	// a checkpoint finishes it.
+	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
+	testing.expect_value(t, aerr, fs.FS_Error.None)
+	if aerr != .None {
+		close_test_volume(&vol)
+		os.remove(JTXN_SCRATCH)
+		return
+	}
+	close_test_volume(&vol)
+
+	before, bread := os.read_entire_file(JTXN_SCRATCH, context.allocator)
+	testing.expect(t, bread == nil, "snapshot image")
+	if bread != nil {
+		os.remove(JTXN_SCRATCH)
+		return
+	}
+	defer delete(before)
+
+	rovol, rerr := fs.volume_open_readonly(JTXN_SCRATCH)
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+	if rerr != .None {
+		os.remove(JTXN_SCRATCH)
+		return
+	}
+	rep := fs.check_image(&rovol)
+	testing.expect_value(t, rep.errors, 0)
+	fs.check_report_destroy(&rep)
+
+	jrep := fs.check_journal_report(&rovol)
+	saw_pending := false
+	for &s in jrep {
+		if s.pending {
+			saw_pending = true
+		}
+	}
+	fs.check_journal_report_destroy(jrep)
+	testing.expect(t, saw_pending, "readonly leaves pending slots pending")
+	fs.volume_close(&rovol)
+
+	after, aread := os.read_entire_file(JTXN_SCRATCH, context.allocator)
+	testing.expect(t, aread == nil, "re-read image")
+	if aread == nil {
+		defer delete(after)
+		testing.expect(t, bytes_equal(before, after), "readonly open writes nothing")
+	}
+
+	// The RW open replays the same journal: pending slots clear.
+	rwvol, rwerr := fs.volume_open(JTXN_SCRATCH)
+	testing.expect_value(t, rwerr, fs.FS_Error.None)
+	if rwerr == .None {
+		jrep2 := fs.check_journal_report(&rwvol)
+		still_pending := false
+		for &s in jrep2 {
+			if s.pending {
+				still_pending = true
+			}
+		}
+		fs.check_journal_report_destroy(jrep2)
+		testing.expect(t, !still_pending, "rw open replays pending slots")
+		fs.volume_close(&rwvol)
+	}
+	os.remove(JTXN_SCRATCH)
+}

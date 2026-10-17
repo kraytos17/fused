@@ -13,11 +13,13 @@ read-only scanner, stable diagnostics, and explicit repair policy.
 ## Decision
 
 1. **Read-only scan.** `check_image` (`src/fs/check.odin`) performs
-   only `sector_read`. The single exception is documented, not hidden:
-   `cmd/check` opens via `volume_open`, which runs journal recovery
-   (replay + possible checkpoint write). A fully read-only open mode
-   is future work; until then the checker never writes *except* through
-   the standard mount-time recovery path.
+   only `sector_read`. `cmd/check` defaults to `volume_open` (journal
+   recovery: replay + possible checkpoint write), but `--read-only`
+   opens via `volume_open_readonly` instead: read-only fd, no
+   recovery, zero image bytes touched. A read-only scan reflects
+   on-disk home state and may lag committed-but-uncheckpointed
+   slots — the journal report (still printed) qualifies the
+   findings, and pending slots stay pending for a later RW pass.
 2. **Two stages, one report.** Stage A validates the allocation
    substrate straight from disk (CME/CE flags, table bounds, data-range
    ownership with double-ownership detection, chain links mirroring
@@ -68,5 +70,11 @@ read-only scanner, stable diagnostics, and explicit repair policy.
 
 - `tests/check_test.odin`: 19 seeded-corruption tests (ownership,
   links, bounds, free agreement; reachability, orphans, journal
-  report), each rule mutation-checked.
+  report), each rule mutation-checked, plus the read-only open test
+  below (20 tests total).
+- `tests/check_test.odin::test_volume_open_readonly_skips_recovery`:
+  a dirty journal survives a read-only open byte-for-byte (scan
+  runs, slots stay pending); the RW open of the same image replays
+  and clears them. Mutation-checked: recovering in the read-only
+  path fails the test.
 - `make doctor`: healthy image reports 0 errors, 0 warnings, exit 0.

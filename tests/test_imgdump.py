@@ -197,3 +197,33 @@ def test_json_duplicate_names_surfaced(imgdump_bin: str, fused_image: str, tmp_p
     r = _run_timeout(imgdump_bin, dst)
     assert r.returncode == 0, r.stderr
     assert r.stdout.count('"dup"') == 2
+
+
+@pytest.mark.tool
+def test_check_read_only_clean_image(
+    check_bin: str, disker_bin: str, tmp_path: str
+):
+    """--read-only checks a healthy image without writing to it."""
+    import hashlib
+
+    img = str(tmp_path / "ro.img")
+    r = run_cli(disker_bin, "--force", "--size=1M", f"--output={img}")
+    assert r.returncode == 0, r.stderr
+    with open(img, "rb") as f:
+        digest_before = hashlib.sha256(f.read()).hexdigest()
+    r = run_cli(check_bin, "--read-only", img)
+    assert r.returncode == 0, r.stderr
+    assert "read-only mode" in r.stdout
+    assert ": OK" in r.stdout
+    with open(img, "rb") as f:
+        digest_after = hashlib.sha256(f.read()).hexdigest()
+    assert digest_before == digest_after
+
+
+@pytest.mark.tool
+def test_check_read_only_rejects_garbage(check_bin: str, tmp_path: str):
+    path = os.path.join(tmp_path, "zero.img")
+    with open(path, "wb") as f:
+        f.write(b"\0" * 512)
+    r = run_cli(check_bin, "--read-only", path)
+    assert r.returncode == 1
