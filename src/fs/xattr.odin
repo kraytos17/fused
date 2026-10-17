@@ -84,11 +84,8 @@ xattr_load :: proc(
 		return attrs, .Entry_Not_Found
 	}
 
-	data, rerr := read_chain(vol, Chain_Location{cluster, offset}, allocator)
+	data := read_chain(vol, Chain_Location{cluster, offset}, allocator) or_return
 	defer delete(data, allocator)
-	if rerr != .None {
-		return attrs, rerr
-	}
 
 	// A malformed blob is corruption, not an empty set: fail closed so a
 	// torn xattr chain can never surface as silently missing attributes.
@@ -119,16 +116,13 @@ xattr_get :: proc(
 	found: bool,
 	err: FS_Error,
 ) {
-	attrs, lerr := xattr_load(vol, entry, allocator)
+	attrs := xattr_load(vol, entry, allocator) or_return
 	defer {
 		for &a in attrs {
 			delete(a.name, allocator)
 			delete(a.value, allocator)
 		}
 		delete(attrs)
-	}
-	if lerr != .None {
-		return {}, false, lerr
 	}
 	for &a in attrs {
 		if a.name == name {
@@ -165,10 +159,7 @@ xattr_store :: proc(
 	}
 
 	sectors := (u64(len(data)) + SECTOR_SIZE - 1) / SECTOR_SIZE
-	new_c, new_o, aerr := allocate_sectors(vol, {}, sectors, .XAttr)
-	if aerr != .None {
-		return 0, aerr
-	}
+	new_c, new_o := allocate_sectors(vol, {}, sectors, .XAttr) or_return
 	if werr := write_chain(vol, Chain_Location{new_c, new_o}, data); werr != .None {
 		// Best-effort reclaim of the unpublished chain; the old chain
 		// and the entry are untouched. A double fault here leaks the
@@ -193,11 +184,8 @@ xattr_remove :: proc(
 	reclaim: u64,
 	err: FS_Error,
 ) {
-	attrs, lerr := xattr_load(vol, entry, allocator)
+	attrs := xattr_load(vol, entry, allocator) or_return
 	defer delete(attrs)
-	if lerr != .None {
-		return false, 0, lerr
-	}
 
 	removed = false
 	for a, i in attrs {
