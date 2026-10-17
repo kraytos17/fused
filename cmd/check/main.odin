@@ -74,5 +74,32 @@ main :: proc() {
 		fmt.eprintf("check: %s: FAILED\n", f.path)
 		os.exit(1)
 	}
+
+	// Stage A structural scan: allocation metadata straight from disk.
+	report := fs.check_image(&vol)
+	defer fs.check_report_destroy(&report)
+	for &found in report.findings {
+		loc := "-"
+		if found.cluster != max(u64) {
+			loc = fmt.tprintf("%d", found.cluster)
+		}
+		fmt.printf(
+			"%s: %s cluster=%s index=%d — %s\n",
+			"error" if found.severity == .Error else "warning",
+			found.code,
+			loc,
+			found.index,
+			found.detail,
+		)
+	}
+	fmt.printf(
+		"scan: %d errors, %d warnings\n",
+		report.errors,
+		report.warnings,
+	)
+	if report.errors > 0 {
+		fmt.eprintf("check: %s: FAILED\n", f.path)
+		os.exit(1)
+	}
 	fmt.printf("check: %s: OK\n", f.path)
 }

@@ -520,6 +520,7 @@ tests/
 ├── alloc_test.odin                8 allocator property tests
 ├── alloc_write_test.odin          17 allocator + write-path tests
 ├── ce_identity_test.odin          1 CE slot-identity test (stale-duplicate clear, isolated image)
+├── check_test.odin                10 checker Stage A tests (ownership/links/bounds/free, isolated images)
 ├── truncate_test.odin             3 truncate-boundary tests (fragmented chain + journal pins, isolated image)
 ├── zero_fill_test.odin            5 extension zero-fill + zero-length-write tests (poison-reuse images)
 ├── free_space_test.odin           3 free-space oracle tests (Reserved/Full accounting, isolated images)
@@ -534,7 +535,7 @@ tests/
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `make test` (139 Odin tests) |
+| 2. Unit tests | `make test` (149 Odin tests) |
 | 3. Tool integration | `make pytest -m tool` (17 format + imgdump tests) |
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |
