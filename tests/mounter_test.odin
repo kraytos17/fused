@@ -1436,3 +1436,37 @@ test_unlink_free_after_persist :: proc(t: ^testing.T) {
 	_, rerr := fs.resolve_path(&fsys.vol, "/freepersist")
 	testing.expect(t, rerr != .None, "entry deleted")
 }
+
+// test_readlink_short_chain_fails — an entry claiming more target bytes
+// than its chain holds must fail, not return a ragged buffer.
+@(test)
+test_readlink_short_chain_fails :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !setup_mounter(t, &fsys) { return }
+	defer teardown_mounter(&fsys)
+	defer cleanup_root(&fsys, []string{"shortlink"})
+
+	// Real one-sector chain holding 100 bytes of target.
+	hc, ho, aerr := fs.allocate_sectors(&fsys.vol, {}, 1, .File_Content)
+	testing.expect_value(t, aerr, fs.FS_Error.None)
+	if aerr != .None { return }
+	blob := make([]u8, 100)
+	defer delete(blob)
+	for i in 0 ..< len(blob) { blob[i] = u8(97 + (i % 26)) }
+	sec := fs.sector_for(hc, ho, fsys.vol.master.cluster_size)
+	sbuf: [fs.SECTOR_SIZE]u8
+	copy(sbuf[:], blob)
+	testing.expect_value(t, fs.sector_write(&fsys.vol, sec, sbuf[:]), fs.FS_Error.None)
+
+	// Link entry claiming 1000 bytes from that chain.
+	sa, sok := check_free_dir_slot(t, &fsys.vol)
+	testing.expect(t, sok, "free slot found")
+	if !sok { return }
+	ea := check_make_dirent("shortlink", hc, ho, 1000)
+	ea.flags += {.Link}
+	testing.expect(t, check_write_raw_dirent(t, &fsys.vol, fsys.vol.master.root_cluster, u16(fsys.vol.master.root_sector_index), sa, &ea), "entry written")
+
+	out := make([]u8, 2048)
+	defer delete(out)
+	testing.expect_value(t, mounter.fused_readlink("/shortlink", ([^]c.char)(raw_data(out)), c.size_t(len(out))), -c.int(posix.EIO))
+}

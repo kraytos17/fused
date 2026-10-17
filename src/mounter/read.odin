@@ -424,6 +424,11 @@ fused_readlink :: proc "c" (path: cstring, buf: [^]c.char, size: c.size_t) -> c.
 			copied += n
 		}
 	}
+	if copied < clen {
+		// Short chain: the entry claims more bytes than its chain
+		// holds. Returning success would hand back a ragged buffer.
+		return fuse3.nix(.EIO)
+	}
 	buf[clen] = 0
 	log.debugf("readlink: %s → %d bytes", path, clen)
 	return 0
