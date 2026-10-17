@@ -102,12 +102,12 @@ doctor: build create-image check-tool
 	@echo "doctor: ok — image coherent"
 
 smoke: build create-image
-	@$(HARNESS) 60 uv run pytest tests/test_basic.py tests/test_errors.py \
+	@$(HARNESS) 60 uv run pytest tests/fuse/test_basic.py tests/fuse/test_errors.py \
 		-v --tb=short \
 		--fused=build/fused --image=fused.img --mount=$(MOUNTPOINT) --logs=$(LOGS_DIR)
 
 smoke-rw: build create-image
-	@$(HARNESS) 120 uv run pytest tests/test_rw.py \
+	@$(HARNESS) 120 uv run pytest tests/fuse/test_rw.py \
 		-v --tb=short \
 		--fused=build/fused --image=fused.img --mount=$(MOUNTPOINT) --logs=$(LOGS_DIR)
 
@@ -116,12 +116,12 @@ smoke-mt: build create-image
 		--fused=build/fused --image=fused.img --mount=$(MOUNTPOINT) --logs=$(LOGS_DIR) --duration=15
 
 smoke-errors: build create-image
-	@$(HARNESS) 60 uv run pytest tests/test_errors.py \
+	@$(HARNESS) 60 uv run pytest tests/fuse/test_errors.py \
 		-v --tb=short \
 		--fused=build/fused --image=fused.img --mount=$(MOUNTPOINT) --logs=$(LOGS_DIR)
 
 smoke-crash: build create-image
-	@$(HARNESS) 120 uv run pytest tests/test_crash.py \
+	@$(HARNESS) 120 uv run pytest tests/fuse/test_crash.py \
 		-v --tb=short \
 		--fused=build/fused --image=fused.img --mount=$(MOUNTPOINT) --logs=$(LOGS_DIR)
 

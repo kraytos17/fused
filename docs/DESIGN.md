@@ -524,18 +524,21 @@ tests/
 │   │   └── bench.py               Throughput benchmark (write/read/statfs/readdir/create-storm)
 │   ├── mount.py                   FUSE mount context manager (contextlib.contextmanager)
 │   └── io.py                      read/write/sync helpers, run_cli (+timeout), assert helpers, make_file/make_dir context managers
-├── conftest.py                    Pytest fixtures: mounted_fs/shared bins, clean_image, private_mount
-├── pyproject.toml                 Pytest markers: tool, fuse, static
-├── test_basic.py                  7 FUSE smoke tests on the shared demo image (asserts /Kernel; pytest)
-├── test_crash.py                  5 kill -9 crash-consistency tests (pytest: data, truncate-extend/shrink, unlink, long-name rename)
-├── test_disker.py                 7 format tool CLI tests (pytest)
-├── test_errors.py                 6 FUSE error path tests (pytest)
-├── test_imgdump.py                14 tool tests (pytest: 10 dump + 2 corrupt-image guards + 2 check --read-only)
-├── test_lock.py                   6 lock/flock tests (pytest, cross-process)
-├── test_rw.py                     13 read-write tests (pytest)
-├── test_xattr.py                  7 xattr tests (pytest, private mounts)
-├── test_static.py                 3 static-analysis tests (struct sizes, audit, vet; pytest -m static)
-├── test_stress.py                 1 short multi-threaded stress test (5s, private image; pytest -m fuse)
+├── conftest.py                    Pytest binary-path fixtures (shared by all suites)
+├── pyproject.toml                 Pytest markers (tool, fuse, static) + pythonpath
+├── fuse/                          FUSE suites (own conftest: mounted_fs, clean_image, private_mount)
+│   ├── test_basic.py              7 smoke tests on the shared demo image (asserts /Kernel)
+│   ├── test_crash.py              5 kill -9 crash-consistency tests (data, truncate-extend/shrink, unlink, long-name rename)
+│   ├── test_errors.py             6 error-path tests
+│   ├── test_lock.py               6 lock/flock tests (cross-process)
+│   ├── test_rw.py                 13 read-write tests
+│   ├── test_xattr.py              7 xattr tests
+│   └── test_stress.py             1 short multi-threaded stress test (5s, private image)
+├── tools/                         CLI suites (binaries only, no mounts)
+│   ├── test_disker.py             7 format tool CLI tests
+│   └── test_imgdump.py            14 imgdump/check tests (10 dump + 2 corrupt-image guards + 2 check --read-only)
+├── static/                        Static suites via pytest
+│   └── test_static.py             3 tests (struct sizes, audit, vet)
 ├── ci.py                          CI orchestrator (calls make + pytest)
 ├── run_in_namespace.sh            Thin shell: exec unshare -rUm timeout "$@"
 ├── test_common.odin               Shared Odin test helpers (image open, scratch volumes)
