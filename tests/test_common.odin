@@ -19,24 +19,17 @@ import "src:fs"
 TEST_IMG_SRC := "fused.img"
 TEST_IMG_DST := "/dev/shm/fused_test.img"
 
-// open_test_volume — opens test image and returns a Volume with initialized cache
+// open_test_volume — opens the shared test image and returns a Volume
+// with initialized cache.
 open_test_volume :: proc() -> (vol: fs.Volume, ok: bool) {
 	fd, fd_ok := open_test_image()
 	if !fd_ok { return {}, false }
-
-	master, merr := fs.read_master_record(fd)
-	if merr != .None {
+	v, vok := open_volume_on_fd(fd)
+	if !vok {
 		os.close(fd)
 		return {}, false
 	}
-
-	vol = fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	return vol, true
+	return v, true
 }
 
 // open_volume_on_fd builds a test Volume around an already-open fd,

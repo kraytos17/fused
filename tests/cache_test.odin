@@ -9,28 +9,15 @@
 package tests
 
 import "core:container/bit_array"
-import "core:os"
 import "core:testing"
 import "src:fs"
 
 // Verify that init produces a usable cache and destroy cleans up.
 @(test)
 test_cache_init_destroy :: proc(t: ^testing.T) {
-	fd, fd_ok := open_test_image()
-	if !fd_ok { testing.fail(t); return }
-	defer os.close(fd)
-
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
+	vol, vok := open_test_volume()
+	if !vok { testing.fail(t); return }
+	defer close_test_volume(&vol)
 
 	testing.expect(t, vol.cache.cache_size > 0, "cache_size > 0")
 	_, _, berr := fs.alloc_cache_ensure(&vol.cache, &vol, 0)
@@ -41,23 +28,11 @@ test_cache_init_destroy :: proc(t: ^testing.T) {
 // on-disk scan of the cluster entry table.
 @(test)
 test_cache_bitmap_matches_disk :: proc(t: ^testing.T) {
-	fd, fd_ok := open_test_image()
-	if !fd_ok { testing.fail(t); return }
-	defer os.close(fd)
+	vol, vok := open_test_volume()
+	if !vok { testing.fail(t); return }
+	defer close_test_volume(&vol)
 
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
-
-	for ci in 0 ..< int(master.cluster_map_size) {
+	for ci in 0 ..< int(vol.master.cluster_map_size) {
 		bm, _, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(ci))
 		if berr != .None { continue }
 
@@ -78,7 +53,7 @@ test_cache_bitmap_matches_disk :: proc(t: ^testing.T) {
 				}
 			}
 		}
-		for b in 0 ..< u16(master.cluster_size) {
+		for b in 0 ..< u16(vol.master.cluster_size) {
 			bit_expected := bit_array.unsafe_get(&expected_bitmap, int(b))
 			bit_actual := bit_array.unsafe_get(&bm, int(b))
 			if bit_expected != bit_actual {
@@ -100,23 +75,11 @@ test_cache_bitmap_matches_disk :: proc(t: ^testing.T) {
 // Verify that the used count from the cache matches a direct on-disk sum.
 @(test)
 test_cache_used_matches_disk :: proc(t: ^testing.T) {
-	fd, fd_ok := open_test_image()
-	if !fd_ok { testing.fail(t); return }
-	defer os.close(fd)
+	vol, vok := open_test_volume()
+	if !vok { testing.fail(t); return }
+	defer close_test_volume(&vol)
 
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
-
-	for ci in 0 ..< int(master.cluster_map_size) {
+	for ci in 0 ..< int(vol.master.cluster_map_size) {
 		_, used, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(ci))
 		if berr != .None { continue }
 
@@ -146,21 +109,9 @@ test_cache_used_matches_disk :: proc(t: ^testing.T) {
 // Verify that invalidation forces a rebuild on the next ensure.
 @(test)
 test_cache_invalidate_rebuilds :: proc(t: ^testing.T) {
-	fd, fd_ok := open_test_image()
-	if !fd_ok { testing.fail(t); return }
-	defer os.close(fd)
-
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
+	vol, vok := open_test_volume()
+	if !vok { testing.fail(t); return }
+	defer close_test_volume(&vol)
 
 	_, used_before, berr := fs.alloc_cache_ensure(&vol.cache, &vol, 0)
 	testing.expect_value(t, berr, fs.FS_Error.None)
@@ -180,21 +131,9 @@ test_cache_invalidate_rebuilds :: proc(t: ^testing.T) {
 // Verify that alloc_cache_count_free matches the actual on-disk free count.
 @(test)
 test_cache_count_free :: proc(t: ^testing.T) {
-	fd, fd_ok := open_test_image()
-	if !fd_ok { testing.fail(t); return }
-	defer os.close(fd)
-
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
+	vol, vok := open_test_volume()
+	if !vok { testing.fail(t); return }
+	defer close_test_volume(&vol)
 
 	cached_free := fs.alloc_cache_count_free(&vol)
 	testing.expect(t, cached_free > 0, "free count > 0")
@@ -228,22 +167,9 @@ test_cache_count_free :: proc(t: ^testing.T) {
 // Verify that allocate with a real cache produces the same result as without.
 @(test)
 test_cache_allocate_matches_nil :: proc(t: ^testing.T) {
-	fd, fd_ok := open_test_image()
-	if !fd_ok { testing.fail(t); return }
-	defer os.close(fd)
-
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	// Allocate with cache
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
+	vol, vok := open_test_volume()
+	if !vok { testing.fail(t); return }
+	defer close_test_volume(&vol)
 
 	fc_c, fo_c, err_c := fs.allocate_sectors(&vol, {}, 3, .File_Content)
 	testing.expect_value(t, err_c, fs.FS_Error.None)
@@ -260,21 +186,9 @@ test_cache_allocate_matches_nil :: proc(t: ^testing.T) {
 // Verify the hint moves forward after allocation.
 @(test)
 test_cache_hint_advances :: proc(t: ^testing.T) {
-	fd, fd_ok := open_test_image()
-	if !fd_ok { testing.fail(t); return }
-	defer os.close(fd)
-
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
+	vol, vok := open_test_volume()
+	if !vok { testing.fail(t); return }
+	defer close_test_volume(&vol)
 
 	hint_before := vol.cache.hint
 	fc, fo, err := fs.allocate_sectors(&vol, {}, 1, .File_Content)
@@ -289,24 +203,12 @@ test_cache_hint_advances :: proc(t: ^testing.T) {
 // Stress the cache with allocate+deallocate cycles across multiple clusters.
 @(test)
 test_cache_stress_multi_cluster :: proc(t: ^testing.T) {
-	fd, fd_ok := open_test_image()
-	if !fd_ok { testing.fail(t); return }
-	defer os.close(fd)
-
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
+	vol, vok := open_test_volume()
+	if !vok { testing.fail(t); return }
+	defer close_test_volume(&vol)
 
 	// Allocate enough to span multiple clusters
-	needed := master.cluster_size * 3 + 2
+	needed := vol.master.cluster_size * 3 + 2
 	fc, fo, err := fs.allocate_sectors(&vol, {}, needed, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
 
@@ -320,7 +222,7 @@ test_cache_stress_multi_cluster :: proc(t: ^testing.T) {
 	testing.expect_value(t, derr, fs.FS_Error.None)
 
 	// Verify cache is still consistent after deallocation
-	for ci in 0 ..< int(master.cluster_map_size) {
+	for ci in 0 ..< int(vol.master.cluster_map_size) {
 		_, used, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(ci))
 		if berr != .None { continue }
 
@@ -349,21 +251,9 @@ test_cache_stress_multi_cluster :: proc(t: ^testing.T) {
 // Verify the cache works correctly alongside extension (append to chain).
 @(test)
 test_cache_chain_extension :: proc(t: ^testing.T) {
-	fd, fd_ok := open_test_image()
-	if !fd_ok { testing.fail(t); return }
-	defer os.close(fd)
-
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
+	vol, vok := open_test_volume()
+	if !vok { testing.fail(t); return }
+	defer close_test_volume(&vol)
 
 	fc, fo, err := fs.allocate_sectors(&vol, {}, 5, .File_Content)
 	testing.expect_value(t, err, fs.FS_Error.None)
@@ -385,21 +275,9 @@ test_cache_chain_extension :: proc(t: ^testing.T) {
 // Verify the cache survives repeated alloc/free cycles without corruption.
 @(test)
 test_cache_many_small_alloc_free :: proc(t: ^testing.T) {
-	fd, fd_ok := open_test_image()
-	if !fd_ok { testing.fail(t); return }
-	defer os.close(fd)
-
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
+	vol, vok := open_test_volume()
+	if !vok { testing.fail(t); return }
+	defer close_test_volume(&vol)
 
 	for i in 0 ..< 30 {
 		fc, fo, err := fs.allocate_sectors(&vol, {}, 1, .File_Content)

@@ -23,41 +23,9 @@ RMDIR_SCRATCH := "/dev/shm/fused_rmdir_test.img"
 
 @(test)
 test_rmdir_data_read_fails_is_eio :: proc(t: ^testing.T) {
-	fd, ferr := os.open(RMDIR_SCRATCH, {.Read, .Write, .Create, .Trunc})
-	testing.expect_value(t, ferr, nil)
-	if ferr != nil { return }
-	ferr2 := fs.format_image(
-		fd,
-		{
-			size = 1 << 20,
-			cluster_size = 16,
-			features = fs.Features{.Uid_Gid, .XAttr},
-			rev_min = 8,
-			rev_max = 8,
-			demo_data = {},
-		},
-	)
-	testing.expect_value(t, ferr2, fs.FS_Error.None)
-	if ferr2 != .None { os.close(fd); return }
-
-	vol, vok := open_volume_on_fd(fd)
-	testing.expect(t, vok, "scratch volume opens")
-	if !vok { os.close(fd); return }
-
 	fsys: mounter.FS
-	mounter.init_fs_for_test(&fsys, vol)
-	ctx := fuse3.Context {
-		uid          = 1000,
-		gid          = 1000,
-		private_data = &fsys,
-	}
-	fuse3.set_test_context(&ctx)
-	defer {
-		v := fsys.vol
-		mounter.destroy_fs_for_test(&fsys)
-		close_test_volume(&v)
-		os.remove(RMDIR_SCRATCH)
-	}
+	if !scratch_fs(t, RMDIR_SCRATCH, &fsys) { return }
+	defer close_scratch_fs(&fsys, RMDIR_SCRATCH)
 
 	rc := mounter.fused_mkdir("/v", posix.mode_t{.IRUSR, .IWUSR, .IXUSR})
 	testing.expect_value(t, rc, 0)
@@ -93,7 +61,7 @@ test_rmdir_data_read_fails_is_eio :: proc(t: ^testing.T) {
 	smax := max_chain_sector(&fsys, vloc)
 	cut := smax * u64(fs.SECTOR_SIZE)
 	testing.expect(t, smax > 0, "victim has data sectors")
-	terr := os.truncate(fd, i64(cut))
+	terr := os.truncate(fsys.vol.disk, i64(cut))
 	testing.expect_value(t, terr, nil)
 	fs.dir_cache_invalidate(&fsys.vol.dir_cache, vloc)
 
@@ -120,7 +88,7 @@ test_rmdir_data_read_fails_is_eio :: proc(t: ^testing.T) {
 	expect_errno(t, rc, .EIO)
 
 	// Disk truth via cold caches: reopen and resolve past every cache.
-	vol2, vok2 := open_volume_on_fd(fd)
+	vol2, vok2 := open_volume_on_fd(fsys.vol.disk)
 	testing.expect(t, vok2, "reopen scratch volume")
 	if !vok2 { return }
 	defer fs.alloc_cache_destroy(&vol2.cache)
