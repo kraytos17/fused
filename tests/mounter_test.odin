@@ -1182,3 +1182,103 @@ test_xattr_replace_reclaims_old :: proc(t: ^testing.T) {
 	testing.expect(t, found, "V2 present")
 	testing.expect_value(t, string(got), "v22222")
 }
+
+// test_unlink_rollback_restores_entry — a failed persist during unlink
+// must leave the entry and all its chains intact: the cleared entry
+// persists before any chain is freed.
+@(test)
+test_unlink_rollback_restores_entry :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !setup_mounter(t, &fsys) { return }
+	defer teardown_mounter(&fsys)
+	defer cleanup_root(&fsys, []string{"unlink-rollback-long-file-name"})
+
+	fi: fuse3.File_Info
+	testing.expect_value(t, mounter.fused_create("/unlink-rollback-long-file-name", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	data := "rollback-me"
+	testing.expect_value(t, mounter.fused_write("/unlink-rollback-long-file-name", raw_data(data), c.size_t(len(data)), 0, &fi), c.int(len(data)))
+	testing.expect_value(t, mounter.fused_setxattr("/unlink-rollback-long-file-name", "user.k", raw_data(data), c.size_t(len(data)), 0), 0)
+
+	// Fail the persist write (the cleared-entry write is the next one).
+	// Call remove_directory_entry directly so the in-memory rollback is
+	// observable (fused_unlink would discard the entry copy).
+	res0, rerr0 := fs.resolve_path(&fsys.vol, "/unlink-rollback-long-file-name")
+	testing.expect_value(t, rerr0, fs.FS_Error.None)
+	if rerr0 != .None { return }
+	entry := res0.entry
+	loc := fs.File_Identity{res0.cluster, res0.offset, res0.entry_index}
+	fsys.vol.fault = fs.IO_Fault{enabled = true, fail_reads_after = max(u64), fail_writes_after = fsys.vol.fault.writes, fail_syncs_after = max(u64)}
+	testing.expect(t, mounter.remove_directory_entry(&fsys, &entry, loc) != .None, "unlink reports persist failure")
+	fsys.vol.fault.enabled = false
+	testing.expect(t, entry == res0.entry, "in-memory entry restored")
+
+	// Entry, data, xattr, and long name all intact on disk.
+	res, rerr := fs.resolve_path(&fsys.vol, "/unlink-rollback-long-file-name")
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+	if rerr != .None { return }
+	testing.expect(t, .Allocated in res.entry.flags, "entry still allocated")
+	got, found, gerr := fs.xattr_get(&fsys.vol, &res.entry, "user.k")
+	defer delete(got)
+	testing.expect_value(t, gerr, fs.FS_Error.None)
+	testing.expect(t, found, "xattr still present")
+	rbuf := make([]u8, 16)
+	defer delete(rbuf)
+	nread := mounter.fused_read("/unlink-rollback-long-file-name", raw_data(rbuf), c.size_t(len(data)), 0, &fi)
+	testing.expect_value(t, nread, c.int(len(data)))
+	testing.expect_value(t, string(rbuf[:nread]), data)
+
+	// Clean up for real.
+	testing.expect_value(t, mounter.fused_unlink("/unlink-rollback-long-file-name"), 0)
+	_, rerr2 := fs.resolve_path(&fsys.vol, "/unlink-rollback-long-file-name")
+	testing.expect(t, rerr2 != .None, "entry gone after retry")
+}
+
+// test_xattr_publish_free_failure_reports — a failed old-chain reclaim
+// after a durable persist surfaces the error without rolling anything back.
+@(test)
+test_xattr_publish_free_failure_reports :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !setup_mounter(t, &fsys) { return }
+	defer teardown_mounter(&fsys)
+	defer cleanup_root(&fsys, []string{"pubfree"})
+
+	fi: fuse3.File_Info
+	testing.expect_value(t, mounter.fused_create("/pubfree", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	v1 := "v1"
+	testing.expect_value(t, mounter.fused_setxattr("/pubfree", "user.k", raw_data(v1), c.size_t(len(v1)), 0), 0)
+	res, rerr := fs.resolve_path(&fsys.vol, "/pubfree")
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+	if rerr != .None { return }
+	oldc := res.entry.xattr_cluster
+	testing.expect(t, oldc != 0, "V1 chain on disk")
+
+	// Stage V2; fail the first write past the persist (the reclaim).
+	entry := res.entry
+	v2 := "v22222"
+	attrs := []fs.XAttr{{name = "user.k", value = transmute([]u8)v2}}
+	reclaim, serr := fs.xattr_store(&fsys.vol, &entry, attrs)
+	testing.expect_value(t, serr, fs.FS_Error.None)
+	testing.expect_value(t, reclaim, oldc)
+	newc := entry.xattr_cluster
+	testing.expect(t, newc != 0 && newc != oldc, "V2 staged")
+
+	fsys.vol.fault = fs.IO_Fault{enabled = true, fail_reads_after = max(u64), fail_writes_after = fsys.vol.fault.writes + 1, fail_syncs_after = max(u64)}
+	loc := fs.File_Identity{res.cluster, res.offset, res.entry_index}
+	testing.expect(t, mounter.xattr_publish(&fsys, &entry, loc, newc, reclaim) != 0, "reclaim failure surfaces")
+	fsys.vol.fault.enabled = false
+
+	// Persist landed (entry points at V2); the old chain leaked for the checker.
+	chk, cerr := fs.resolve_path(&fsys.vol, "/pubfree")
+	testing.expect_value(t, cerr, fs.FS_Error.None)
+	testing.expect_value(t, chk.entry.xattr_cluster, newc)
+	check_old := fs.Directory_Entry{xattr_cluster = oldc}
+	leaked, lerr := fs.xattr_load(&fsys.vol, &check_old)
+	testing.expect_value(t, lerr, fs.FS_Error.None)
+	for &a in leaked {
+		delete(a.name)
+		delete(a.value)
+	}
+	delete(leaked)
+	// Tidy the leak so the shared image stays clean.
+	testing.expect_value(t, fs.xattr_free_chain(&fsys.vol, oldc), fs.FS_Error.None)
+}

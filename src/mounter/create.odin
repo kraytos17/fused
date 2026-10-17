@@ -270,37 +270,38 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 	return 0
 }
 
-// remove_directory_entry deletes a directory entry: deallocates its content
-// chain (if any), clears its xattr chain, drops lock state, and clears the
-// entry flags. Shared by unlink, rmdir, and rename-overwrite so the removal
+// remove_directory_entry deletes a directory entry: clears its flags,
+// persists the cleared entry, then frees its content, LFN, and xattr
+// chains. Shared by unlink, rmdir, and rename-overwrite so the removal
 // sequence has a single implementation.
 remove_directory_entry :: proc(
 	fsys: ^FS,
 	entry: ^fs.Directory_Entry,
 	loc: fs.File_Identity,
 ) -> fs.FS_Error {
-	if entry.stored_cluster != 0 {
-		if derr := fs.deallocate_sectors(&fsys.vol, fs.data_chain_of(entry^)); derr != .None {
-			return derr
-		}
-	}
-	if ferr := free_entry_lfn(fsys, entry); ferr != .None {
-		return ferr
-	}
-	// Detach the xattr chain in memory; the old chain is freed only after
-	// the cleared entry below persists (same publish discipline as
-	// setxattr/removexattr).
+	saved := entry^
+	has_data := entry.stored_cluster != 0
+	data_loc := fs.data_chain_of(entry^)
+	lfn_entry := entry^
 	reclaim := fs.xattr_clear(entry)
 
 	locks_remove_identity(fsys, loc)
 	entry.flags = {}
 	if werr := write_entry_at(fsys, loc, entry); werr != .None {
-		entry.xattr_cluster = reclaim
+		entry^ = saved
 		return werr
 	}
+	if has_data {
+		if derr := fs.deallocate_sectors(&fsys.vol, data_loc); derr != .None {
+			return derr
+		}
+	}
+	if ferr := free_entry_lfn(fsys, &lfn_entry); ferr != .None {
+		return ferr
+	}
 	if reclaim != 0 {
-		if ferr := fs.xattr_free_chain(&fsys.vol, reclaim); ferr != nil {
-			log.debugf("unlink: reclaim of old xattr chain %d failed: %v (leaked for checker)", reclaim, ferr)
+		if xerr := fs.xattr_free_chain(&fsys.vol, reclaim); xerr != .None {
+			return xerr
 		}
 	}
 

@@ -41,9 +41,9 @@ _xattr_upsert :: proc(
 // in memory, then reclaims the previous chain. On persist failure the
 // pointer is restored (the old chain was never freed) and the unpublished
 // new chain is reclaimed best-effort, leaving the disk image exactly as
-// before the update. A failed old-chain reclaim after a durable persist
-// is a logged leak for the checker, not a user-visible error: the data
-// is durable either way.
+// before the update. A failed reclaim surfaces as an error: the data is
+// durable either way, but the failure is real and the leaked chain is for
+// the checker.
 xattr_publish :: proc(
 	fsys: ^FS,
 	entry: ^fs.Directory_Entry,
@@ -61,7 +61,8 @@ xattr_publish :: proc(
 	}
 	if reclaim != 0 {
 		if ferr := fs.xattr_free_chain(&fsys.vol, reclaim); ferr != .None {
-			log.debugf("xattr: reclaim of old chain %d failed: %v (leaked for checker)", reclaim, ferr)
+			reinit_free_sectors(fsys)
+			return fs_error_to_errno(ferr)
 		}
 	}
 	reinit_free_sectors(fsys)
