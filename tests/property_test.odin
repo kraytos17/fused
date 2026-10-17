@@ -858,7 +858,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 					failed = true
 					continue
 				}
-				resize(&f.xattr, 0)
+				clear(&f.xattr)
 				append(&f.xattr, ..val)
 				f.has_xattr = true
 			} else {
