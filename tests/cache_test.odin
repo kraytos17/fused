@@ -4,6 +4,7 @@
 // counts matching the on-disk state, that invalidation forces rebuilds,
 // and that allocate/deallocate with a real cache matches the nil-cache
 // (stack-local fallback) behavior.
+// scope: shared image
 #+build linux
 package tests
 
@@ -15,8 +16,8 @@ import "src:fs"
 // Verify that init produces a usable cache and destroy cleans up.
 @(test)
 test_cache_init_destroy :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
+	fd, fd_ok := open_test_image()
+	if !fd_ok { testing.fail(t); return }
 	defer os.close(fd)
 
 	master, merr := fs.read_master_record(fd)
@@ -40,8 +41,8 @@ test_cache_init_destroy :: proc(t: ^testing.T) {
 // on-disk scan of the cluster entry table.
 @(test)
 test_cache_bitmap_matches_disk :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
+	fd, fd_ok := open_test_image()
+	if !fd_ok { testing.fail(t); return }
 	defer os.close(fd)
 
 	master, merr := fs.read_master_record(fd)
@@ -99,8 +100,8 @@ test_cache_bitmap_matches_disk :: proc(t: ^testing.T) {
 // Verify that the used count from the cache matches a direct on-disk sum.
 @(test)
 test_cache_used_matches_disk :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
+	fd, fd_ok := open_test_image()
+	if !fd_ok { testing.fail(t); return }
 	defer os.close(fd)
 
 	master, merr := fs.read_master_record(fd)
@@ -145,8 +146,8 @@ test_cache_used_matches_disk :: proc(t: ^testing.T) {
 // Verify that invalidation forces a rebuild on the next ensure.
 @(test)
 test_cache_invalidate_rebuilds :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
+	fd, fd_ok := open_test_image()
+	if !fd_ok { testing.fail(t); return }
 	defer os.close(fd)
 
 	master, merr := fs.read_master_record(fd)
@@ -179,8 +180,8 @@ test_cache_invalidate_rebuilds :: proc(t: ^testing.T) {
 // Verify that alloc_cache_count_free matches the actual on-disk free count.
 @(test)
 test_cache_count_free :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
+	fd, fd_ok := open_test_image()
+	if !fd_ok { testing.fail(t); return }
 	defer os.close(fd)
 
 	master, merr := fs.read_master_record(fd)
@@ -227,8 +228,8 @@ test_cache_count_free :: proc(t: ^testing.T) {
 // Verify that allocate with a real cache produces the same result as without.
 @(test)
 test_cache_allocate_matches_nil :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
+	fd, fd_ok := open_test_image()
+	if !fd_ok { testing.fail(t); return }
 	defer os.close(fd)
 
 	master, merr := fs.read_master_record(fd)
@@ -259,8 +260,8 @@ test_cache_allocate_matches_nil :: proc(t: ^testing.T) {
 // Verify the hint moves forward after allocation.
 @(test)
 test_cache_hint_advances :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
+	fd, fd_ok := open_test_image()
+	if !fd_ok { testing.fail(t); return }
 	defer os.close(fd)
 
 	master, merr := fs.read_master_record(fd)
@@ -288,8 +289,8 @@ test_cache_hint_advances :: proc(t: ^testing.T) {
 // Stress the cache with allocate+deallocate cycles across multiple clusters.
 @(test)
 test_cache_stress_multi_cluster :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
+	fd, fd_ok := open_test_image()
+	if !fd_ok { testing.fail(t); return }
 	defer os.close(fd)
 
 	master, merr := fs.read_master_record(fd)
@@ -348,8 +349,8 @@ test_cache_stress_multi_cluster :: proc(t: ^testing.T) {
 // Verify the cache works correctly alongside extension (append to chain).
 @(test)
 test_cache_chain_extension :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
+	fd, fd_ok := open_test_image()
+	if !fd_ok { testing.fail(t); return }
 	defer os.close(fd)
 
 	master, merr := fs.read_master_record(fd)
@@ -384,8 +385,8 @@ test_cache_chain_extension :: proc(t: ^testing.T) {
 // Verify the cache survives repeated alloc/free cycles without corruption.
 @(test)
 test_cache_many_small_alloc_free :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
+	fd, fd_ok := open_test_image()
+	if !fd_ok { testing.fail(t); return }
 	defer os.close(fd)
 
 	master, merr := fs.read_master_record(fd)

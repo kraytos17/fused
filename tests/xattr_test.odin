@@ -1,4 +1,5 @@
 // xattr_test.odin — Unit tests for extended-attribute storage (rev 8).
+// scope: shared image
 #+build linux
 package tests
 

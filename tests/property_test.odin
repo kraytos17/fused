@@ -19,6 +19,7 @@
 // Deterministic by construction: fixed seed, unique names, hermetic
 // scratch image. To explore, change PROP_SEED and rerun; the op log
 // printed on failure replays the exact scenario.
+// scope: scratch image
 #+build linux
 package tests
 

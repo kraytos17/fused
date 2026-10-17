@@ -8,6 +8,7 @@
 // (36 sectors) spans the freed clusters plus part of B's cluster.
 // Entry sizes are read back, not assumed (the first data cluster holds
 // reserved sectors).
+// scope: scratch image
 #+build linux
 package tests
 

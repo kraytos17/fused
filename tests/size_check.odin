@@ -3,6 +3,7 @@
 // Each expect_value mirrors a #assert in src/fuse3/types.odin; if the
 // #assert ever gets bypassed or the binding is used without rebuilding,
 // this catches it at startup.
+// scope: no image (pure unit)
 #+build linux
 package tests
 

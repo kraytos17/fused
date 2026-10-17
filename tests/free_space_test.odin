@@ -10,6 +10,7 @@
 // sectors are those in neither the table sector nor any live entry range
 // (set semantics — a Cluster_Map pseudo-entry may share the table sector,
 // so ranges are unioned, never summed).
+// scope: scratch image
 #+build linux
 package tests
 

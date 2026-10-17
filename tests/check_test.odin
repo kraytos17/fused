@@ -4,6 +4,7 @@
 // corruption with raw sector writes (bypassing validation, like disk
 // rot would), and asserts the scanner reports the stable finding code.
 // Scratch images are removed afterwards; the shared image is untouched.
+// scope: scratch image
 #+build linux
 package tests
 

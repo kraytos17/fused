@@ -6,6 +6,7 @@
 // test runner requires (it fails on log.error). Error paths that log
 // (No_Space fill, corrupt-chain guards, journal-full) are deliberately
 // out of scope; see the plan file.
+// scope: scratch image
 #+build linux
 package tests
 

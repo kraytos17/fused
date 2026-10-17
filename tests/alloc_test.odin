@@ -1,6 +1,7 @@
 // alloc_test.odin — Property tests for the sector allocator.
 //
 // Each test opens a shared /dev/shm copy of fused.img via open_test_image.
+// scope: shared image + scratch (stress test)
 #+build linux
 package tests
 
@@ -183,24 +184,14 @@ test_extension :: proc(t: ^testing.T) {
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
 
+ALLOC_SCRATCH := "/dev/shm/fused_alloc_test.img"
+
 // test_alloc_cache_stress — alloc/dealloc with bitmap cache
 @(test)
 test_alloc_cache_stress :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
-	defer os.close(fd)
-
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
+	vol, vok := scratch_volume(t, ALLOC_SCRATCH)
+	if !vok { return }
+	defer close_scratch_volume(&vol, ALLOC_SCRATCH)
 
 	baseline_used: u16 = 0
 	{

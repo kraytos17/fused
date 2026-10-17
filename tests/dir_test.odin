@@ -4,6 +4,7 @@
 // find_or_extend_dir use: scanning directory extents for free slots,
 // extending directories across multiple sectors, and reusing freed
 // slots in extended regions.
+// scope: shared image
 #+build linux
 package tests
 

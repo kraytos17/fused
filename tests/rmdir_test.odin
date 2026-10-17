@@ -8,6 +8,7 @@
 // tables readable, root resolvable) instead of assuming it — the scenario
 // where removal would succeed under the old code, i.e. the true hazard
 // (wrongful delete), not merely a pre-failed removal.
+// scope: scratch image
 #+build linux
 package tests
 

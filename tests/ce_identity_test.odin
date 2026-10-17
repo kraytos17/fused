@@ -8,6 +8,7 @@
 // Layout note: the first data cluster's table holds reserved entries in
 // slots 0-1, so the test fills it (14 sectors) and works on the next
 // cluster, whose table is fresh and holds only the test entry.
+// scope: scratch image
 #+build linux
 package tests
 

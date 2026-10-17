@@ -3,6 +3,7 @@
 // The journal (physical redo-log WAL) is the only crash-consistency
 // mechanism. These tests drive allocation/deallocation through the backend
 // and verify abort/commit seq semantics on the standard rev-8 test image.
+// scope: shared image
 #+build linux
 package tests
 

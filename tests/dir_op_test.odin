@@ -2,6 +2,7 @@
 // Generated from write_test.odin during the Volume refactor.
 // Tests: directory_growth, rename_simulation, cross_dir_rename,
 // symlink_create_and_read, chmod_persistence, and more.
+// scope: shared image
 #+build linux
 package tests
 

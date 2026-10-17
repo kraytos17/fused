@@ -2,6 +2,7 @@
 // Generated from write_test.odin during the Volume refactor.
 // Tests: lfn_create_and_read, resolve_path_extended_dir,
 // lseek_hole_data, resolve_lfn_actual_resolution.
+// scope: shared image
 #+build linux
 package tests
 

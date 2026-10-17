@@ -5,6 +5,7 @@
 // fuse3.set_test_context so get_fs()/begin_op() resolve a test FS. This
 // covers the errno-mapping layer that the Odin fs tests cannot reach and
 // that the Python tests only cover indirectly through the kernel.
+// scope: shared image
 #+build linux
 package tests
 

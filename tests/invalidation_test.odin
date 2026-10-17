@@ -3,35 +3,25 @@
 // Verifies that write_cluster_map_entry, write_cluster_entry_table, and
 // write_cluster_entry_at automatically invalidate the alloc cache when
 // called with a non-nil cache parameter.
+// scope: scratch image
 #+build linux
 package tests
 
-import "core:os"
 import "core:testing"
 import "src:fs"
+
+INVAL_SCRATCH := "/dev/shm/fused_inval_test.img"
 
 // Ensure a cluster's bitmap is cached, then write its CME via the
 // write helper and verify the cache entry is invalidated.
 @(test)
 test_invalidate_via_write_cme :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
-	defer os.close(fd)
-
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
+	vol, vok := scratch_volume(t, INVAL_SCRATCH)
+	if !vok { return }
+	defer close_scratch_volume(&vol, INVAL_SCRATCH)
 
 	// Pick the root cluster (allocated)
-	test_cluster := fs.Cluster(master.root_cluster)
+	test_cluster := fs.Cluster(vol.master.root_cluster)
 	_, _, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
 	testing.expect_value(t, berr, fs.FS_Error.None)
 
@@ -78,23 +68,11 @@ test_invalidate_via_write_cme :: proc(t: ^testing.T) {
 // Write a CE table via the helper with cache, verify invalidation.
 @(test)
 test_invalidate_via_write_ce_table :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
-	defer os.close(fd)
+	vol, vok := scratch_volume(t, INVAL_SCRATCH)
+	if !vok { return }
+	defer close_scratch_volume(&vol, INVAL_SCRATCH)
 
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
-
-	test_cluster := fs.Cluster(master.root_cluster)
+	test_cluster := fs.Cluster(vol.master.root_cluster)
 	_, _, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
 	testing.expect_value(t, berr, fs.FS_Error.None)
 
@@ -150,23 +128,11 @@ test_invalidate_via_write_ce_table :: proc(t: ^testing.T) {
 // Verify that write_cluster_entry_at with cache invalidates.
 @(test)
 test_invalidate_via_write_ce_at :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
-	defer os.close(fd)
+	vol, vok := scratch_volume(t, INVAL_SCRATCH)
+	if !vok { return }
+	defer close_scratch_volume(&vol, INVAL_SCRATCH)
 
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
-
-	test_cluster := fs.Cluster(master.root_cluster)
+	test_cluster := fs.Cluster(vol.master.root_cluster)
 	_, _, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
 	testing.expect_value(t, berr, fs.FS_Error.None)
 
@@ -217,23 +183,11 @@ test_invalidate_via_write_ce_at :: proc(t: ^testing.T) {
 // Verify that write functions properly invalidate the built-in cache.
 @(test)
 test_invalidate_via_write_always_invalidates :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
-	defer os.close(fd)
+	vol, vok := scratch_volume(t, INVAL_SCRATCH)
+	if !vok { return }
+	defer close_scratch_volume(&vol, INVAL_SCRATCH)
 
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
-
-	test_cluster := fs.Cluster(master.root_cluster)
+	test_cluster := fs.Cluster(vol.master.root_cluster)
 	_, used_before, berr := fs.alloc_cache_ensure(&vol.cache, &vol, u64(test_cluster))
 	testing.expect_value(t, berr, fs.FS_Error.None)
 
@@ -280,21 +234,9 @@ test_invalidate_via_write_always_invalidates :: proc(t: ^testing.T) {
 // the centralized invalidation (smoke test for the 7 mutation sites).
 @(test)
 test_invalidation_full_cycle :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
-	defer os.close(fd)
-
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
+	vol, vok := scratch_volume(t, INVAL_SCRATCH)
+	if !vok { return }
+	defer close_scratch_volume(&vol, INVAL_SCRATCH)
 
 	// Allocate — this exercises all the write helpers in allocate_sectors
 	fc, fo, aerr := fs.allocate_sectors(&vol, {}, 3, .File_Content)
@@ -354,21 +296,9 @@ test_invalidation_full_cycle :: proc(t: ^testing.T) {
 // the new cluster AND the previous (patched) cluster's cache entry.
 @(test)
 test_invalidation_chain_extension :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
-	defer os.close(fd)
-
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
+	vol, vok := scratch_volume(t, INVAL_SCRATCH)
+	if !vok { return }
+	defer close_scratch_volume(&vol, INVAL_SCRATCH)
 
 	// First allocation fills cluster 1 almost completely (needs 16 sectors)
 	// but cluster 1 has 13 free sectors (16 - 3 used by root).

@@ -3,6 +3,7 @@
 // Runs on isolated freshly formatted scratch images (never the shared
 // image): journal commits advance seq/watermark and leave ring slots
 // behind, so these tests must not pollute shared state.
+// scope: scratch image
 #+build linux
 package tests
 

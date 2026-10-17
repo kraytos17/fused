@@ -4,6 +4,7 @@
 // the ADR-001 ordering properties that kill -9 timing cannot target: a
 // commit failure must leave home untouched, and a failed op must persist
 // nothing uncommitted. Runs on isolated scratch images.
+// scope: scratch image
 #+build linux
 package tests
 

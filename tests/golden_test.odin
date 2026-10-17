@@ -11,6 +11,7 @@
 //
 // The goldens also pin that fresh formats validate and that formatting
 // twice yields identical bytes (no nondeterminism creep).
+// scope: scratch image
 #+build linux
 package tests
 

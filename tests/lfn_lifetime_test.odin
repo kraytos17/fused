@@ -8,6 +8,7 @@
 // NOTE: paths are heap buffers, never temp-allocator memory — begin_op
 // resets the temp arena, so temp-held paths are clobbered mid-callback
 // (the same reason cleanup_root builds heap path_bufs).
+// scope: scratch image
 #+build linux
 package tests
 

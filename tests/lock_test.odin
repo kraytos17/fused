@@ -1,5 +1,6 @@
 // lock_test.odin — Unit tests for POSIX fcntl locks (fused_lock) and BSD
 // flock (fused_flock).
+// scope: shared image
 #+build linux
 package tests
 

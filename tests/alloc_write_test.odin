@@ -3,6 +3,7 @@
 // Tests: write_fresh, write_append, truncate_to_zero, truncate_partial,
 // grow_shrink_cycle, multi_cluster_chain, fallocate_extend,
 // copy_file_range_simple, and more.
+// scope: shared image
 #+build linux
 package tests
 

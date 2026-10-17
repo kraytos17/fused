@@ -1,4 +1,5 @@
 // fs_test.odin — Unit tests for the fused filesystem core.
+// scope: shared image + scratch (edge cases)
 #+build linux
 package tests
 
@@ -234,21 +235,10 @@ test_display_flag_str_functions :: proc(t: ^testing.T) {
 // plain sector_read.
 @(test)
 test_sector_write_bulk :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
-	defer os.close(fd)
-
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
+	vol, vok := open_test_volume()
+	if !vok { testing.fail(t); return }
+	defer close_test_volume(&vol)
+	master := vol.master
 
 	kernel_ce, ce_err := fs.find_cluster_entry(
 		&vol,
@@ -287,24 +277,15 @@ test_sector_write_bulk :: proc(t: ^testing.T) {
 	fs.sector_write_bulk(&vol, abs_sector, orig)
 }
 
+FS_SCRATCH := "/dev/shm/fused_fs_test.img"
+
 // test_deallocate_sectors_edge_cases — tests dealledge cases (nil, allocate-then-deallocate)
 @(test)
 test_deallocate_sectors_edge_cases :: proc(t: ^testing.T) {
-	fd, open_err := os.open("fused.img", {.Read, .Write})
-	if open_err != nil { testing.fail(t); return }
-	defer os.close(fd)
-
-	master, merr := fs.read_master_record(fd)
-	testing.expect_value(t, merr, fs.FS_Error.None)
-
-	vol := fs.Volume {
-		disk   = fd,
-		master = master,
-	}
-	fs.alloc_cache_init(&vol.cache, &vol.master)
-	fs.dir_cache_init(&vol.dir_cache)
-	defer fs.alloc_cache_destroy(&vol.cache)
-	defer fs.dir_cache_destroy(&vol.dir_cache)
+	vol, vok := scratch_volume(t, FS_SCRATCH)
+	if !vok { return }
+	defer close_scratch_volume(&vol, FS_SCRATCH)
+	master := vol.master
 
 	err := fs.deallocate_sectors(&vol, fs.Chain_Location{0, 0})
 	testing.expect_value(t, err, fs.FS_Error.None)

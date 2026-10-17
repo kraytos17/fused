@@ -5,6 +5,7 @@
 // isolated freshly formatted image: a poison file fills free sectors
 // with 0xA5, is unlinked, and the alloc hint is reset so the victim
 // reuses the poisoned sectors.
+// scope: scratch image
 #+build linux
 package tests
 
