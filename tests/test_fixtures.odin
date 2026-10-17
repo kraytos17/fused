@@ -14,7 +14,10 @@
 #+build linux
 package tests
 
+import "core:c"
+import "core:fmt"
 import "core:os"
+import "core:sys/posix"
 import "core:testing"
 import "src:fs"
 import "src:fuse3"
@@ -49,6 +52,20 @@ bytes_equal :: proc(a, b: []u8) -> bool {
 		if a[i] != b[i] { return false }
 	}
 	return true
+}
+
+// tpath formats a test path into a stack buffer (NUL-terminated) and
+// returns it as a cstring. Caller buffers for fused_* must be stack or
+// heap, never the temp arena (begin_op frees it on entry).
+tpath :: proc(buf: []u8, format: string, args: ..any) -> cstring {
+	s := fmt.bprintf(buf, format, ..args)
+	buf[len(s)] = 0
+	return cstring(raw_data(buf))
+}
+
+// expect_errno asserts a callback return value equals the negated errno.
+expect_errno :: proc(t: ^testing.T, got: c.int, want: posix.Errno) {
+	testing.expect_value(t, got, -c.int(want))
 }
 
 // scratch_volume formats an isolated image and opens a volume on it.

@@ -54,22 +54,12 @@ teardown_mounter :: proc(fsys: ^mounter.FS) {
 // test image.
 cleanup_root :: proc(fsys: ^mounter.FS, names: []string) {
 	for name in names {
-		// +1 for the NUL: cstring(raw_data(...)) below strlen-scans, so
-		// the buffer must be terminated (make zero-fills the trailing byte).
-		buf := make([]u8, 2 + len(name))
-		buf[0] = '/'
-		copy(buf[1:], name)
-		path := string(buf[:1+len(name)])
+		pbuf: [128]u8
+		path := tpath(pbuf[:], "/%s", name)
 		// Try unlink, then rmdir; ignore errors.
-		mounter.fused_unlink(cstring(raw_data(path)))
-		mounter.fused_rmdir(cstring(raw_data(path)))
-		delete(buf)
+		mounter.fused_unlink(path)
+		mounter.fused_rmdir(path)
 	}
-}
-
-// expect_errno asserts a callback return value equals the negated errno.
-expect_errno :: proc(t: ^testing.T, got: c.int, want: posix.Errno) {
-	testing.expect_value(t, got, -c.int(want))
 }
 
 // Fill_Dir collector: a FUSE filler stub that accumulates names.

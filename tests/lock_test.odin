@@ -19,13 +19,10 @@ setup_lock_file :: proc(
 	ok: bool,
 ) {
 	fi = {}
-	// Stack buffer: string backing is not NUL-terminated but the fused
-	// API takes cstring; temp arena is forbidden (begin_op frees it).
-	// Names here are short ("/lockN"), well within the buffer.
+	// Stack path buffer (tpath NUL-terminates; temp arena is forbidden
+	// for fused args — begin_op frees it on entry).
 	pbuf: [64]u8
-	copy(pbuf[:], name)
-	pbuf[len(name)] = 0
-	rc := mounter.fused_create(cstring(raw_data(pbuf[:])), posix.mode_t{.IRUSR, .IWUSR}, &fi)
+	rc := mounter.fused_create(tpath(pbuf[:], "%s", name), posix.mode_t{.IRUSR, .IWUSR}, &fi)
 	if rc != 0 {
 		testing.expect_value(t, rc, 0)
 		return {}, false
