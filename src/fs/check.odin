@@ -467,9 +467,15 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 					continue
 				}
 
-				name := entry_short_name(&e)
+				// NOTE: derive the name from ep (chain-backed, stable for
+				// the whole frame), never from &e: e is a per-iteration
+				// stack copy at a reused address, so a stored short
+				// name would alias stack and read back as whatever
+				// entry was visited last (false DupName on every
+				// directory with 2+ entries).
+				name := entry_short_name(ep)
 				if .LFN in e.flags {
-					lfn, lok := resolve_lfn(vol, &e, context.temp_allocator)
+					lfn, lok := resolve_lfn(vol, ep, context.temp_allocator)
 					if !lok {
 						_check_add(r, .Error, "LfnPtr", fr.cluster, slot, allocator, "entry %d in %s has bad long-name reference", slot, fr.path)
 						name = ""

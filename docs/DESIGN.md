@@ -28,7 +28,7 @@ read-write FUSE mounting (all 43 `fuse_operations` callbacks implemented).
 | **`cmd/mount/`** | Binary entry point — `package main`, calls `mounter.run()`. | `src/mounter/` |
 | **`cmd/format/`** | Standalone image formatter. Produces valid disk images without libfuse3. | `src/fs/` |
 | **`cmd/dump/`** | Read-only image dumper. Walks the image structure and prints it in human-readable or JSON form. | `src/fs/` |
-| **`tests/`** | Odin unit tests (174), Python pytest integration (63), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
+| **`tests/`** | Odin unit tests (176), Python pytest integration (63), struct-size cross-checks, callback context/locking/logger/hygiene/attribute audits. | — |
 
 ## On-disk format (rev 8)
 
@@ -282,6 +282,10 @@ Binding contracts live in [`docs/decisions/`](decisions/):
 - [ADR-011](decisions/adr-011-timestamp-semantics.md): coarse mtime /
   atime advance on every mutation, no ctime, zero stamp means epoch,
   corrupt stamps fail closed.
+- [ADR-012](decisions/adr-012-read-eof-and-checker-names.md): reads
+  clamp to EOF (short count, 0 past EOF, never slack zeros);
+  checker names borrow from the chain buffer; deterministic
+  model-based property test.
 
 ### In-memory caches
 
@@ -525,7 +529,7 @@ tests/
 ├── ci.py                          CI orchestrator (calls make + pytest)
 ├── run_in_namespace.sh            Thin shell: exec unshare -rUm timeout "$@"
 ├── test_common.odin               Shared Odin test helpers (image open, scratch volumes)
-├── mounter_test.odin              41 mounter-callback unit tests
+├── mounter_test.odin              42 mounter-callback unit tests
 ├── rmdir_test.odin                1 rmdir-on-unreadable-listing test (isolated image)
 ├── lock_test.odin                 5 lock/flock unit tests (direct fused_lock/fused_flock calls)
 ├── journal_test.odin              3 journal-backend tests (rev-8 WAL image)
@@ -541,6 +545,7 @@ tests/
 ├── alloc_write_test.odin          17 allocator + write-path tests
 ├── ce_identity_test.odin          1 CE slot-identity test (stale-duplicate clear, isolated image)
 ├── check_test.odin                19 checker tests (Stage A ownership/links/bounds/free + Stage B reachability/orphans/journal, isolated images)
+├── property_test.odin             1 model-based property test (200 deterministic ops + clean final scan, isolated image)
 ├── truncate_test.odin             3 truncate-boundary tests (fragmented chain + journal pins, isolated image)
 ├── zero_fill_test.odin            5 extension zero-fill + zero-length-write tests (poison-reuse images)
 ├── free_space_test.odin           3 free-space oracle tests (Reserved/Full accounting, isolated images)
@@ -555,7 +560,7 @@ tests/
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `make test` (174 Odin tests) |
+| 2. Unit tests | `make test` (176 Odin tests) |
 | 3. Tool integration | `make pytest -m tool` (17 format + imgdump tests) |
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |

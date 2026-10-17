@@ -310,10 +310,18 @@ fused_read :: proc "c" (
 		return fuse3.nix(.EINVAL)
 	}
 
-	_, data_cluster, data_offset, rerr := read_entry_from_fh(fsys, fi.fh)
+	// Clamp to EOF: the extent runs are sector-granular, so without this
+	// a read crossing EOF inside the last sector would return slack
+	// zeros as file data. POSIX requires a short count; off >= size is
+	// a clean 0 (EOF), never an error.
+	entry, data_cluster, data_offset, rerr := read_entry_from_fh(fsys, fi.fh)
 	if rerr != .None {
 		return fs_error_to_errno(rerr)
 	}
+	if uoff >= entry.file_size {
+		return 0
+	}
+	clamped := c.size_t(min(u64(size), entry.file_size - uoff))
 
 	runs, xerr := resolve_extents_shared(fsys, fs.Chain_Location{data_cluster, data_offset})
 	if xerr != .None {
@@ -323,8 +331,8 @@ fused_read :: proc "c" (
 	mem_sink := Mem_Read_Sink {
 		fsys      = fsys,
 		buf       = ([^]u8)(buf),
-		size      = u64(size),
-		remaining = u64(size),
+		size      = u64(clamped),
+		remaining = u64(clamped),
 	}
 	sink := Read_Sink {
 		user      = &mem_sink,
@@ -365,17 +373,23 @@ fused_read_buf :: proc "c" (
 		return fuse3.nix(.EINVAL)
 	}
 
-	_, data_cluster, data_offset, rerr := read_entry_from_fh(fsys, fi.fh)
+	// Clamp to EOF (same contract as fused_read): off >= size is a
+	// clean 0 with *bufp left NULL, which libfuse treats as EOF.
+	entry, data_cluster, data_offset, rerr := read_entry_from_fh(fsys, fi.fh)
 	if rerr != .None {
 		return fs_error_to_errno(rerr)
 	}
+	if uoff >= entry.file_size {
+		return 0
+	}
+	clamped := c.size_t(min(u64(size), entry.file_size - uoff))
 
 	runs, xerr := resolve_extents_shared(fsys, fs.Chain_Location{data_cluster, data_offset})
 	if xerr != .None {
 		return fuse3.nix(.ENOENT)
 	}
 
-	slices, total_provided := collect_read_slices(runs, uoff, u64(size), context.temp_allocator)
+	slices, total_provided := collect_read_slices(runs, uoff, u64(clamped), context.temp_allocator)
 
 	defer delete(slices)
 	if len(slices) == 0 {

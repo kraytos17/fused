@@ -9,6 +9,7 @@
 package tests
 
 import "core:c"
+import "core:c/libc"
 import "core:container/bit_array"
 import "core:mem"
 import "core:strings"
@@ -184,6 +185,61 @@ test_mount_create_write_read_unlink :: proc(t: ^testing.T) {
 	st: fuse3.Stat
 	rc = mounter.fused_getattr("/ufile", &st, nil)
 	expect_errno(t, rc, .ENOENT)
+}
+
+// test_mount_read_past_eof_is_short — reads crossing EOF return a short
+// count, and reads at/past EOF return 0: the extent runs are
+// sector-granular, so without an EOF clamp the tail sector's slack zeros
+// would leak out as file data. Same contract for fused_read_buf.
+@(test)
+test_mount_read_past_eof_is_short :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	ok := setup_mounter(t, &fsys)
+	if !ok { return }
+	defer teardown_mounter(&fsys)
+	cleanup_root(&fsys, []string{"eoffile"})
+	defer cleanup_root(&fsys, []string{"eoffile"})
+
+	fi: fuse3.File_Info
+	rc := mounter.fused_create("/eoffile", posix.mode_t{.IRUSR, .IWUSR}, &fi)
+	testing.expect_value(t, rc, 0)
+
+	data := "0123456789abcdef" // 16 bytes, well inside one sector
+	rc = mounter.fused_write("/eoffile", raw_data(data), c.size_t(len(data)), 0, &fi)
+	testing.expect_value(t, rc, c.int(len(data)))
+
+	buf := make([]u8, 64)
+	defer delete(buf)
+	for i in 0 ..< len(buf) { buf[i] = 0xAA }
+
+	// Straddling read: 10 bytes at off 10 → only 6 available.
+	rc = mounter.fused_read("/eoffile", raw_data(buf), 10, 10, &fi)
+	testing.expect_value(t, rc, 6)
+	testing.expect(t, string(buf[:6]) == "abcdef", "tail bytes match")
+
+	// At EOF → 0, past EOF → 0 (not ENOENT, not slack zeros).
+	rc = mounter.fused_read("/eoffile", raw_data(buf), 10, 16, &fi)
+	testing.expect_value(t, rc, 0)
+	rc = mounter.fused_read("/eoffile", raw_data(buf), 10, 100, &fi)
+	testing.expect_value(t, rc, 0)
+
+	// read_buf mirrors the clamp (mute the debug print's allocation by
+	// scoping: bv is libc-malloc'd, freed here the same way).
+	bvp: ^fuse3.Bufvec = nil
+	rc = mounter.fused_read_buf("/eoffile", &bvp, 10, 10, &fi)
+	testing.expect_value(t, rc, 6)
+	testing.expect(t, bvp != nil, "straddle allocates a bufvec")
+	testing.expect_value(t, bvp.count, 1)
+	testing.expect_value(t, bvp._buf[0].size, 6)
+	libc.free(bvp)
+
+	bvp = nil
+	rc = mounter.fused_read_buf("/eoffile", &bvp, 10, 16, &fi)
+	testing.expect_value(t, rc, 0)
+	testing.expect(t, bvp == nil, "EOF read_buf leaves bufp NULL")
+
+	rc = mounter.fused_unlink("/eoffile")
+	testing.expect_value(t, rc, 0)
 }
 
 // test_mount_mkdir_rmdir — directory lifecycle + ENOTEMPTY.
