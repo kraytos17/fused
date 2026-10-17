@@ -321,3 +321,69 @@ test_fault_write_fails_dealloc_clean :: proc(t: ^testing.T) {
 	testing.expect_value(t, seq1, seq0)
 	testing.expect_value(t, wm1, wm0)
 }
+
+// test_fault_recover_aborts_on_home_write — a committed-but-unapplied
+// chunk meets a failing home-table write during recover: replay must
+// abort the slot and hold the watermark (not skip it), and a later
+// fault-free recover must complete it from the committed log.
+@(test)
+test_fault_recover_aborts_on_home_write :: proc(t: ^testing.T) {
+	vol, ok := fault_setup(t)
+	if !ok { return }
+	defer fault_teardown(&vol)
+
+	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
+	testing.expect_value(t, aerr, fs.FS_Error.None)
+	if aerr != .None { return }
+
+	// Single-entry deallocation plan, committed but left unapplied by a
+	// failed apply (same setup as the flush-path test).
+	table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
+	idx := -1
+	entry, ferr := fs.find_cluster_entry(&vol, hc, ho, &table, &idx)
+	testing.expect_value(t, ferr, fs.FS_Error.None)
+	if ferr != .None { return }
+	cleared_size := u64(entry.allocation_size)
+	entry.state -= {.Allocated}
+	plan := [1]fs.Journal_Entry{fs.journal_entry_from_cluster_entry(entry, u64(hc), u8(idx))}
+
+	// Snapshot the clean baseline before arming faults.
+	f0, seq0, wm0 := fault_state(&vol)
+	testing.expect_value(t, wm0, seq0 - 1)
+
+	vol.fault = fs.IO_Fault {
+		enabled           = true,
+		fail_reads_after  = max(u64),
+		fail_writes_after = 2,
+		fail_syncs_after  = max(u64),
+	}
+	ferr = fs.journal_flush_chunk(&vol, plan[:])
+	testing.expect_value(t, ferr, fs.FS_Error.Sector_Write_Error)
+	testing.expect_value(t, vol.fault.writes, u64(4))
+
+	// Recover with the replay's home-table write faulted: scan and record
+	// reads succeed, the apply write is the next one and fails.
+	vol.fault.fail_writes_after = vol.fault.writes
+	fs.journal_recover(&vol)
+
+	// Watermark advanced past the already-checkpointed prefix but stopped
+	// before the unapplied chunk; home untouched, free count unchanged.
+	// (seq is untouched by recover; it advanced once at flush time.)
+	_, seq1, wm1 := fault_state(&vol)
+	testing.expect_value(t, seq1, seq0 + 1)
+	testing.expect_value(t, wm1, seq0)
+	testing.expect_value(t, vol.fault.writes, u64(6))
+	_, rerr := fs.find_cluster_entry(&vol, hc, ho)
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+	testing.expect_value(t, fs.alloc_cache_count_free(&vol), f0)
+
+	// Faults off: recover completes the chunk from the committed log.
+	vol.fault.enabled = false
+	fs.journal_recover(&vol)
+	_, seq2, wm2 := fault_state(&vol)
+	testing.expect_value(t, seq2, seq1)
+	testing.expect_value(t, wm2, seq1)
+	_, rerr2 := fs.find_cluster_entry(&vol, hc, ho)
+	testing.expect_value(t, rerr2, fs.FS_Error.Entry_Not_Found)
+	testing.expect_value(t, fs.alloc_cache_count_free(&vol), f0 + cleared_size)
+}
