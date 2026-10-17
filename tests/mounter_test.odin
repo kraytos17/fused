@@ -1050,3 +1050,38 @@ test_extent_cache_clone_failure_no_space :: proc(t: ^testing.T) {
 	derr := fs.deallocate_sectors(&fsys.vol, fs.Chain_Location{hc, ho})
 	testing.expect_value(t, derr, fs.FS_Error.None)
 }
+
+// test_lfn_lookup_clone_failure_no_name — a failed temp clone must fail
+// the lookup, not hand back an empty string as a valid name.
+@(test)
+test_lfn_lookup_clone_failure_no_name :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !setup_mounter(t, &fsys) { return }
+	defer teardown_mounter(&fsys)
+	defer cleanup_root(&fsys, []string{"llongname-0123456789-abcdef"})
+
+	long := "llongname-0123456789-abcdef"
+	fi: fuse3.File_Info
+	testing.expect_value(t, mounter.fused_create("/llongname-0123456789-abcdef", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+
+	res, rerr := fs.resolve_path(&fsys.vol, "/llongname-0123456789-abcdef")
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+	if rerr != .None { return }
+	testing.expect(t, .LFN in res.entry.flags, "long name stored as LFN")
+	key := mounter.lfn_cache_key(fs.Chain_Location{res.cluster, res.offset}, res.entry_index)
+
+	rfs := mounter.begin_read_op()
+	ent := res.entry
+	name1, ok1 := mounter.lfn_lookup_shared(&fsys, key, &fsys.vol, &ent)
+	testing.expect(t, ok1, "warm lookup succeeds")
+	testing.expect(t, name1 == long, "warm lookup returns full name")
+
+	// Swap in a failing temp allocator: the cached hit's clone fails.
+	good := context.temp_allocator
+	context.temp_allocator = mem.Allocator{fail_allocator_proc, nil}
+	name2, ok2 := mounter.lfn_lookup_shared(&fsys, key, &fsys.vol, &ent)
+	context.temp_allocator = good
+	testing.expect(t, !ok2, "failed clone fails the lookup")
+	testing.expect(t, name2 == "", "no phantom name on failure")
+	mounter.end_read_op(rfs)
+}

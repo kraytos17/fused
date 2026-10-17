@@ -395,14 +395,24 @@ lfn_lookup_shared :: proc(
 	ok: bool,
 ) {
 	if cached, hit := lru.peek(&fsys.lfn_cache, key); hit {
-		out, _ := strings.clone(cached, context.temp_allocator)
+		// A failed temp clone must fail the lookup, not hand back an
+		// empty string as a valid name (fail-closed).
+		out, cerr := strings.clone(cached, context.temp_allocator)
+		if cerr != .None {
+			return "", false
+		}
 		return out, true
 	}
 
 	sync.rw_mutex_shared_unlock(&fsys.mu)
 	sync.rw_mutex_lock(&fsys.mu)
 	if cached, hit := lru.peek(&fsys.lfn_cache, key); hit {
-		out, _ := strings.clone(cached, context.temp_allocator)
+		out, cerr := strings.clone(cached, context.temp_allocator)
+		if cerr != .None {
+			sync.rw_mutex_unlock(&fsys.mu)
+			sync.rw_mutex_shared_lock(&fsys.mu)
+			return "", false
+		}
 		sync.rw_mutex_unlock(&fsys.mu)
 		sync.rw_mutex_shared_lock(&fsys.mu)
 		return out, true
@@ -424,7 +434,10 @@ lfn_lookup_shared :: proc(
 		return "", false
 	}
 	if cached, hit := lru.peek(&fsys.lfn_cache, key); hit {
-		out, _ := strings.clone(cached, context.temp_allocator)
+		out, cerr := strings.clone(cached, context.temp_allocator)
+		if cerr != .None {
+			return "", false
+		}
 		return out, true
 	}
 	return lfn, true
