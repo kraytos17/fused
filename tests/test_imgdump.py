@@ -98,3 +98,102 @@ def test_corrupted_image_end_sig(imgdump_bin: str, tmp_path: str):
         f.write(data)
     r = run_cli(imgdump_bin, path)
     assert r.returncode == 1
+
+
+def _root_location(imgdump_bin: str, src_image: str):
+    """Root dir location from the image itself (no hardcoded geometry)."""
+    d = get_json(imgdump_bin, src_image)
+    assert d["master"]["rev_min"] == 8 and d["master"]["rev_max"] == 8
+    return d["master"]["cluster_size"], d["master"]["root_cluster"], d["master"]["root_sector_index"]
+
+
+def _plant_root_entries(src_image: str, dst_path: str, entries: list, rc: int, ro: int, cs: int) -> None:
+    """Copy src_image to dst_path, then write raw 64-byte directory entries
+    into free slots of the root directory's first sector.
+
+    entries: list of (name: bytes, flags: int, cluster: int, offset: int).
+    Layout: flags u16 @0, name[16] @2, sector_index u16 @18,
+    stored_cluster u64 @20 (rev-8 layout asserted by the caller).
+    """
+    import shutil
+    import struct
+
+    shutil.copy(src_image, dst_path)
+    with open(dst_path, "r+b") as f:
+        f.seek((rc * cs + ro) * 512)
+        sec = bytearray(f.read(512))
+        slot = 0
+        for name, flags, cluster, offset in entries:
+            while struct.unpack_from("<H", sec, slot * 64)[0] != 0:
+                slot += 1
+                assert slot < 8, "root dir first sector full"
+            off = slot * 64
+            struct.pack_into("<H", sec, off, flags)
+            assert len(name) <= 16
+            # Zero the whole name field: free slots may hold stale bytes
+            # from deleted entries, which would otherwise extend the name.
+            sec[off + 2 : off + 18] = bytes(16)
+            sec[off + 2 : off + 2 + len(name)] = name
+            struct.pack_into("<H", sec, off + 18, offset)
+            struct.pack_into("<Q", sec, off + 20, cluster)
+            slot += 1
+        f.seek((rc * cs + ro) * 512)
+        f.write(sec)
+
+
+def _run_timeout(binary: str, *args: str, timeout: int = 30):
+    import subprocess
+
+    return subprocess.run([binary, *args], capture_output=True, text=True, check=False, timeout=timeout)
+
+
+@pytest.mark.tool
+def test_json_cycle_terminates(imgdump_bin: str, fused_image: str, tmp_path: str, check_bin: str):
+    """A directory cycle must terminate the dumpers, not hang/crash them."""
+    import json
+
+    dst = str(tmp_path / "cycle.img")
+    cs, rc, ro = _root_location(imgdump_bin, fused_image)
+    # Subdirectory whose chain IS the root chain: root -> loop -> root.
+    _plant_root_entries(fused_image, dst, [(b"loop", 0x25, rc, ro)], rc, ro, cs)
+
+    r = _run_timeout(imgdump_bin, dst)
+    assert r.returncode == 0, r.stderr
+    assert "<cycle>" in r.stdout
+
+    r = _run_timeout(imgdump_bin, "--json", dst)
+    assert r.returncode == 0, r.stderr
+    d = json.loads(r.stdout)
+    assert "loop" in d["root"]
+    assert "<cycle>" in d["root"]["loop"].get("children", {})
+
+    r = run_cli(check_bin, dst)
+    assert r.returncode != 0
+    assert "DirCycle" in (r.stdout + r.stderr)
+
+
+@pytest.mark.tool
+def test_json_duplicate_names_surfaced(imgdump_bin: str, fused_image: str, tmp_path: str):
+    """Duplicate names in one directory must all surface, not overwrite."""
+    import json
+
+    dst = str(tmp_path / "dups.img")
+    cs, rc, ro = _root_location(imgdump_bin, fused_image)
+    _plant_root_entries(
+        fused_image,
+        dst,
+        [(b"dup", 0x21, rc, ro), (b"dup", 0x21, rc, ro)],
+        rc,
+        ro,
+        cs,
+    )
+
+    r = _run_timeout(imgdump_bin, "--json", dst)
+    assert r.returncode == 0, r.stderr
+    d = json.loads(r.stdout)
+    assert "dup" in d["root"]
+    assert "dup#dup2" in d["root"]
+
+    r = _run_timeout(imgdump_bin, dst)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.count('"dup"') == 2

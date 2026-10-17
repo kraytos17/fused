@@ -99,11 +99,22 @@ build_directory :: proc(
 	vol: ^fs.Volume,
 	cluster: fs.Cluster,
 	offset: fs.Sector_Offset,
+	depth: int,
+	seen: ^map[fs.Chain_Location]bool,
 ) -> map[string]EntryJSON {
-	runs, ext_err := fs.resolve_extents(vol, fs.Chain_Location{cluster, offset})
-	if ext_err != .None { return nil }
-
 	result := make(map[string]EntryJSON)
+	key := fs.Chain_Location{cluster, offset}
+	if key in seen {
+		result["<cycle>"] = EntryJSON{kind = "CYCLE"}
+		return result
+	}
+	if depth > MAX_DUMP_DEPTH {
+		result["<max-depth>"] = EntryJSON{kind = "MAXDEPTH"}
+		return result
+	}
+	seen[key] = true
+	runs, ext_err := fs.resolve_extents(vol, fs.Chain_Location{cluster, offset})
+	if ext_err != .None { return result }
 	for run in runs {
 		n := int(run.count)
 		for si in 0 ..< n {
@@ -153,9 +164,23 @@ build_directory :: proc(
 						vol,
 						fs.Cluster(e.stored_cluster),
 						fs.Sector_Offset(e.sector_index),
+						depth + 1,
+						seen,
 					)
 				}
-				result[name] = entry
+				dkey := name
+				if dkey in result {
+					dn := 2
+					for {
+						cand := fmt.tprintf("%s#dup%d", name, dn)
+						if cand not_in result {
+							dkey = cand
+							break
+						}
+						dn += 1
+					}
+				}
+				result[dkey] = entry
 			}
 		}
 	}
@@ -171,10 +196,14 @@ print_json :: proc(vol: ^fs.Volume) {
 		delete(cluster_list)
 	}
 
+	seen := make(map[fs.Chain_Location]bool)
+	defer delete(seen)
 	root_entries := build_directory(
 		vol,
 		fs.Cluster(m.root_cluster),
 		fs.Sector_Offset(m.root_sector_index),
+		0,
+		&seen,
 	)
 
 	defer delete(root_entries)

@@ -131,26 +131,50 @@ print_cluster_map :: proc(vol: ^fs.Volume, _: bool, _: ^bool, show_all: bool) {
 	fmt.println()
 }
 
+// MAX_DUMP_DEPTH bounds directory recursion (visited-set aside): legit
+// trees resolve through at most 16 path components, so anything deeper
+// is either corrupt or hostile, and each frame holds a sector buffer.
+MAX_DUMP_DEPTH :: 256
+
 // print_directory_tree prints the directory tree starting from root.
 print_directory_tree :: proc(vol: ^fs.Volume, _: bool, _: ^bool) {
 	fmt.println("=== Directory Tree ===")
+	seen := make(map[fs.Chain_Location]bool)
+	defer delete(seen)
 	print_directory(
 		vol,
 		fs.Cluster(vol.master.root_cluster),
 		fs.Sector_Offset(vol.master.root_sector_index),
 		"",
 		true,
+		0,
+		&seen,
 	)
 }
 
 // print_directory recursively prints a directory and its children.
+// Guards: directories already on the current walk print as <cycle> and
+// stop (a corrupt image can otherwise recurse forever), and nesting past
+// MAX_DUMP_DEPTH prints <max depth> instead of risking stack exhaustion.
 print_directory :: proc(
 	vol: ^fs.Volume,
 	cluster: fs.Cluster,
 	offset: fs.Sector_Offset,
 	prefix: string,
 	is_root: bool,
+	depth: int,
+	seen: ^map[fs.Chain_Location]bool,
 ) {
+	key := fs.Chain_Location{cluster, offset}
+	if key in seen {
+		fmt.printf("%s  └── <cycle>\n", prefix)
+		return
+	}
+	if depth > MAX_DUMP_DEPTH {
+		fmt.printf("%s  └── <max depth>\n", prefix)
+		return
+	}
+	seen[key] = true
 	runs, ext_err := fs.resolve_extents(vol, fs.Chain_Location{cluster, offset})
 	if ext_err != .None { return }
 	for run in runs {
@@ -248,6 +272,8 @@ print_directory :: proc(
 						fs.Sector_Offset(e.sector_index),
 						child_prefix,
 						false,
+						depth + 1,
+						seen,
 					)
 				}
 			}
