@@ -73,7 +73,7 @@ tools/
   audit/              Callback locking/logger/hygiene/attribute audit
 demo/
   hello_main.odin     Minimal FUSE hello-world example
-tests/                Odin unit tests (131) + Python pytest suite (61)
+tests/                Odin unit tests (132) + Python pytest suite (61)
 ```
 
 ## Prerequisites
@@ -158,7 +158,7 @@ make smoke-errors               # error path tests
 make bench                      # throughput benchmark (write/read/statfs/readdir)
 ```
 
-Two test layers: Odin unit tests (`make test`, 131 tests) exercise the `fs` library and
+Two test layers: Odin unit tests (`make test`, 132 tests) exercise the `fs` library and
 the `mounter` callbacks directly in-process (errno mapping, xattr semantics,
 path resolution — no kernel). Python pytest tests (`make pytest`, 61 tests) mount the
 real filesystem via `/dev/fuse` and verify end-to-end behavior through the
