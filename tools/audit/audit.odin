@@ -33,6 +33,10 @@
 //       full free (a retained head aliases freed sectors on regrow).
 //   (s10) no checker name from a stack copy &e (stored short names
 //       must borrow the chain buffer, never a reused stack slot).
+//   (s11) fused_copy_file_range body clamps with file_size - src_off
+//       (a copy crossing src EOF must short-count, never copy slack).
+//   (s12) fused_copy_file_range body zero-fills the dst gap via
+//       zero_file_range (reused sectors must read zeros past old EOF).
 //   (t1) no temp-arena caller buffers in tests/ (begin_op frees temp
 //       on entry; fused_* args must be stack or heap).
 package main
@@ -715,25 +719,28 @@ audit_tests_hygiene :: proc() -> (failed: int) {
 	return failed
 }
 
-// Storage audit (rules s1..s6, s8..s10): journal-transaction and
+// Storage audit (rules s1..s6, s8..s12): journal-transaction and
 // cache-ownership guardrails from the audit §9 list, plus regression
 // pins for fixed bugs (s8: read EOF clamp, s9: truncate head-clear,
-// s10: checker stack-alias). Line-based deliberately, like the logger
-// audit: every enforced shape is a fixed idiom, and the matchers are
-// narrow to avoid false positives.
+// s10: checker stack-alias, s11: copy EOF clamp, s12: copy gap-zero).
+// Line-based deliberately, like the logger audit: every enforced
+// shape is a fixed idiom, and the matchers are narrow to avoid
+// false positives.
 audit_storage_rules :: proc(path: string, lines: []string) -> (checked, failed: int) {
-	// s8/s9 proc-body tracking: audited top-level procs open at
-	// column 0 and close with a column-0 "}"; the pinning idiom must
+	// s8/s9/s11/s12 proc-body tracking: audited top-level procs open at
+	// column 0 and close with a column-0 "}"; the pinning idiom(s) must
 	// appear in code (not comments) between them.
 	audited_body := ""
 	body_has_pin := false
+	copy_has_clamp := false
+	copy_has_zero := false
 	for i in 0 ..< len(lines) {
 		line := lines[i]
 		trimmed := strings.trim_space(line)
 		if strings.has_prefix(trimmed, "//") { continue }
 
-		// s8/s9 proc tracking (column-0 open/close only, matching the
-		// persist-order audit's end detection).
+		// s8/s9/s11/s12 proc tracking (column-0 open/close only, matching
+		// the persist-order audit's end detection).
 		if audited_body == "" {
 			if strings.has_prefix(line, "fused_read :: proc") ||
 			   strings.has_prefix(line, "fused_read_buf :: proc") {
@@ -742,22 +749,43 @@ audit_storage_rules :: proc(path: string, lines: []string) -> (checked, failed: 
 			} else if strings.has_prefix(line, "fused_truncate :: proc") {
 				audited_body = "truncate"
 				body_has_pin = false
+			} else if strings.has_prefix(line, "fused_copy_file_range :: proc") {
+				audited_body = "copy"
+				copy_has_clamp = false
+				copy_has_zero = false
 			}
 		} else if line == "}" {
 			checked += 1
-			if !body_has_pin {
-				if audited_body == "read" {
+			if audited_body == "read" {
+				if !body_has_pin {
 					fmt.printf("FAIL   %s:%d read path without EOF clamp (file_size - uoff)\n", path, i + 1)
-				} else {
-					fmt.printf("FAIL   %s:%d fused_truncate without head clear (stored_cluster = 0)\n", path, i + 1)
+					failed += 1
 				}
-				failed += 1
+			} else if audited_body == "truncate" {
+				if !body_has_pin {
+					fmt.printf("FAIL   %s:%d fused_truncate without head clear (stored_cluster = 0)\n", path, i + 1)
+					failed += 1
+				}
+			} else if audited_body == "copy" {
+				checked += 1
+				if !copy_has_clamp {
+					fmt.printf("FAIL   %s:%d copy without src EOF clamp (file_size - src_off)\n", path, i + 1)
+					failed += 1
+				}
+				if !copy_has_zero {
+					fmt.printf("FAIL   %s:%d copy without dst gap zero-fill (zero_file_range)\n", path, i + 1)
+					failed += 1
+				}
 			}
 			audited_body = ""
 		} else if audited_body == "read" && strings.contains(line, "file_size - uoff") {
 			body_has_pin = true
 		} else if audited_body == "truncate" && strings.contains(line, "stored_cluster = 0") {
 			body_has_pin = true
+		} else if audited_body == "copy" && strings.contains(line, "file_size - src_off") {
+			copy_has_clamp = true
+		} else if audited_body == "copy" && strings.contains(line, "zero_file_range") {
+			copy_has_zero = true
 		}
 
 		// s1: backend.add() must be result-checked at the call site.

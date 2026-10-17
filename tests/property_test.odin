@@ -11,15 +11,16 @@
 // must be completely clean: leftover chains on a clean shutdown path
 // mean a leak.
 //
-// Directories are flat (all live directly under root) and names are a
-// mix of short and long (>16 bytes, exercising the LFN path). Moves
-// refresh the open handle via fused_open: handles name directory slots
-// (ADR-003), so a handle opened before a cross-directory move would
-// keep pointing at the old slot.
+// Directories nest (depth-capped; moves carry a circularity oracle)
+// and names are a mix of short and long (>16 bytes, exercising the LFN
+// path). Moves refresh the open handle via fused_open: handles name
+// directory slots (ADR-003), so a handle opened before a cross-directory
+// move would keep pointing at the old slot.
 //
-// Deterministic by construction: fixed seed, unique names, hermetic
-// scratch image. To explore, change PROP_SEED and rerun; the op log
-// printed on failure replays the exact scenario.
+// Deterministic by construction: fixed seeds, unique names, hermetic
+// scratch image. To explore, add a thin wrapper with a new seed (see
+// test_prop_random_ops_b/c below); the op log printed on failure replays
+// the exact scenario.
 // scope: scratch image
 #+build linux
 package tests
@@ -36,7 +37,6 @@ import "src:fuse3"
 import "src:mounter"
 
 PROP_SCRATCH := "/dev/shm/fused_prop_test.img"
-PROP_SEED :: u64(0xC0FFEE11)
 PROP_OPS :: 300
 PROP_MAX_LIVE :: 8
 PROP_MAX_DIRS :: 4
@@ -278,12 +278,13 @@ prop_verify_dir :: proc(
 	return true
 }
 
-// test_prop_random_ops — randomized create/symlink/write/truncate/
-// rename/move/mkdir/rmdir/readdir/readlink/xattr sequence against an
-// in-memory model, verified by reads and listings throughout and a
-// clean checker scan at the end.
-@(test)
-test_prop_random_ops :: proc(t: ^testing.T) {
+// prop_run_once runs one randomized model-checking scenario against an
+// in-memory model: randomized create/symlink/write/truncate/rename/
+// move/mkdir/rmdir/readdir/readlink/copy/fallocate/xattr sequence,
+// verified by reads and listings throughout and a clean checker scan
+// at the end. Fully deterministic for a given seed; the op log printed
+// on failure replays the exact scenario.
+prop_run_once :: proc(t: ^testing.T, seed: u64) {
 	fsys: mounter.FS
 	if !scratch_fs(t, PROP_SCRATCH, &fsys) {
 		testing.fail(t)
@@ -316,7 +317,7 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 	// file or directory may claim it (path formatting keys off 0).
 	next_id := 1
 	rng := Prop_Rng {
-		s = PROP_SEED,
+		s = seed,
 	}
 
 	for op := 0; op < PROP_OPS && !failed; op += 1 {
@@ -981,4 +982,24 @@ test_prop_random_ops :: proc(t: ^testing.T) {
 		}
 		if !progress { break }
 	}
+}
+
+// test_prop_random_ops runs the model suite with the default seed.
+@(test)
+test_prop_random_ops :: proc(t: ^testing.T) {
+	prop_run_once(t, 0xC0FFEE11)
+}
+
+// test_prop_random_ops_b reruns the model suite with an alternate seed
+// (different op mix; historically green).
+@(test)
+test_prop_random_ops_b :: proc(t: ^testing.T) {
+	prop_run_once(t, 0xDEADBEEF)
+}
+
+// test_prop_random_ops_c reruns the model suite with the seed that
+// caught the truncate-to-zero stale head (ADR-013).
+@(test)
+test_prop_random_ops_c :: proc(t: ^testing.T) {
+	prop_run_once(t, 0x12345678)
 }

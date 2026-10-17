@@ -55,7 +55,7 @@ directory chain** — the wrong identity in both directions:
 
 ## Tests enforcing this
 
-- `tests/property_test.odin::test_prop_random_ops`: 300-op model run
+- `tests/property_test.odin::test_prop_random_ops` (+`_b`/`_c` seed variants): 300-op model run
   with nested mkdir, directory moves (legal, circular, same-parent
   no-op) verified by return code and resolution checks.
   Mutation-checked: the old head comparison fails the run (a

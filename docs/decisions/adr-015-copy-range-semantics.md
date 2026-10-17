@@ -62,5 +62,5 @@ fix established this for `fused_write`).
   short count with exact content at src EOF, zero reads at src EOF,
   poisoned-sector gap zeroing, mtime advance on a same-size copy.
   Mutation-checked: all three aspects fail with the fix reverted.
-- `tests/property_test.odin::test_prop_random_ops`: new copy /
+- `tests/property_test.odin::test_prop_random_ops` (+`_b`/`_c` seed variants): new copy /
   write_buf / fallocate ops verified against the model on every run.

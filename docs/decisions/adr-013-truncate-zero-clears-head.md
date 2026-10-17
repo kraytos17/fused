@@ -58,6 +58,6 @@ reallocation later.
 - `tests/mounter_test.odin::test_mount_truncate_zero_then_grow`:
   write, truncate to 0, grow to 8 (zero-filled), rewrite and read
   back. Mutation-checked: fails with the head clear reverted.
-- `tests/property_test.odin::test_prop_random_ops`: 300-op model run
+- `tests/property_test.odin::test_prop_random_ops` (+`_b`/`_c` seed variants): 300-op model run
   with subdirectories, cross-directory moves, LFN names, and readdir
   verification; caught the original ENOENT on seed 0x12345678.

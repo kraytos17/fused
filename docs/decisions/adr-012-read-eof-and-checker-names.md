@@ -72,7 +72,7 @@ oracle, `tests/property_test.odin`):
   straddling read returns a short count with exact tail bytes,
   at/past-EOF reads return 0, `read_buf` mirrors both (NULL bufp
   at EOF). Mutation-checked: fails with the clamp reverted.
-- `tests/property_test.odin::test_prop_random_ops`: 300-op model
+- `tests/property_test.odin::test_prop_random_ops` (+`_b`/`_c` seed variants): 300-op model
   run (files + symlinks with short/multi-sector targets, nested
   directories, cross-directory file/dir moves with handle refresh
   and circularity oracle, short and LFN names, readdir/readlink
