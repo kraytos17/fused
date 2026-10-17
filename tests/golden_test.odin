@@ -15,6 +15,7 @@
 package tests
 
 import "core:fmt"
+import "core:hash"
 import "core:os"
 import "core:testing"
 import "src:fs"
@@ -22,15 +23,6 @@ import "src:fs"
 GOLDEN_SCRATCH := "/dev/shm/fused_golden_test.img"
 GOLDEN_SIZE :: 1 << 20
 GOLDEN_CHUNK :: 1 << 16
-
-// golden_fnv1a hashes bytes with 64-bit FNV-1a (change detection only).
-golden_fnv1a :: proc(data: []u8) -> u64 {
-	h: u64 = 14695981039346656037
-	for b in data {
-		h = (h ~ u64(b)) * 1099511628211
-	}
-	return h
-}
 
 // Golden_Image pins one supported revision's fresh-format bytes.
 Golden_Image :: struct {
@@ -101,9 +93,9 @@ golden_hash_image :: proc(t: ^testing.T, full: ^u64, chunks: ^[GOLDEN_SIZE / GOL
 		testing.expectf(t, false, "golden size %d, want %d", len(data), GOLDEN_SIZE)
 		return false
 	}
-	full^ = golden_fnv1a(data)
+	full^ = hash.fnv64a(data)
 	for i in 0 ..< len(chunks) {
-		chunks[i] = golden_fnv1a(data[i * GOLDEN_CHUNK:(i + 1) * GOLDEN_CHUNK])
+		chunks[i] = hash.fnv64a(data[i * GOLDEN_CHUNK:(i + 1) * GOLDEN_CHUNK])
 	}
 	return true
 }
