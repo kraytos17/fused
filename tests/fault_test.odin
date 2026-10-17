@@ -610,3 +610,64 @@ test_fault_recover_aborts_on_home_read :: proc(t: ^testing.T) {
 	testing.expect_value(t, rerr2, fs.FS_Error.Entry_Not_Found)
 	testing.expect_value(t, fs.alloc_cache_count_free(&vol), f0 + cleared_size)
 }
+
+// test_fault_commit_header_write_leaves_nothing — the commit's record
+// write lands but the header write fails: the flush must report the
+// error with home untouched, seq/watermark unmoved (no slot was
+// committed), and a later recover must be a no-op for the torn chunk
+// (the header slot carries no magic, so the scan skips it).
+@(test)
+test_fault_commit_header_write_leaves_nothing :: proc(t: ^testing.T) {
+	vol, ok := fault_setup(t)
+	if !ok { return }
+	defer fault_teardown(&vol)
+
+	hc, ho, aerr := fs.allocate_sectors(&vol, {}, 1, .File_Content)
+	testing.expect_value(t, aerr, fs.FS_Error.None)
+	if aerr != .None { return }
+
+	// Single-entry deallocation plan, as in the sibling tests.
+	table: [fs.CLUSTER_ENTRIES_PER_SECTOR]fs.Cluster_Entry
+	idx := -1
+	entry, ferr := fs.find_cluster_entry(&vol, hc, ho, &table, &idx)
+	testing.expect_value(t, ferr, fs.FS_Error.None)
+	if ferr != .None { return }
+	entry.state -= {.Allocated}
+	plan := [1]fs.Journal_Entry{fs.journal_entry_from_cluster_entry(entry, u64(hc), u8(idx))}
+
+	f0, seq0, wm0 := fault_state(&vol)
+	testing.expect_value(t, wm0, seq0 - 1)
+
+	// Budget: 1 record write lands, the records sync lands, then the
+	// header write fails. Home is never touched; no finish runs.
+	vol.fault = fs.IO_Fault{
+		enabled           = true,
+		fail_reads_after  = max(u64),
+		fail_writes_after = 1,
+		fail_syncs_after  = max(u64),
+	}
+	jerr := fs.journal_flush_chunk(&vol, plan[:])
+	testing.expect_value(t, jerr, fs.FS_Error.Sector_Write_Error)
+	testing.expect_value(t, vol.fault.writes, u64(2))
+	testing.expect_value(t, vol.fault.syncs, u64(1))
+
+	// Nothing committed: seq/watermark unmoved, home untouched.
+	_, seq1, wm1 := fault_state(&vol)
+	testing.expect_value(t, seq1, seq0)
+	testing.expect_value(t, wm1, wm0)
+	_, rerr := fs.find_cluster_entry(&vol, hc, ho)
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+	testing.expect_value(t, fs.alloc_cache_count_free(&vol), f0)
+
+	// Faults off: recover replays only the older checkpointed prefix
+	// idempotently; the torn chunk leaves no trace (home still present,
+	// free count unchanged, watermark past the old slot only).
+	vol.fault.enabled = false
+	fs.journal_recover(&vol)
+	_, seq2, wm2 := fault_state(&vol)
+	testing.expect_value(t, seq2, seq0)
+	testing.expect_value(t, wm2, seq0)
+	_, rerr2 := fs.find_cluster_entry(&vol, hc, ho)
+	testing.expect_value(t, rerr2, fs.FS_Error.None)
+	testing.expect_value(t, fs.alloc_cache_count_free(&vol), f0)
+}
