@@ -61,6 +61,7 @@ main :: proc() {
 
 	run_logger_audit()
 	run_storage_audit()
+	run_persist_order_audit()
 	if audit_src_hygiene() > 0 {
 		os.exit(1)
 	}
@@ -797,5 +798,93 @@ run_storage_audit :: proc() {
 	}
 
 	fmt.printf("=== Storage audit: %d checked, %d failed ===\n", total_c, total_f)
+	if total_f > 0 { os.exit(1) }
+}
+
+// Persist-order audit (rule s7): in commit procedures that persist an
+// entry and then reclaim the previous chain, no deallocating call may
+// textually precede the persisting write_entry_at call. A crash between
+// free and persist would leave the on-disk entry pointing at freed
+// sectors; the enforced order reduces every crash to either "nothing
+// happened" (pre-persist) or "leaked but valid" (post-persist, the
+// checker reclaims). set_entry_name performs no persist itself, so it
+// must contain no deallocating call at all (callers free only the
+// returned chain after persisting).
+//
+// xattr_store is deliberately exempt: its single deallocate targets
+// only the just-allocated, still unpublished chain on the write-failure
+// path, with the entry left untouched.
+audit_persist_order_one :: proc(path: string, lines: []string, rule_proc: string, needs_write: bool) -> (checked: int, failed: int) {
+	start := -1
+	for i in 0 ..< len(lines) {
+		if len(lines[i]) > len(rule_proc) && strings.has_prefix(lines[i], rule_proc) && strings.has_prefix(lines[i][len(rule_proc):], " :: proc") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		fmt.printf("FAIL   %s: %s not found\n", path, rule_proc)
+		return 1, 1
+	}
+	end := len(lines)
+	for i in start + 1 ..< len(lines) {
+		if lines[i] == "}" {
+			end = i
+			break
+		}
+	}
+	checked = 1
+	write_at := -1
+	for i in start ..< end {
+		trimmed := strings.trim_space(lines[i])
+		if strings.has_prefix(trimmed, "//") { continue }
+		if strings.contains(lines[i], "write_entry_at(") {
+			write_at = i
+			break
+		}
+	}
+	for i in start ..< end {
+		trimmed := strings.trim_space(lines[i])
+		if strings.has_prefix(trimmed, "//") { continue }
+		is_free := strings.contains(lines[i], "deallocate_sectors(") ||
+			strings.contains(lines[i], "xattr_free_chain(") ||
+			strings.contains(lines[i], "free_entry_lfn(")
+		if !is_free { continue }
+		if !needs_write || write_at < 0 || i < write_at {
+			fmt.printf("FAIL   %s:%d %s frees before persisting\n", path, i + 1, rule_proc)
+			failed = 1
+			return
+		}
+	}
+	return
+}
+
+run_persist_order_audit :: proc() {
+	total_c, total_f := 0, 0
+	targets := []struct {
+		path:        string,
+		rule:       string,
+		needs_write: bool,
+	} {
+		{"src/mounter/create.odin", "remove_directory_entry", true},
+		{"src/mounter/create.odin", "rename_publish", true},
+		{"src/mounter/xattr.odin", "xattr_publish", true},
+		{"src/mounter/dir.odin", "set_entry_name", false},
+	}
+	for t in targets {
+		data, err := os.read_entire_file(t.path, context.temp_allocator)
+		if err != nil {
+			fmt.printf("FAIL   %s: cannot read\n", t.path)
+			total_c += 1
+			total_f += 1
+			continue
+		}
+		lines := strings.split(string(data), "\n", context.temp_allocator)
+		c, f := audit_persist_order_one(t.path, lines, t.rule, t.needs_write)
+		total_c += c
+		total_f += f
+	}
+
+	fmt.printf("=== Persist-order audit: %d checked, %d failed ===\n", total_c, total_f)
 	if total_f > 0 { os.exit(1) }
 }

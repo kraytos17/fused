@@ -1303,3 +1303,136 @@ test_mount_access_xok :: proc(t: ^testing.T) {
 	testing.expect_value(t, mounter.fused_chmod("/xdir", posix.mode_t{.IRUSR, .IWUSR}, nil), 0)
 	expect_errno(t, mounter.fused_access("/xdir", 1), .EACCES) // No_Execute dir
 }
+
+// test_mount_rename_lfn_reclaims_old — same-dir rename to a long name
+// frees the previous LFN chain: free space is unchanged and the new
+// name resolves while the old one is gone.
+@(test)
+test_mount_rename_lfn_reclaims_old :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !setup_mounter(t, &fsys) { return }
+	defer teardown_mounter(&fsys)
+	defer cleanup_root(&fsys, []string{"rename-old-long-file-name", "rename-new-long-file-name"})
+
+	fi: fuse3.File_Info
+	testing.expect_value(t, mounter.fused_create("/rename-old-long-file-name", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+
+	f0 := fs.alloc_cache_count_free(&fsys.vol)
+	testing.expect_value(t, mounter.fused_rename("/rename-old-long-file-name", "/rename-new-long-file-name", 0), 0)
+	testing.expect_value(t, fs.alloc_cache_count_free(&fsys.vol), f0)
+
+	res, rerr := fs.resolve_path(&fsys.vol, "/rename-new-long-file-name")
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+	if rerr != .None { return }
+	nm, ok := fs.resolve_lfn(&fsys.vol, &res.entry, context.temp_allocator)
+	testing.expect(t, ok, "new LFN resolves")
+	testing.expect(t, nm == "rename-new-long-file-name", "new name correct")
+	_, rerr2 := fs.resolve_path(&fsys.vol, "/rename-old-long-file-name")
+	testing.expect(t, rerr2 != .None, "old name gone")
+}
+
+// test_mount_rename_lfn_rollback — a failed persist leaves the old entry
+// and its LFN chain intact (nothing was freed before the persist).
+@(test)
+test_mount_rename_lfn_rollback :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !setup_mounter(t, &fsys) { return }
+	defer teardown_mounter(&fsys)
+	defer cleanup_root(&fsys, []string{"rollback-old-long-file-name", "rb-new"})
+
+	fi: fuse3.File_Info
+	testing.expect_value(t, mounter.fused_create("/rollback-old-long-file-name", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+
+	f0 := fs.alloc_cache_count_free(&fsys.vol)
+	fsys.vol.fault = fs.IO_Fault{enabled = true, fail_reads_after = max(u64), fail_writes_after = fsys.vol.fault.writes, fail_syncs_after = max(u64)}
+	testing.expect(t, mounter.fused_rename("/rollback-old-long-file-name", "/rb-new", 0) != 0, "rename reports persist failure")
+	fsys.vol.fault.enabled = false
+
+	// Old name resolves with its LFN intact; new name absent; no change.
+	res, rerr := fs.resolve_path(&fsys.vol, "/rollback-old-long-file-name")
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+	if rerr != .None { return }
+	nm, ok := fs.resolve_lfn(&fsys.vol, &res.entry, context.temp_allocator)
+	testing.expect(t, ok, "old LFN resolves")
+	testing.expect(t, nm == "rollback-old-long-file-name", "old name intact")
+	_, rerr2 := fs.resolve_path(&fsys.vol, "/rb-new")
+	testing.expect(t, rerr2 != .None, "new name absent")
+	testing.expect_value(t, fs.alloc_cache_count_free(&fsys.vol), f0)
+}
+
+// test_rename_publish_restores_entry — the publish helper restores the
+// pre-rename entry when the persist write fails.
+@(test)
+test_rename_publish_restores_entry :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !setup_mounter(t, &fsys) { return }
+	defer teardown_mounter(&fsys)
+	defer cleanup_root(&fsys, []string{"rnfile"})
+
+	fi: fuse3.File_Info
+	testing.expect_value(t, mounter.fused_create("/rnfile", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	res, rerr := fs.resolve_path(&fsys.vol, "/rnfile")
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+	if rerr != .None { return }
+
+	entry := res.entry
+	saved := entry
+	entry.file_size = 1234
+	loc := fs.File_Identity{res.cluster, res.offset, res.entry_index}
+	fsys.vol.fault = fs.IO_Fault{enabled = true, fail_reads_after = max(u64), fail_writes_after = fsys.vol.fault.writes, fail_syncs_after = max(u64)}
+	testing.expect(t, mounter.rename_publish(&fsys, &entry, saved, loc, fs.LFN_Pointer{}) != 0, "publish reports failure")
+	fsys.vol.fault.enabled = false
+	testing.expect(t, entry == saved, "in-memory entry restored")
+}
+
+// test_mount_rename_lfn_cross_dir — cross-directory LFN rename moves the
+// name and frees the old chain without stranding the entry.
+@(test)
+test_mount_rename_lfn_cross_dir :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !setup_mounter(t, &fsys) { return }
+	defer teardown_mounter(&fsys)
+	defer cleanup_root(&fsys, []string{"xdst/moved-long-file-name", "xsrcdir", "xdst"})
+
+	testing.expect_value(t, mounter.fused_mkdir("/xsrcdir", posix.mode_t{.IRUSR, .IWUSR, .IXUSR}), 0)
+	testing.expect_value(t, mounter.fused_mkdir("/xdst", posix.mode_t{.IRUSR, .IWUSR, .IXUSR}), 0)
+	fi: fuse3.File_Info
+	testing.expect_value(t, mounter.fused_create("/xsrcdir/move-me-long-file-name", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+
+	testing.expect_value(t, mounter.fused_rename("/xsrcdir/move-me-long-file-name", "/xdst/moved-long-file-name", 0), 0)
+	res, rerr := fs.resolve_path(&fsys.vol, "/xdst/moved-long-file-name")
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+	if rerr != .None { return }
+	nm, ok := fs.resolve_lfn(&fsys.vol, &res.entry, context.temp_allocator)
+	testing.expect(t, ok, "moved LFN resolves")
+	testing.expect(t, nm == "moved-long-file-name", "moved name correct")
+	_, rerr2 := fs.resolve_path(&fsys.vol, "/xsrcdir/move-me-long-file-name")
+	testing.expect(t, rerr2 != .None, "old name gone")
+}
+
+// test_unlink_free_after_persist — when the persist succeeds but the
+// post-persist free fails, the entry is already gone: the failure
+// surfaces as an error and the still-allocated chain is a checker
+// reclaim, never entry-pointing-at-freed-sectors. Proves the free
+// happens strictly after the persist.
+@(test)
+test_unlink_free_after_persist :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !setup_mounter(t, &fsys) { return }
+	defer teardown_mounter(&fsys)
+	defer cleanup_root(&fsys, []string{"freepersist"})
+
+	fi: fuse3.File_Info
+	testing.expect_value(t, mounter.fused_create("/freepersist", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	ten := "0123456789"
+	testing.expect_value(t, mounter.fused_write("/freepersist", raw_data(ten), c.size_t(len(ten)), 0, &fi), c.int(len(ten)))
+
+	// Persist is the next write and succeeds; the free's first write fails.
+	fsys.vol.fault = fs.IO_Fault{enabled = true, fail_reads_after = max(u64), fail_writes_after = fsys.vol.fault.writes + 1, fail_syncs_after = max(u64)}
+	testing.expect(t, mounter.fused_unlink("/freepersist") != 0, "free failure surfaces")
+	fsys.vol.fault.enabled = false
+
+	// Entry gone (persist landed); data chain still allocated (leaked).
+	_, rerr := fs.resolve_path(&fsys.vol, "/freepersist")
+	testing.expect(t, rerr != .None, "entry deleted")
+}

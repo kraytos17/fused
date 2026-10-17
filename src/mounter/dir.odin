@@ -201,26 +201,28 @@ check_name_exists :: proc(
 
 // write_entry_with_lfn writes a directory entry and sets its timestamps,
 // handling LFN allocation for names longer than the inline file_name field.
-write_entry_with_lfn :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> fs.FS_Error {
+// Fresh entries have no previous name; the returned reclaim is always
+// zero here, but callers still free it after persisting (same discipline
+// as rename, in case the helper is ever reused for existing entries).
+write_entry_with_lfn :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> (reclaim: fs.LFN_Pointer, err: fs.FS_Error) {
 	set_entry_time_to_now(entry)
 	return set_entry_name(fsys, entry, name)
 }
 
-// set_entry_name sets the name in a Directory_Entry, handling LFN allocation
-// and old LFN deallocation. Does NOT modify timestamps. Allocation and
-// deallocation failures propagate as FS_Error instead of collapsing to
-// ENOSPC at call sites.
-set_entry_name :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> fs.FS_Error {
+// set_entry_name sets the name in a Directory_Entry, allocating a new LFN
+// sector when needed. The previous long name is NOT freed here: the
+// caller receives it for reclamation and must free it only after the
+// renamed entry persists, so no crash window leaves the on-disk entry
+// pointing at freed sectors. Does NOT modify timestamps. Allocation
+// failures propagate as FS_Error instead of collapsing to ENOSPC.
+set_entry_name :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> (reclaim: fs.LFN_Pointer, err: fs.FS_Error) {
 	if .LFN in entry.flags {
-		if derr := free_entry_lfn(fsys, entry); derr != .None {
-			return derr
-		}
-		reinit_free_sectors(fsys)
+		reclaim = (^fs.LFN_Pointer)(&entry.file_name[0])^
 		entry.flags -= {.LFN}
 	}
 	if len(name) > len(entry.file_name) {
 		ptr, perr := fs.lfn_bump_write(&fsys.vol, &fsys.vol.lfn_bump, name)
-		if perr != .None { return perr }
+		if perr != .None { return {}, perr }
 
 		reinit_free_sectors(fsys)
 		(^fs.LFN_Pointer)(&entry.file_name[0])^ = ptr
@@ -229,7 +231,7 @@ set_entry_name :: proc(fsys: ^FS, entry: ^fs.Directory_Entry, name: string) -> f
 		copy(entry.file_name[:], name)
 		mem.zero_slice(entry.file_name[len(name):])
 	}
-	return .None
+	return reclaim, .None
 }
 
 // free_entry_lfn releases an entry's dedicated LFN sector, if any. Each
