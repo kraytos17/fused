@@ -1,14 +1,13 @@
-# tests/test_basic.py — Smoke tests against the demo image.
+# tests/fuse/test_basic.py — Smoke tests against the demo image.
 #
 # Asserts the embedded demo file (/Kernel) on a private mount; like
 # every other fuse suite, never touches the shared fused.img.
 import os
 import stat
-import subprocess
 
 import pytest
 
-from fused_test.io import make_file, read
+from fused_test.io import make_file, read, run_cli
 
 
 @pytest.mark.fuse
@@ -54,6 +53,5 @@ def test_max_filename(private_mount: str):
 @pytest.mark.fuse
 def test_log_format_opts(fused_bin: str):
     for fmt in ["short", "long", "full"]:
-        r = subprocess.run([fused_bin, "--log-format=" + fmt, "--help"],
-                           capture_output=True, text=True, check=False)
+        r = run_cli(fused_bin, "--log-format=" + fmt, "--help")
         assert r.returncode == 0, f"log-format={fmt} exit={r.returncode}"
