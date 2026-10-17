@@ -37,11 +37,7 @@ poison_free_sectors :: proc(t: ^testing.T, fsys: ^mounter.FS) {
 
 // count_nonzero counts nonzero bytes in a slice.
 count_nonzero :: proc(b: []u8) -> int {
-	bad := 0
-	for i in 0 ..< len(b) {
-		if b[i] != 0 { bad += 1 }
-	}
-	return bad
+	return len(b) - slice.count(b, 0)
 }
 
 // test_write_past_eof_zeroes_gap — bytes between old EOF and the write
