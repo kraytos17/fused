@@ -203,7 +203,7 @@ test_mount_read_past_eof_is_short :: proc(t: ^testing.T) {
 
 	buf := make([]u8, 64)
 	defer delete(buf)
-	for i in 0 ..< len(buf) { buf[i] = 0xAA }
+	slice.fill(buf, 0xAA)
 
 	// Straddling read: 10 bytes at off 10 → only 6 available.
 	rc = mounter.fused_read("/eoffile", raw_data(buf), 10, 10, &fi)
@@ -264,7 +264,7 @@ test_mount_truncate_zero_then_grow :: proc(t: ^testing.T) {
 
 	buf := make([]u8, 32)
 	defer delete(buf)
-	for i in 0 ..< len(buf) { buf[i] = 0xAA }
+	slice.fill(buf, 0xAA)
 	rc = mounter.fused_read("/zfile", raw_data(buf), 8, 0, &fi)
 	testing.expect_value(t, rc, 8)
 	testing.expect(

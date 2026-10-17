@@ -27,7 +27,7 @@ poison_free_sectors :: proc(t: ^testing.T, fsys: ^mounter.FS) {
 	n := 64 * fs.SECTOR_SIZE
 	buf := make([]u8, n)
 	defer delete(buf)
-	for i in 0 ..< len(buf) { buf[i] = 0xA5 }
+	slice.fill(buf, 0xA5)
 	rc = mounter.fused_write("/poison", raw_data(buf), c.size_t(n), 0, &fi)
 	testing.expect_value(t, rc, c.int(n))
 	rc = mounter.fused_unlink("/poison")
@@ -140,7 +140,7 @@ test_fallocate_grow_zeroes_covered_gap :: proc(t: ^testing.T) {
 
 	big := make([]u8, 600)
 	defer delete(big)
-	for i in 0 ..< len(big) { big[i] = 0x42 }
+	slice.fill(big, 0x42)
 	rc = mounter.fused_write("/v4", raw_data(big), c.size_t(len(big)), 0, &fi)
 	testing.expect_value(t, rc, c.int(len(big)))
 

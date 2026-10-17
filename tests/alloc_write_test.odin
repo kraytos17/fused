@@ -7,6 +7,7 @@
 #+build linux
 package tests
 
+import "core:slice"
 import "core:testing"
 import "core:time"
 import "src:fs"
@@ -274,7 +275,7 @@ test_write_zero_bytes :: proc(t: ^testing.T) {
 
 	// Write a known pattern first.
 	pat_buf: [fs.SECTOR_SIZE]u8
-	for i in 0 ..< fs.SECTOR_SIZE { pat_buf[i] = 0xAA }
+	slice.fill(pat_buf[:], 0xAA)
 	testing.expect(t, fs.sector_write(&vol, sector, pat_buf[:]) == .None, "write pattern")
 
 	// Write 0 bytes — should not change sector content.
@@ -302,12 +303,12 @@ test_write_overwrite :: proc(t: ^testing.T) {
 
 	// Write 0xAA... to sector.
 	sector_buf: [fs.SECTOR_SIZE]u8
-	for i in 0 ..< fs.SECTOR_SIZE { sector_buf[i] = 0xAA }
+	slice.fill(sector_buf[:], 0xAA)
 	testing.expect(t, fs.sector_write(&vol, sector, sector_buf[:]) == .None, "write 0xAA")
 
 	// Overwrite first 10 bytes with 0xBB.
 	sector_buf2: [fs.SECTOR_SIZE]u8
-	for i in 0 ..< 10 { sector_buf2[i] = 0xBB }
+	slice.fill(sector_buf2[:10], 0xBB)
 	copy(sector_buf2[10:], sector_buf[10:])
 	testing.expect(t, fs.sector_write(&vol, sector, sector_buf2[:]) == .None, "overwrite first 10")
 

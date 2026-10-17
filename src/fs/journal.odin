@@ -12,6 +12,7 @@ package fs
 import "core:hash"
 import "core:log"
 import "core:mem"
+import "core:slice"
 import "core:sort"
 
 journal_region_base :: proc(master: ^Master_Record) -> Sector {
@@ -436,11 +437,7 @@ journal_apply_entries :: proc(vol: ^Volume, entries: []Journal_Entry) -> FS_Erro
 	defer delete(seen)
 	for i in 0 ..< len(entries) {
 		cl := entries[i].cluster
-		skip := false
-		for d in seen {
-			if d == cl { skip = true; break }
-		}
-		if skip { continue }
+		if slice.contains(seen[:], cl) { continue }
 
 		append(&seen, cl)
 		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
