@@ -40,7 +40,9 @@ main :: proc() {
 
 	vol: fs.Volume
 	if f.read_only {
-		fmt.printf("check: read-only mode (recovery skipped; findings may lag uncheckpointed journal slots)\n")
+		fmt.printf(
+			"check: read-only mode (recovery skipped; findings may lag uncheckpointed journal slots)\n",
+		)
 		v, rerr := fs.volume_open_readonly(f.path)
 		if rerr != .None {
 			fmt.eprintf("check: %s: open failed: %v\n", f.path, rerr)
@@ -105,11 +107,8 @@ main :: proc() {
 			found.detail,
 		)
 	}
-	fmt.printf(
-		"scan: %d errors, %d warnings\n",
-		report.errors,
-		report.warnings,
-	)
+
+	fmt.printf("scan: %d errors, %d warnings\n", report.errors, report.warnings)
 	journal := fs.check_journal_report(&vol)
 	defer fs.check_journal_report_destroy(journal)
 	pending := 0
@@ -127,11 +126,8 @@ main :: proc() {
 			)
 		}
 	}
-	fmt.printf(
-		"journal: %d slots, %d pending\n",
-		len(journal),
-		pending,
-	)
+
+	fmt.printf("journal: %d slots, %d pending\n", len(journal), pending)
 	if report.errors > 0 {
 		fmt.eprintf("check: %s: FAILED\n", f.path)
 		os.exit(1)

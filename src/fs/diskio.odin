@@ -25,6 +25,7 @@ sector_read :: proc(vol: ^Volume, sector: Sector, buf: []u8) -> FS_Error {
 		vol.fault.reads += 1
 		if vol.fault.reads > vol.fault.fail_reads_after { return .Sector_Read_Error }
 	}
+
 	n, err := os.read_at(vol.disk, buf, i64(u64(sector) * SECTOR_SIZE))
 	if err != nil || n != len(buf) {
 		return .Sector_Read_Error
@@ -38,6 +39,7 @@ sector_write :: proc(vol: ^Volume, sector: Sector, buf: []u8) -> FS_Error {
 		vol.fault.writes += 1
 		if vol.fault.writes > vol.fault.fail_writes_after { return .Sector_Write_Error }
 	}
+
 	n, err := os.write_at(vol.disk, buf, i64(u64(sector) * SECTOR_SIZE))
 	if err != nil || n != len(buf) {
 		return .Sector_Write_Error
@@ -53,6 +55,7 @@ sector_write_bulk :: proc(vol: ^Volume, start_sector: Sector, buf: []u8) -> FS_E
 		vol.fault.writes += 1
 		if vol.fault.writes > vol.fault.fail_writes_after { return .Sector_Write_Error }
 	}
+
 	n, err := os.write_at(vol.disk, buf, i64(u64(start_sector) * SECTOR_SIZE))
 	if err != nil || n != len(buf) {
 		return .Sector_Write_Error

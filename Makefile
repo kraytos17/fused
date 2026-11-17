@@ -21,7 +21,7 @@ COMMON_BUILD  := -debug -o:none -warnings-as-errors \
 BASE_DEBUG    := $(COMMON_BUILD) -use-separate-modules
 FULL_BUILD    := $(COMMON_BUILD) -use-single-module
 TEST_FLAGS    := $(BASE_DEBUG) -define:ODIN_TEST_THREADS=1 -define:ODIN_MOUNTER_TEST=true
-VET_FLAGS     := -vet -vet-shadowing -strict-style -vet-tabs -disallow-do
+VET_FLAGS     := -vet -vet-shadowing -strict-style -vet-tabs -disallow-do -vet-atomic-access
 SHOW_TIMINGS  := $(or $(SHOW_TIMINGS),)
 TIMING_FLAG   := $(if $(SHOW_TIMINGS),-show-timings,)
 ODIN_VERSION  := $(shell $(ODIN) version 2>&1 | head -1)

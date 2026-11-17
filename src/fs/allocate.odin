@@ -32,6 +32,7 @@ _plan_append :: proc(vol: ^Volume, plan: ^[dynamic]Journal_Entry, e: Journal_Ent
 		}
 		clear(plan)
 	}
+
 	append(plan, e)
 	return .None
 }
@@ -275,7 +276,6 @@ allocate_sectors :: proc(
 		}
 
 		bitmap, used := alloc_cache_ensure(&vol.cache, vol, cluster_idx) or_continue
-
 		free_start, free_avail, free_ok := _find_contiguous_free(
 			&bitmap,
 			vol.master.cluster_size,

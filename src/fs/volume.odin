@@ -163,7 +163,6 @@ lfn_bump_write :: proc(
 	ptr: LFN_Pointer,
 	err: FS_Error,
 ) {
-	_ = bump
 	new_c, new_o := allocate_sectors(vol, {}, 1, .LFN) or_return
 	runs, rok := resolve_extents(vol, Chain_Location{new_c, new_o})
 	defer delete(runs)
@@ -171,8 +170,6 @@ lfn_bump_write :: proc(
 	if rok != .None { return {}, rok }
 	if len(runs) == 0 { return {}, .Entry_Not_Found }
 
-	// The buffer starts zeroed and readers honor size, so no
-	// read-modify-write of stale sector bytes is needed.
 	buf: [SECTOR_SIZE]u8
 	copy(buf[:], transmute([]u8)name)
 	if sector_write(vol, runs[0].sector, buf[:]) != .None { return {}, .Sector_Write_Error }

@@ -86,7 +86,6 @@ xattr_load :: proc(
 
 	data := read_chain(vol, Chain_Location{cluster, offset}, allocator) or_return
 	defer delete(data, allocator)
-
 	// A malformed blob is corruption, not an empty set: fail closed so a
 	// torn xattr chain can never surface as silently missing attributes.
 	// Partial appends are freed and the array cleared (the caller still
@@ -96,6 +95,7 @@ xattr_load :: proc(
 			delete(a.name, allocator)
 			delete(a.value, allocator)
 		}
+
 		clear(&attrs)
 		return attrs, derr
 	}
@@ -207,6 +207,7 @@ xattr_remove :: proc(
 		}
 		return false, 0, .None
 	}
+
 	old_chain, serr := xattr_store(vol, entry, attrs[:])
 	if serr != .None {
 		for &a in attrs {
@@ -301,7 +302,6 @@ _xattr_deserialize_into :: proc(
 		if name_len == 0 || pos + name_len + value_len > len(data) {
 			return .Corrupt_XAttr_Blob
 		}
-
 		for &a in attrs^ {
 			if a.name == string(data[pos:pos + name_len]) {
 				return .Corrupt_XAttr_Blob
@@ -312,10 +312,11 @@ _xattr_deserialize_into :: proc(
 		if nerr != .None {
 			return .No_Space
 		}
+
 		pos += name_len
 		value := make([]u8, value_len, allocator)
-
 		copy(value, data[pos:pos + value_len])
+
 		pos += value_len
 		append(attrs, XAttr{name = name, value = value})
 		accounted += size_of(XAttr_Record_Header) + name_len + value_len
@@ -323,9 +324,5 @@ _xattr_deserialize_into :: proc(
 	if accounted != int(hdr.total) {
 		return .Corrupt_XAttr_Blob
 	}
-	// No exact end-of-data check: chains are sector-granular, so a valid
-	// blob is always followed by sector padding (zeros or stale bytes)
-	// that is never parsed. The record count, recomputed total, and
-	// per-record bounds above are the integrity contract.
 	return .None
 }

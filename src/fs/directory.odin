@@ -242,7 +242,6 @@ read_entry_at_index :: proc(
 	err: FS_Error,
 ) {
 	sec, within := entry_sector_for_index(vol, id) or_return
-
 	buf: [SECTOR_SIZE]u8
 	if sector_read(vol, sec, buf[:]) != .None {
 		return {}, .Sector_Read_Error
@@ -265,7 +264,6 @@ write_entry_at_index :: proc(
 	entry: ^Directory_Entry,
 ) -> FS_Error {
 	sec, within := entry_sector_for_index(vol, id) or_return
-
 	buf: [SECTOR_SIZE]u8
 	if sector_read(vol, sec, buf[:]) != .None {
 		return .Sector_Read_Error

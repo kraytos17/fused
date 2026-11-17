@@ -105,13 +105,18 @@ build_directory :: proc(
 	result := make(map[string]EntryJSON)
 	key := fs.Chain_Location{cluster, offset}
 	if key in seen {
-		result["<cycle>"] = EntryJSON{kind = "CYCLE"}
+		result["<cycle>"] = EntryJSON {
+			kind = "CYCLE",
+		}
 		return result
 	}
 	if depth > MAX_DUMP_DEPTH {
-		result["<max-depth>"] = EntryJSON{kind = "MAXDEPTH"}
+		result["<max-depth>"] = EntryJSON {
+			kind = "MAXDEPTH",
+		}
 		return result
 	}
+
 	seen[key] = true
 	runs, ext_err := fs.resolve_extents(vol, fs.Chain_Location{cluster, offset})
 	if ext_err != .None { return result }
@@ -168,6 +173,7 @@ build_directory :: proc(
 						seen,
 					)
 				}
+
 				dkey := name
 				if dkey in result {
 					dn := 2
@@ -229,12 +235,11 @@ print_json :: proc(vol: ^fs.Volume) {
 
 	sb := strings.builder_make()
 	defer strings.builder_destroy(&sb)
-
 	opts := json.Marshal_Options {
 		spec             = .JSON,
 		sort_maps_by_key = true,
 	}
-	if err := json.marshal_to_builder(&sb, root, &opts); err != nil {
+	if err := json.marshal_to_builder(&sb, root, opts); err != nil {
 		log.errorf("json marshal failed: %v", err)
 		os.exit(1)
 	}

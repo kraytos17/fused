@@ -32,6 +32,7 @@ _dir_time_to_unix :: proc(
 	if year == 0 && month == 0 && date == 0 && hour == 0 && minute == 0 && second == 0 {
 		return 0, true
 	}
+
 	t, ok := time.components_to_time(
 		i64(year),
 		i64(month),
@@ -109,6 +110,7 @@ fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Inf
 	if !mok {
 		return fuse3.nix(.EIO)
 	}
+
 	stbuf.st_mtim.tv_sec = mtim
 	stbuf.st_ctim.tv_sec = mtim
 	at := entry.atime_date_time
@@ -123,6 +125,7 @@ fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Inf
 	if !aok {
 		return fuse3.nix(.EIO)
 	}
+
 	stbuf.st_atim.tv_sec = atim
 	stbuf.st_uid = posix.uid_t(entry.uid)
 	stbuf.st_gid = posix.gid_t(entry.gid)
@@ -161,10 +164,10 @@ _readdir_fill :: proc(
 			return count, stop
 		}
 	}
-
 	for w, pos in snapshot {
 		cookie := posix.off_t(pos + 3)
 		if cookie <= off { continue }
+
 		ent := w.entry
 		name := fs.entry_short_name(&ent)
 		if .LFN in ent.flags {
@@ -179,8 +182,6 @@ _readdir_fill :: proc(
 			if l_ok {
 				cstr, cerr := strings.clone_to_cstring(lfn, context.temp_allocator)
 				if cerr != .None {
-					// A failed clone must skip the entry, not hand a nil
-					// name to the FUSE filler (fail-closed).
 					l_ok = false
 				} else {
 					lfn_cstr = cstr
@@ -242,6 +243,7 @@ fused_readdir :: proc "c" (
 		fs.Cluster(entry.stored_cluster),
 		fs.Sector_Offset(entry.sector_index),
 	}
+
 	// Snapshot the listing while holding the write lock: the array is an
 	// owned heap clone, safe to consume after unlock. On a warm dir cache
 	// the fill below becomes pure memory scans — no sector I/O, no walk.
@@ -327,8 +329,8 @@ fused_read :: proc "c" (
 	if uoff >= entry.file_size {
 		return 0
 	}
-	clamped := c.size_t(min(u64(size), entry.file_size - uoff))
 
+	clamped := c.size_t(min(u64(size), entry.file_size - uoff))
 	runs, xerr := resolve_extents_shared(fsys, fs.Chain_Location{data_cluster, data_offset})
 	if xerr != .None {
 		return fuse3.nix(.ENOENT)
@@ -388,15 +390,14 @@ fused_read_buf :: proc "c" (
 	if uoff >= entry.file_size {
 		return 0
 	}
-	clamped := c.size_t(min(u64(size), entry.file_size - uoff))
 
+	clamped := c.size_t(min(u64(size), entry.file_size - uoff))
 	runs, xerr := resolve_extents_shared(fsys, fs.Chain_Location{data_cluster, data_offset})
 	if xerr != .None {
 		return fuse3.nix(.ENOENT)
 	}
 
 	slices, total_provided := collect_read_slices(runs, uoff, u64(clamped), context.temp_allocator)
-
 	defer delete(slices)
 	if len(slices) == 0 {
 		return fuse3.nix(.ENOENT)
@@ -457,11 +458,11 @@ fused_readlink :: proc "c" (path: cstring, buf: [^]c.char, size: c.size_t) -> c.
 	if xerr != .None {
 		return fuse3.nix(.EIO)
 	}
-
 	// A non-positive destination holds nothing (readlink(2): EINVAL).
 	if size == 0 {
 		return fuse3.nix(.EINVAL)
 	}
+
 	clen := min(int(size) - 1, int(entry.file_size))
 	sector_buf: [fs.SECTOR_SIZE]u8
 	copied := 0
@@ -472,16 +473,16 @@ fused_readlink :: proc "c" (path: cstring, buf: [^]c.char, size: c.size_t) -> c.
 			if fs.sector_read(&fsys.vol, run.sector + fs.Sector(s), sector_buf[:]) != .None {
 				return fuse3.nix(.EIO)
 			}
+
 			n := min(fs.SECTOR_SIZE, clen - copied)
 			mem.copy(rawptr(mem.ptr_offset(([^]u8)(buf), copied)), raw_data(sector_buf[:]), n)
 			copied += n
 		}
 	}
 	if copied < clen {
-		// Short chain: the entry claims more bytes than its chain
-		// holds. Returning success would hand back a ragged buffer.
 		return fuse3.nix(.EIO)
 	}
+
 	buf[clen] = 0
 	log.debugf("readlink: %s → %d bytes", path, clen)
 	return 0

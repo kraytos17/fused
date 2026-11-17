@@ -92,8 +92,8 @@ alloc_cache_ensure :: proc(
 	if entry, hit := lru.get(&cache.lru, cluster); hit {
 		return entry.bitmap, entry.used, .None
 	}
-	_alloc_cache_build(cache, vol, Cluster(cluster)) or_return
 
+	_alloc_cache_build(cache, vol, Cluster(cluster)) or_return
 	entry, hit := lru.get(&cache.lru, cluster)
 	if !hit {
 		return {}, 0, .No_Space
@@ -168,8 +168,6 @@ _alloc_cache_build :: proc(
 			skipped,
 		)
 	}
-	// Node allocation failure surfaces as .No_Space (memory); the bitmap is
-	// destroyed so no half-inserted entry lingers.
 	if err := lru.set(&cache.lru, u64(cluster), Alloc_Cache_Entry{bitmap, used}); err != nil {
 		bit_array.destroy(&bitmap)
 		return .No_Space
@@ -185,8 +183,8 @@ alloc_cache_count_free :: proc(vol: ^Volume) -> u64 {
 	for ci in 0 ..< int(vol.master.cluster_map_size) {
 		cme := read_cluster_map_entry(vol, Cluster(ci)) or_continue
 		if .Reserved in cme.flags || .Full in cme.flags { continue }
-		bm, _ := alloc_cache_ensure(&vol.cache, vol, u64(ci)) or_continue
 
+		bm, _ := alloc_cache_ensure(&vol.cache, vol, u64(ci)) or_continue
 		it := bit_array.make_iterator(&bm)
 		for set, _ in bit_array.iterate_by_all(&it) {
 			if !set {

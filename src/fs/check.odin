@@ -51,6 +51,7 @@ check_report_destroy :: proc(r: ^Check_Report) {
 	for &f in r.findings {
 		delete(f.detail)
 	}
+
 	delete(r.findings)
 	r^ = {}
 }
@@ -313,9 +314,7 @@ check_image :: proc(vol: ^Volume, allocator := context.allocator) -> Check_Repor
 				)
 				continue
 			}
-			// The Cluster_Map pseudo-entry describes the table sector
-			// itself (format writes it as [sector_index, +1)): sharing
-			// that one sector is by design, not double ownership.
+
 			is_map := .Cluster_Map in e.state
 			map_ok :=
 				is_map && u64(e.sector_start) == u64(cme.sector_index) && e.allocation_size == 1
@@ -323,9 +322,6 @@ check_image :: proc(vol: ^Volume, allocator := context.allocator) -> Check_Repor
 				sec := ci * cs + u64(e.sector_start) + off
 				if pc, pi, clash := _mark(owned, owner_c, owner_i, sec, ci, ei); clash {
 					if map_ok && pc == ci && pi == -1 {
-						// Already counted via the table bit (set
-						// semantics, like the cache bitmap); just
-						// record the pseudo-entry as the owner.
 						owner_c[sec], owner_i[sec] = ci, ei
 					} else {
 						_check_add(
@@ -670,6 +666,7 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 			)
 			continue
 		}
+
 		// Read the whole chain into one temp buffer so parsed entry
 		// names stay valid for duplicate detection below.
 		total := 0
@@ -744,8 +741,7 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 				// the whole frame), never from &e: e is a per-iteration
 				// stack copy at a reused address, so a stored short
 				// name would alias stack and read back as whatever
-				// entry was visited last (false DupName on every
-				// directory with 2+ entries).
+				// entry was visited last.
 				name := entry_short_name(ep)
 				if .LFN in e.flags {
 					lfn, lok := resolve_lfn(vol, ep, context.temp_allocator)
@@ -877,7 +873,6 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 						}
 					}
 				}
-
 				// Recurse into subdirectories with a validated head.
 				if .Directory in e.flags && e.stored_cluster != 0 {
 					if _, chok := _head_index(vol, u64(e.stored_cluster), u16(e.sector_index));

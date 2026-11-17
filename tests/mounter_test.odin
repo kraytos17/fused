@@ -38,7 +38,7 @@ setup_mounter :: proc(t: ^testing.T, fsys: ^mounter.FS) -> (ok: bool) {
 	ctx := fuse3.Context {
 		uid          = 1000,
 		gid          = 1000,
-		private_data = fsys,
+		private_data = rawptr(fsys),
 	}
 	fuse3.set_test_context(&ctx)
 	return true

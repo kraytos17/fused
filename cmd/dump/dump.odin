@@ -174,6 +174,7 @@ print_directory :: proc(
 		fmt.printf("%s  └── <max depth>\n", prefix)
 		return
 	}
+	
 	seen[key] = true
 	runs, ext_err := fs.resolve_extents(vol, fs.Chain_Location{cluster, offset})
 	if ext_err != .None { return }

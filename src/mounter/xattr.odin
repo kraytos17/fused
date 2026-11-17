@@ -56,6 +56,7 @@ xattr_publish :: proc(
 		if new_cluster != 0 {
 			_ = fs.xattr_free_chain(&fsys.vol, new_cluster)
 		}
+
 		reinit_free_sectors(fsys)
 		return fs_error_to_errno(werr)
 	}
@@ -65,6 +66,7 @@ xattr_publish :: proc(
 			return fs_error_to_errno(ferr)
 		}
 	}
+
 	reinit_free_sectors(fsys)
 	return 0
 }
@@ -114,6 +116,7 @@ fused_setxattr :: proc "c" (
 			break
 		}
 	}
+
 	// Parse the ABI word once; downstream switches on set membership.
 	xflags := transmute(fuse3.Xattr_Flags)(flags)
 	if .Create in xflags && exists {
@@ -253,7 +256,6 @@ fused_removexattr :: proc "c" (path: cstring, name: cstring) -> c.int {
 	if !removed {
 		return fuse3.nix(.ENODATA)
 	}
-
 	if rc := xattr_publish(
 		fsys,
 		&entry,

@@ -20,6 +20,7 @@ traced_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_In
 	if fsys.trace == nil {
 		return fused_create(path, mode, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_create(path, mode, fi)
 	trace_record(
@@ -32,12 +33,14 @@ traced_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_In
 	)
 	return rc
 }
+
 traced_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_mkdir(path, mode)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_mkdir(path, mode)
 	trace_record(
@@ -50,12 +53,14 @@ traced_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 	)
 	return rc
 }
+
 traced_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_symlink(target, linkpath)
 	}
+
 	pair: [1024]u8
 	ppath := fmt.bprintf(pair[:], "%s=>%s", string(target), string(linkpath))
 	t0 := time.tick_now()
@@ -70,12 +75,14 @@ traced_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 	)
 	return rc
 }
+
 traced_unlink :: proc "c" (path: cstring) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_unlink(path)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_unlink(path)
 	trace_record(
@@ -88,12 +95,14 @@ traced_unlink :: proc "c" (path: cstring) -> c.int {
 	)
 	return rc
 }
+
 traced_rmdir :: proc "c" (path: cstring) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_rmdir(path)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_rmdir(path)
 	trace_record(
@@ -106,12 +115,14 @@ traced_rmdir :: proc "c" (path: cstring) -> c.int {
 	)
 	return rc
 }
+
 traced_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_rename(oldpath, newpath, flags)
 	}
+
 	pair: [1024]u8
 	ppath := fmt.bprintf(pair[:], "%s=>%s", string(oldpath), string(newpath))
 	t0 := time.tick_now()
@@ -126,12 +137,14 @@ traced_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) ->
 	)
 	return rc
 }
+
 traced_lock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, cmd: c.int, lock: rawptr) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_lock(path, fi, cmd, lock)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_lock(path, fi, cmd, lock)
 	trace_record(
@@ -144,12 +157,14 @@ traced_lock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, cmd: c.int, lock: 
 	)
 	return rc
 }
+
 traced_flock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, op: c.int) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_flock(path, fi, op)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_flock(path, fi, op)
 	trace_record(
@@ -162,12 +177,14 @@ traced_flock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, op: c.int) -> c.i
 	)
 	return rc
 }
+
 traced_utimens :: proc "c" (path: cstring, tv: [^]posix.timespec, fi: ^fuse3.File_Info) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_utimens(path, tv, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_utimens(path, tv, fi)
 	trace_record(
@@ -180,12 +197,14 @@ traced_utimens :: proc "c" (path: cstring, tv: [^]posix.timespec, fi: ^fuse3.Fil
 	)
 	return rc
 }
+
 traced_access :: proc "c" (path: cstring, mask: c.int) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_access(path, mask)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_access(path, mask)
 	trace_record(
@@ -198,12 +217,14 @@ traced_access :: proc "c" (path: cstring, mask: c.int) -> c.int {
 	)
 	return rc
 }
+
 traced_chmod :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Info) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_chmod(path, mode, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_chmod(path, mode, fi)
 	trace_record(
@@ -216,6 +237,7 @@ traced_chmod :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 	)
 	return rc
 }
+
 traced_chown :: proc "c" (
 	path: cstring,
 	uid: posix.uid_t,
@@ -227,6 +249,7 @@ traced_chown :: proc "c" (
 	if fsys.trace == nil {
 		return fused_chown(path, uid, gid, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_chown(path, uid, gid, fi)
 	trace_record(
@@ -239,12 +262,14 @@ traced_chown :: proc "c" (
 	)
 	return rc
 }
+
 traced_flush :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_flush(path, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_flush(path, fi)
 	trace_record(
@@ -257,12 +282,14 @@ traced_flush :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	)
 	return rc
 }
+
 traced_release :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_release(path, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_release(path, fi)
 	trace_record(
@@ -275,12 +302,14 @@ traced_release :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	)
 	return rc
 }
+
 traced_opendir :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_opendir(path, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_opendir(path, fi)
 	trace_record(
@@ -293,12 +322,14 @@ traced_opendir :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	)
 	return rc
 }
+
 traced_releasedir :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_releasedir(path, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_releasedir(path, fi)
 	trace_record(
@@ -311,12 +342,14 @@ traced_releasedir :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	)
 	return rc
 }
+
 traced_fsync :: proc "c" (path: cstring, datasync: c.int, fi: ^fuse3.File_Info) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_fsync(path, datasync, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_fsync(path, datasync, fi)
 	trace_record(
@@ -329,6 +362,7 @@ traced_fsync :: proc "c" (path: cstring, datasync: c.int, fi: ^fuse3.File_Info) 
 	)
 	return rc
 }
+
 traced_lseek :: proc "c" (
 	path: cstring,
 	off: posix.off_t,
@@ -340,6 +374,7 @@ traced_lseek :: proc "c" (
 	if fsys.trace == nil {
 		return fused_lseek(path, off, whence, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_lseek(path, off, whence, fi)
 	trace_record(
@@ -352,12 +387,14 @@ traced_lseek :: proc "c" (
 	)
 	return rc
 }
+
 traced_statfs :: proc "c" (path: cstring, stbuf: ^posix.statvfs_t) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_statfs(path, stbuf)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_statfs(path, stbuf)
 	trace_record(
@@ -370,12 +407,14 @@ traced_statfs :: proc "c" (path: cstring, stbuf: ^posix.statvfs_t) -> c.int {
 	)
 	return rc
 }
+
 traced_fsyncdir :: proc "c" (path: cstring, datasync: c.int, fi: ^fuse3.File_Info) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_fsyncdir(path, datasync, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_fsyncdir(path, datasync, fi)
 	trace_record(
@@ -388,12 +427,14 @@ traced_fsyncdir :: proc "c" (path: cstring, datasync: c.int, fi: ^fuse3.File_Inf
 	)
 	return rc
 }
+
 traced_mknod :: proc "c" (path: cstring, mode: posix.mode_t, rdev: posix.dev_t) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_mknod(path, mode, rdev)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_mknod(path, mode, rdev)
 	trace_record(
@@ -406,6 +447,7 @@ traced_mknod :: proc "c" (path: cstring, mode: posix.mode_t, rdev: posix.dev_t) 
 	)
 	return rc
 }
+
 traced_ioctl :: proc "c" (
 	path: cstring,
 	cmd: c.int,
@@ -419,6 +461,7 @@ traced_ioctl :: proc "c" (
 	if fsys.trace == nil {
 		return fused_ioctl(path, cmd, arg, fi, flags, data)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_ioctl(path, cmd, arg, fi, flags, data)
 	trace_record(
@@ -431,12 +474,14 @@ traced_ioctl :: proc "c" (
 	)
 	return rc
 }
+
 traced_link :: proc "c" (oldpath: cstring, newpath: cstring) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_link(oldpath, newpath)
 	}
+
 	pair: [1024]u8
 	ppath := fmt.bprintf(pair[:], "%s=>%s", string(oldpath), string(newpath))
 	t0 := time.tick_now()
@@ -451,6 +496,7 @@ traced_link :: proc "c" (oldpath: cstring, newpath: cstring) -> c.int {
 	)
 	return rc
 }
+
 traced_statx :: proc "c" (
 	path: cstring,
 	flags: c.int,
@@ -463,6 +509,7 @@ traced_statx :: proc "c" (
 	if fsys.trace == nil {
 		return fused_statx(path, flags, mask, stxbuf, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_statx(path, flags, mask, stxbuf, fi)
 	trace_record(
@@ -475,12 +522,14 @@ traced_statx :: proc "c" (
 	)
 	return rc
 }
+
 traced_bmap :: proc "c" (path: cstring, blocksize: c.size_t, idx: ^c.uint64_t) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_bmap(path, blocksize, idx)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_bmap(path, blocksize, idx)
 	trace_record(
@@ -493,6 +542,7 @@ traced_bmap :: proc "c" (path: cstring, blocksize: c.size_t, idx: ^c.uint64_t) -
 	)
 	return rc
 }
+
 traced_poll :: proc "c" (
 	path: cstring,
 	fi: ^fuse3.File_Info,
@@ -504,6 +554,7 @@ traced_poll :: proc "c" (
 	if fsys.trace == nil {
 		return fused_poll(path, fi, ph, reventsp)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_poll(path, fi, ph, reventsp)
 	trace_record(
@@ -516,12 +567,14 @@ traced_poll :: proc "c" (
 	)
 	return rc
 }
+
 traced_init :: proc "c" (conn_info: ^fuse3.Conn_Info, cfg: ^fuse3.Config) -> rawptr {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_init(conn_info, cfg)
 	}
+
 	t0 := time.tick_now()
 	cout := fused_init(conn_info, cfg)
 	trace_record(
@@ -534,15 +587,15 @@ traced_init :: proc "c" (conn_info: ^fuse3.Conn_Info, cfg: ^fuse3.Config) -> raw
 	)
 	return cout
 }
+
 traced_destroy :: proc "c" (private_data: rawptr) {
-	// Mirrors fused_destroy: the FUSE context may already be torn down,
-	// so the FS comes from private_data, never get_fs().
 	fsys := (^FS)(private_data)
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		fused_destroy(private_data)
 		return
 	}
+
 	t0 := time.tick_now()
 	fused_destroy(private_data)
 	trace_record(
@@ -554,6 +607,7 @@ traced_destroy :: proc "c" (private_data: rawptr) {
 		i64(time.duration_nanoseconds(time.tick_diff(t0, time.tick_now()))),
 	)
 }
+
 traced_getattr :: proc "c" (
 	path: cstring,
 	stbuf: ^fuse3.Stat,
@@ -564,6 +618,7 @@ traced_getattr :: proc "c" (
 	if fsys.trace == nil {
 		return fused_getattr(path, stbuf, fi_ignored)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_getattr(path, stbuf, fi_ignored)
 	trace_record(
@@ -576,6 +631,7 @@ traced_getattr :: proc "c" (
 	)
 	return rc
 }
+
 traced_readdir :: proc "c" (
 	path: cstring,
 	buf: rawptr,
@@ -589,6 +645,7 @@ traced_readdir :: proc "c" (
 	if fsys.trace == nil {
 		return fused_readdir(path, buf, filler, off, fi_ignored, flags)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_readdir(path, buf, filler, off, fi_ignored, flags)
 	trace_record(
@@ -601,12 +658,14 @@ traced_readdir :: proc "c" (
 	)
 	return rc
 }
+
 traced_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_open(path, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_open(path, fi)
 	trace_record(
@@ -619,6 +678,7 @@ traced_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	)
 	return rc
 }
+
 traced_read :: proc "c" (
 	path: cstring,
 	buf: [^]c.char,
@@ -631,6 +691,7 @@ traced_read :: proc "c" (
 	if fsys.trace == nil {
 		return fused_read(path, buf, size, off, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_read(path, buf, size, off, fi)
 	trace_record(
@@ -643,6 +704,7 @@ traced_read :: proc "c" (
 	)
 	return rc
 }
+
 traced_read_buf :: proc "c" (
 	path: cstring,
 	bufp: ^^fuse3.Bufvec,
@@ -655,6 +717,7 @@ traced_read_buf :: proc "c" (
 	if fsys.trace == nil {
 		return fused_read_buf(path, bufp, size, off, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_read_buf(path, bufp, size, off, fi)
 	trace_record(
@@ -667,12 +730,14 @@ traced_read_buf :: proc "c" (
 	)
 	return rc
 }
+
 traced_readlink :: proc "c" (path: cstring, buf: [^]c.char, size: c.size_t) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_readlink(path, buf, size)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_readlink(path, buf, size)
 	trace_record(
@@ -685,6 +750,7 @@ traced_readlink :: proc "c" (path: cstring, buf: [^]c.char, size: c.size_t) -> c
 	)
 	return rc
 }
+
 traced_write :: proc "c" (
 	path: cstring,
 	buf: [^]c.char,
@@ -697,6 +763,7 @@ traced_write :: proc "c" (
 	if fsys.trace == nil {
 		return fused_write(path, buf, size, off, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_write(path, buf, size, off, fi)
 	trace_record(
@@ -709,6 +776,7 @@ traced_write :: proc "c" (
 	)
 	return rc
 }
+
 traced_write_buf :: proc "c" (
 	path: cstring,
 	buf: ^fuse3.Bufvec,
@@ -720,6 +788,7 @@ traced_write_buf :: proc "c" (
 	if fsys.trace == nil {
 		return fused_write_buf(path, buf, off, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_write_buf(path, buf, off, fi)
 	trace_record(
@@ -732,12 +801,14 @@ traced_write_buf :: proc "c" (
 	)
 	return rc
 }
+
 traced_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_Info) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_truncate(path, size, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_truncate(path, size, fi)
 	trace_record(
@@ -750,6 +821,7 @@ traced_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_I
 	)
 	return rc
 }
+
 traced_fallocate :: proc "c" (
 	path: cstring,
 	mode: c.int,
@@ -762,6 +834,7 @@ traced_fallocate :: proc "c" (
 	if fsys.trace == nil {
 		return fused_fallocate(path, mode, off, length, fi)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_fallocate(path, mode, off, length, fi)
 	trace_record(
@@ -774,6 +847,7 @@ traced_fallocate :: proc "c" (
 	)
 	return rc
 }
+
 traced_copy_file_range :: proc "c" (
 	path_in: cstring,
 	fi_in: ^fuse3.File_Info,
@@ -798,6 +872,7 @@ traced_copy_file_range :: proc "c" (
 			flags,
 		)
 	}
+
 	pair: [1024]u8
 	ppath := fmt.bprintf(pair[:], "%s=>%s", string(path_in), string(path_out))
 	t0 := time.tick_now()
@@ -812,6 +887,7 @@ traced_copy_file_range :: proc "c" (
 	)
 	return rc
 }
+
 traced_setxattr :: proc "c" (
 	path: cstring,
 	name: cstring,
@@ -824,6 +900,7 @@ traced_setxattr :: proc "c" (
 	if fsys.trace == nil {
 		return fused_setxattr(path, name, value, size, flags)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_setxattr(path, name, value, size, flags)
 	trace_record(
@@ -836,6 +913,7 @@ traced_setxattr :: proc "c" (
 	)
 	return rc
 }
+
 traced_getxattr :: proc "c" (
 	path: cstring,
 	name: cstring,
@@ -847,6 +925,7 @@ traced_getxattr :: proc "c" (
 	if fsys.trace == nil {
 		return fused_getxattr(path, name, value, size)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_getxattr(path, name, value, size)
 	trace_record(
@@ -859,12 +938,14 @@ traced_getxattr :: proc "c" (
 	)
 	return rc
 }
+
 traced_listxattr :: proc "c" (path: cstring, list: [^]c.char, size: c.size_t) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_listxattr(path, list, size)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_listxattr(path, list, size)
 	trace_record(
@@ -877,12 +958,14 @@ traced_listxattr :: proc "c" (path: cstring, list: [^]c.char, size: c.size_t) ->
 	)
 	return rc
 }
+
 traced_removexattr :: proc "c" (path: cstring, name: cstring) -> c.int {
 	fsys := get_fs()
 	context = runtime.default_context()
 	if fsys.trace == nil {
 		return fused_removexattr(path, name)
 	}
+
 	t0 := time.tick_now()
 	rc := fused_removexattr(path, name)
 	trace_record(

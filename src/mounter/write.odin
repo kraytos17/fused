@@ -54,7 +54,6 @@ fused_write :: proc "c" (
 	write_start := time.now()
 	defer end_op(fsys)
 
-	// ABI inputs validate before any fs work (kernel-parity order).
 	uoff, ook := checked_offset(off)
 	if !ook {
 		return fuse3.nix(.EINVAL)
@@ -65,9 +64,6 @@ fused_write :: proc "c" (
 		log.debugf("write: %s → %v", path, rerr)
 		return fs_error_to_errno(rerr)
 	}
-
-	// A zero-byte write changes nothing: no allocation, no size or
-	// timestamp update (kernel parity: pwrite with count 0 is a no-op).
 	if size == 0 {
 		return 0
 	}
@@ -212,10 +208,10 @@ fused_write_buf :: proc "c" (
 	if !size_ok {
 		return fuse3.nix(.EOVERFLOW)
 	}
-	// A zero-byte vector changes nothing (same no-op contract as write).
 	if total_size == 0 {
 		return 0
 	}
+
 	total_sectors, sok := _span_sectors(uoff, total_size)
 	if !sok {
 		return fuse3.nix(.EOVERFLOW)
@@ -270,9 +266,6 @@ fused_write_buf :: proc "c" (
 	bytes_written := write_range_to_runs(fsys, runs, write_off, &bytes_src)
 	new_size := max(u64(entry.file_size), write_off + bytes_written)
 	if bufvec_src.err {
-		// A source failure (fd-backed partial, splice/I/O error) aborts the
-		// transfer: persist the partial size + invalidate caches, but report
-		// EIO rather than a silent short count.
 		log.errorf("write_buf: %s → source error after %d bytes", path, bytes_written)
 		_ = write_finish(fsys, &entry, fh_parts(fi.fh), new_size, bytes_written)
 		return fuse3.nix(.EIO)
@@ -349,6 +342,7 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 		   terr != .None {
 			return fs_error_to_errno(terr)
 		}
+
 		fsys.free_sectors += current_sectors - new_sectors
 		if new_sectors == 0 {
 			// Fully freed: clear the head so the entry matches a
@@ -441,6 +435,7 @@ _fallocate_punch_hole :: proc(
 	if zerr != .None {
 		return fs_error_to_errno(zerr)
 	}
+
 	// Punching a hole destroys data: advance the timestamps even though
 	// the size is unchanged (PUNCH_HOLE implies KEEP_SIZE).
 	set_entry_time_to_now(entry)
@@ -476,6 +471,7 @@ _fallocate_grow :: proc(
 		}
 		return fuse3.nix(.ENOENT)
 	}
+
 	// Zero whenever the size grows over the gap, even if the chain
 	// already covered the span (same shrunk-then-grown hazard).
 	zero_start := u64(entry.file_size)
@@ -497,6 +493,7 @@ _fallocate_grow :: proc(
 			entry.file_size = new_size
 		}
 	}
+
 	// Any successful fallocate changes allocation: advance the timestamps
 	// even when the size itself is unchanged.
 	set_entry_time_to_now(entry)
@@ -632,8 +629,8 @@ fused_copy_file_range :: proc "c" (
 		off_in,
 		off_out,
 	)
-	defer end_op(fsys)
 
+	defer end_op(fsys)
 	src_off, sok1 := checked_offset(off_in)
 	dst_off, sok2 := checked_offset(off_out)
 	if !sok1 || !sok2 {
@@ -650,8 +647,8 @@ fused_copy_file_range :: proc "c" (
 	if src_off >= src_entry.file_size {
 		return 0
 	}
-	clamped := min(u64(size), src_entry.file_size - src_off)
 
+	clamped := min(u64(size), src_entry.file_size - src_off)
 	dst_entry, dst_cluster, dst_offset, dst_err := read_entry_from_fh(fsys, fi_out.fh)
 	if dst_err != .None {
 		return c.ssize_t(fs_error_to_errno(dst_err))
@@ -698,7 +695,7 @@ fused_copy_file_range :: proc "c" (
 	// Safe: dst_off + clamped did not overflow above and bytes_copied <= clamped.
 	new_size := max(u64(dst_entry.file_size), u64(off_out) + bytes_copied)
 	// mtime advances on every copy that transfers bytes (POSIX: even a
-	// same-size overwrite must bump mtime), mirroring write_finish.
+	// same-size overwrite must bump mtime).
 	touched := bytes_copied > 0
 	if touched {
 		set_entry_time_to_now(&dst_entry)

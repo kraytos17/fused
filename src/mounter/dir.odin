@@ -184,7 +184,6 @@ check_name_exists :: proc(
 		depc = depc,
 		name = name,
 	}
-
 	if werr := fs.walk_chain_sectors(&fsys.vol, dir, visit, &ctx); werr != .None {
 		return false, werr
 	}
@@ -231,7 +230,6 @@ set_entry_name :: proc(
 	}
 	if len(name) > len(entry.file_name) {
 		ptr := fs.lfn_bump_write(&fsys.vol, &fsys.vol.lfn_bump, name) or_return
-
 		reinit_free_sectors(fsys)
 		(^fs.LFN_Pointer)(&entry.file_name[0])^ = ptr
 		entry.flags += {.LFN}

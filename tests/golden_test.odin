@@ -154,9 +154,9 @@ test_golden_format_bytes :: proc(t: ^testing.T) {
 				"GOLDEN MISMATCH rev",
 				g.rev_min,
 				": full",
-				fmt.tprintf("%16x", full),
+				fmt.tprintf("%016x", full),
 				"want",
-				fmt.tprintf("%16x", g.full),
+				fmt.tprintf("%016x", g.full),
 			)
 			for i in 0 ..< len(chunks) {
 				if chunks[i] != g.chunks[i] {
@@ -170,10 +170,10 @@ test_golden_format_bytes :: proc(t: ^testing.T) {
 					break
 				}
 			}
-			fmt.println("  actual full: ", fmt.tprintf("0x%16x", full))
+			fmt.println("  actual full: ", fmt.tprintf("0x%016x", full))
 			fmt.println("  actual chunks:")
 			for c, i in chunks {
-				fmt.println("   ", fmt.tprintf("0x%16x", c), "," if i < len(chunks) - 1 else "")
+				fmt.println("   ", fmt.tprintf("0x%016x", c), "," if i < len(chunks) - 1 else "")
 			}
 			// Keep the drifting image for xxd diffing (the deferred
 			// remove then finds nothing to delete).

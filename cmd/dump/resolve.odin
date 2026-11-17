@@ -5,7 +5,7 @@ package main
 import "core:strings"
 import "src:fs"
 
-// resolve_file resolves a path string to a Directory_Entry (thin wrapper around fs.resolve_path).
+// resolve_file resolves a path string to a Directory_Entry.
 resolve_file :: proc(
 	vol: ^fs.Volume,
 	path: string,
