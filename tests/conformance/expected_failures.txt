@@ -3,7 +3,10 @@
 #   make conformance   (or PJD_GROUPS='<groups>' make conformance)
 # and pasting the failing list (never blindly). CI rule (T-01): no NEW failures;
 # a fixed item must be removed from this file in the same PR.
-# Status: scoped baseline (chmod mkdir rename) on v0.9.0; full suite pending.
+# Status: FULL baseline (all 17 groups) on v0.9.0+1 (post M-0 fixes).
+
+## group chflags (logs/pjdfstest-chflags.log)
+chflags TOTAL files=14 tests=14 failing_files=0 result=PASS
 
 ## group chmod (logs/pjdfstest-chmod.log)
 chmod/00.t tests=119 failed=76 Failed tests:  4, 7-8, 17-18, 22-24, 26-28, 31-34, 36-38
@@ -14,7 +17,40 @@ chmod/05.t tests=14 failed=8 Failed tests:  3-6, 8, 10-12
 chmod/07.t tests=25 failed=21 Failed tests:  3-23
 chmod/11.t tests=109 failed=69 Failed tests:  4, 7, 12, 15, 18-20, 22-23, 25-28, 30-31
 chmod/12.t tests=14 failed=6 Failed tests:  3-4, 7-8, 11-12
-chmod TOTAL files=13 tests=327 result=FAIL
+chmod TOTAL files=13 tests=327 failing_files=8 result=FAIL
+
+## group chown (logs/pjdfstest-chown.log)
+chown/00.t tests=1280 failed=970 Failed tests:  3-4, 8-10, 15-16, 19-20, 24-26, 31-32, 34-38
+chown/01.t tests=22 failed=16 Failed tests:  6-21
+chown/02.t tests=10 failed=6 Failed tests:  2-3, 5, 7-8, 10
+chown/03.t tests=10 failed=8 Failed tests:  1-4, 6-9
+chown/05.t tests=18 failed=12 Failed tests:  3-6, 8-9, 11-16
+chown/07.t tests=132 failed=118 Failed tests:  3, 5-15, 18-22, 25-35, 38-42, 44-123, 125-129
+chown TOTAL files=11 tests=1497 failing_files=6 result=FAIL
+
+## group ftruncate (logs/pjdfstest-ftruncate.log)
+ftruncate/00.t tests=26 failed=3 Failed tests:  18, 24-25
+ftruncate/02.t tests=5 failed=1 Failed test:  5
+ftruncate/03.t tests=5 failed=4 Failed tests:  1-4
+ftruncate/05.t tests=15 failed=9 Failed tests:  3-6, 8, 10-13
+ftruncate/06.t tests=8 failed=3 Failed tests:  3-4, 6
+ftruncate/12.t tests=3 failed=1 Failed test:  2
+ftruncate TOTAL files=15 tests=89 failing_files=6 result=FAIL
+
+## group granular (logs/pjdfstest-granular.log)
+granular TOTAL files=7 tests=7 failing_files=0 result=PASS
+
+## group link (logs/pjdfstest-link.log)
+link/00.t tests=202 failed=152 Failed tests:  4-15, 18-20, 22, 24, 28-42, 44-46, 48, 50
+link/01.t tests=32 failed=24 Failed tests:  8-31
+link/02.t tests=10 failed=6 Failed tests:  2, 4-6, 8, 10
+link/03.t tests=13 failed=12 Failed tests:  1-12
+link/06.t tests=18 failed=9 Failed tests:  3, 5-8, 10-11, 14-15
+link/07.t tests=17 failed=8 Failed tests:  3, 5-8, 10, 12, 14
+link/09.t tests=5 failed=2 Failed tests:  2, 4
+link/10.t tests=23 failed=12 Failed tests:  8-19
+link/11.t tests=9 failed=4 Failed tests:  5-8
+link TOTAL files=18 tests=359 failing_files=9 result=FAIL
 
 ## group mkdir (logs/pjdfstest-mkdir.log)
 mkdir/00.t tests=36 failed=17 Failed tests:  3, 6, 9, 12, 15, 17-23, 25-27, 33-34
@@ -23,7 +59,47 @@ mkdir/03.t tests=3 failed=2 Failed tests:  1-2
 mkdir/05.t tests=12 failed=6 Failed tests:  3-5, 7, 9-10
 mkdir/06.t tests=12 failed=6 Failed tests:  3-5, 7, 9-10
 mkdir/10.t tests=21 failed=11 Failed tests:  7-10, 12-13, 15-16, 18-19, 21
-mkdir TOTAL files=13 tests=118 result=FAIL
+mkdir TOTAL files=13 tests=118 failing_files=6 result=FAIL
+
+## group mkfifo (logs/pjdfstest-mkfifo.log)
+mkfifo/00.t tests=36 failed=32 Failed tests:  2-23, 25-27, 29-35
+mkfifo/01.t tests=17 failed=12 Failed tests:  5-16
+mkfifo/02.t tests=4 failed=4 Failed tests:  1-4
+mkfifo/03.t tests=4 failed=3 Failed tests:  1-3
+mkfifo/05.t tests=12 failed=6 Failed tests:  3-5, 7, 9-10
+mkfifo/06.t tests=12 failed=6 Failed tests:  3-5, 7, 9-10
+mkfifo/09.t tests=21 failed=12 Failed tests:  7-18
+mkfifo TOTAL files=13 tests=120 failing_files=7 result=FAIL
+
+## group mknod (logs/pjdfstest-mknod.log)
+mknod/00.t tests=36 failed=32 Failed tests:  2-23, 25-27, 29-35
+mknod/01.t tests=27 failed=20 Failed tests:  7-26
+mknod/02.t tests=12 failed=12 Failed tests:  1-12
+mknod/03.t tests=12 failed=9 Failed tests:  1-3, 5-7, 9-11
+mknod/05.t tests=12 failed=6 Failed tests:  3-5, 7, 9-10
+mknod/06.t tests=12 failed=6 Failed tests:  3-5, 7, 9-10
+mknod/08.t tests=35 failed=20 Failed tests:  11-30
+mknod/11.t tests=28 failed=24 Failed tests:  2-6, 8-19, 21-27
+mknod TOTAL files=12 tests=186 failing_files=8 result=FAIL
+
+## group open (logs/pjdfstest-open.log)
+open/00.t tests=47 failed=20 Failed tests:  3, 6, 9, 12, 15, 17-23, 25-27, 33-34, 43-45
+open/01.t tests=22 failed=16 Failed tests:  6-21
+open/02.t tests=4 failed=1 Failed test:  2
+open/03.t tests=4 failed=3 Failed tests:  1-3
+open/05.t tests=12 failed=6 Failed tests:  3-5, 7, 9-10
+open/06.t tests=144 failed=142 Failed tests:  2-143
+open/07.t tests=25 failed=23 Failed tests:  2-24
+open/08.t tests=3 failed=1 Failed test:  2
+open/17.t tests=3 failed=3 Failed tests:  1-3
+open/22.t tests=21 failed=8 Failed tests:  7-8, 10-11, 13-14, 16-17
+open/24.t tests=5 failed=5 Failed tests:  1-5
+open/25.t tests=6 failed=3 Failed tests:  2-4
+open/26.t tests=9 failed=3 Failed tests:  2, 5, 8
+open TOTAL files=27 tests=337 failing_files=13 result=FAIL
+
+## group posix_fallocate (logs/pjdfstest-posix_fallocate.log)
+posix_fallocate TOTAL files=1 tests=1 failing_files=0 result=PASS
 
 ## group rename (logs/pjdfstest-rename.log)
 rename/00.t tests=122 failed=79 Failed tests:  8-10, 12, 14-15, 17-20, 22-27, 29-35, 37-42
@@ -40,4 +116,50 @@ rename/20.t tests=25 failed=15 Failed tests:  4, 7, 9-20, 22
 rename/21.t tests=16 failed=6 Failed tests:  4-6, 12-14
 rename/23.t tests=42 failed=36 Failed tests:  4, 6-7, 9-41
 rename/24.t tests=13 failed=2 Failed tests:  4, 9
-rename TOTAL files=25 tests=4857 result=FAIL
+rename TOTAL files=25 tests=4857 failing_files=14 result=FAIL
+
+## group rmdir (logs/pjdfstest-rmdir.log)
+rmdir/00.t tests=10 failed=2 Failed tests:  8-9
+rmdir/01.t tests=14 failed=3 Failed tests:  12-14
+rmdir/02.t tests=4 failed=1 Failed test:  4
+rmdir/03.t tests=5 failed=4 Failed tests:  1-4
+rmdir/06.t tests=23 failed=16 Failed tests:  8-23
+rmdir/07.t tests=10 failed=4 Failed tests:  3-4, 6, 8
+rmdir/08.t tests=10 failed=4 Failed tests:  3-4, 6, 8
+rmdir/11.t tests=47 failed=30 Failed tests:  3, 5-7, 11-22, 25-31, 33, 36, 39, 41-44
+rmdir TOTAL files=16 tests=145 failing_files=8 result=FAIL
+
+## group symlink (logs/pjdfstest-symlink.log)
+symlink/00.t tests=14 failed=2 Failed tests:  11-12
+symlink/03.t tests=6 failed=2 Failed tests:  3-4
+symlink/05.t tests=12 failed=6 Failed tests:  3-5, 7, 9-10
+symlink/06.t tests=12 failed=6 Failed tests:  3-5, 7, 9-10
+symlink/08.t tests=21 failed=8 Failed tests:  7-8, 10-11, 13-14, 16-17
+symlink TOTAL files=13 tests=95 failing_files=5 result=FAIL
+
+## group truncate (logs/pjdfstest-truncate.log)
+truncate/00.t tests=21 failed=1 Failed test:  18
+truncate/02.t tests=5 failed=1 Failed test:  5
+truncate/03.t tests=5 failed=4 Failed tests:  1-4
+truncate/05.t tests=15 failed=9 Failed tests:  3-6, 8, 10-13
+truncate/06.t tests=8 failed=3 Failed tests:  3-4, 6
+truncate/12.t tests=3 failed=1 Failed test:  2
+truncate TOTAL files=15 tests=84 failing_files=6 result=FAIL
+
+## group unlink (logs/pjdfstest-unlink.log)
+unlink/00.t tests=112 failed=75 Failed tests:  10-12, 14-16, 18-20, 22-24, 27-29, 31-50
+unlink/02.t tests=4 failed=1 Failed test:  4
+unlink/03.t tests=4 failed=3 Failed tests:  1-3
+unlink/05.t tests=10 failed=4 Failed tests:  3-4, 6, 8
+unlink/06.t tests=10 failed=4 Failed tests:  3-4, 6, 8
+unlink/11.t tests=270 failed=215 Failed tests:  4-5, 7-12, 15-22, 24-34, 36, 39, 42, 44-47
+unlink TOTAL files=15 tests=440 failing_files=6 result=FAIL
+
+## group utimensat (logs/pjdfstest-utimensat.log)
+utimensat/00.t tests=32 failed=20 Failed tests:  12-31
+utimensat/01.t tests=7 failed=2 Failed tests:  4-5
+utimensat/02.t tests=10 failed=1 Failed test:  7
+utimensat/06.t tests=13 failed=4 Failed tests:  4-5, 7, 11
+utimensat/07.t tests=17 failed=8 Failed tests:  5-7, 9-12, 14
+utimensat/08.t tests=9 failed=2 Failed tests:  5-6
+utimensat TOTAL files=10 tests=122 failing_files=6 result=FAIL
