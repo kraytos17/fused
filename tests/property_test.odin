@@ -404,9 +404,12 @@ prop_run_once :: proc(t: ^testing.T, seed: u64) {
 			ordered_remove(&dirs, idx)
 		} else if choice < 17 && len(dirs) > 0 {
 			// move a directory: legal unless the target is itself or
-			// below itself (circular → EINVAL, tree unchanged), or the
-			// target is its current parent (no-op rename onto an
-			// existing dir → EISDIR, tree unchanged)
+			// below itself (circular → EINVAL, tree unchanged). Renaming
+			// onto its own current parent+name is the POSIX no-op case
+			// (old == new → success, tree unchanged; the pre-E-04-step-2
+			// code returned EISDIR here, which masked a real bug: the
+			// old path cleared the entry, freed its chains, then wrote
+			// the stale copy back).
 			di := prop_below(&rng, len(dirs))
 			D := dirs[di].id
 			T := 0
@@ -434,11 +437,11 @@ prop_run_once :: proc(t: ^testing.T, seed: u64) {
 			st: fuse3.Stat
 			if T == dirs[di].parent {
 				log_op(&oolog, fmt.tprintf("op %d: dirmove %d no-op (same parent)", op, D))
-				if rc := mounter.fused_rename(old, new, 0); rc != -c.int(posix.EISDIR) {
+				if rc := mounter.fused_rename(old, new, 0); rc != 0 {
 					testing.expectf(
 						t,
 						false,
-						"op %d: dirmove no-op want=-EISDIR got=%d",
+						"op %d: dirmove no-op want=0 got=%d",
 						op,
 						int(rc),
 					)

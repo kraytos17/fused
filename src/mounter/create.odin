@@ -549,6 +549,151 @@ rename_publish :: proc(
 	return 0
 }
 
+// fused_exchange_locked implements RENAME_EXCHANGE: atomically
+// swap the CONTENTS of two existing directory entries; each path keeps
+// its name, each file keeps its chains/attrs. POSIX has no type
+// restriction — file↔file, file↔dir, dir↔dir all exchange.
+//
+// LOCKING: caller holds fsys.mu exclusively (fused_rename's begin_op).
+// This helper must NOT begin_op — recursive exclusive acquisition
+// self-deadlocks (found by test_rename_exchange hanging at the first
+// exchange).
+//
+// Guards: both must exist (ENOENT); / → EBUSY (same as rename/rmdir);
+// same slot → 0 (no-op); exchanging a directory with its own ancestor or
+// descendant would strand both subtrees (the child's slot lives inside
+// the parent's chain, which the swap orphans), so EINVAL — matching the
+// kernel's circular-rename posture.
+//
+// Crash window: two slot writes are not one transaction. Nothing
+// is deallocated here, so the persist-order discipline (s7) is trivially
+// satisfied: worst case is one slot exchanged and the other not.
+fused_exchange_locked :: proc(fsys: ^FS, oldpath, newpath: string) -> c.int {
+	if oldpath == "/" || newpath == "/" {
+		log.debugf("exchange: %s <-> %s → EBUSY (root)", oldpath, newpath)
+		return fuse3.nix(.EBUSY)
+	}
+
+	a, a_cluster, a_offset, a_idx, a_err := resolve_path_cached(
+		fsys,
+		oldpath,
+		context.temp_allocator,
+	)
+	if a_err != .None {
+		log.debugf("exchange: %s → %v", oldpath, a_err)
+		return fs_error_to_errno(a_err)
+	}
+
+	b, b_cluster, b_offset, b_idx, b_err := resolve_path_cached(
+		fsys,
+		newpath,
+		context.temp_allocator,
+	)
+	if b_err != .None {
+		log.debugf("exchange: %s → %v", newpath, b_err)
+		return fs_error_to_errno(b_err)
+	}
+
+	a_id := fs.File_Identity{a_cluster, a_offset, a_idx}
+	b_id := fs.File_Identity{b_cluster, b_offset, b_idx}
+	if a_id == b_id {
+		log.debugf("exchange: %s <-> %s ok (same slot)", oldpath, newpath)
+		return 0
+	}
+
+	// Cyclic guards, both directions (dir ancestor/descendant swaps
+	// strand both subtrees). Files have no descendants, so each walk is
+	// conditional on that side being a directory.
+	a_is_dir := .Directory in a.flags
+	b_is_dir := .Directory in b.flags
+	if a_is_dir {
+		// Is newpath inside a's subtree? (Same walk as plain rename.)
+		check_path := newpath
+		for check_path != "/" {
+			parent, _ := os.split_path(check_path)
+			check_path = parent
+			if check_path == "/" { break }
+			_, check_c, check_o, check_idx, check_err := resolve_path_cached(
+				fsys,
+				check_path,
+				context.temp_allocator,
+			)
+			if check_err == .Entry_Not_Found {
+				break
+			}
+			if check_err != .None {
+				return fs_error_to_errno(check_err)
+			}
+			if check_c == a_cluster && check_o == a_offset && check_idx == a_idx {
+				log.debugf("exchange: %s <-> %s → EINVAL (newpath inside src)", oldpath, newpath)
+				return fuse3.nix(.EINVAL)
+			}
+		}
+	}
+	if b_is_dir {
+		// Is oldpath inside b's subtree? Walk oldpath's strict ancestors
+		// against b's slot.
+		check_path := oldpath
+		for check_path != "/" {
+			parent, _ := os.split_path(check_path)
+			check_path = parent
+			if check_path == "/" { break }
+			_, check_c, check_o, check_idx, check_err := resolve_path_cached(
+				fsys,
+				check_path,
+				context.temp_allocator,
+			)
+			if check_err == .Entry_Not_Found {
+				break
+			}
+			if check_err != .None {
+				return fs_error_to_errno(check_err)
+			}
+			if check_c == b_cluster && check_o == b_offset && check_idx == b_idx {
+				log.debugf("exchange: %s <-> %s → EINVAL (oldpath inside dst)", oldpath, newpath)
+				return fuse3.nix(.EINVAL)
+			}
+		}
+	}
+
+	// The swap: each slot keeps its NAME (file_name field, and the .LFN
+	// flag that describes it); everything else — flags, chains, attrs,
+	// sizes, ownership, times, xattr pointer — exchanges. Build both
+	// post-swap entries first, then persist slot A and slot B.
+	swapped_a := a
+	swapped_b := b
+	_swapped_keep_name(&swapped_a, b, a)
+	_swapped_keep_name(&swapped_b, a, b)
+	if werr := write_entry_at(fsys, a_id, &swapped_a); werr != .None {
+		return fs_error_to_errno(werr)
+	}
+	if werr := write_entry_at(fsys, b_id, &swapped_b); werr != .None {
+		return fs_error_to_errno(werr)
+	}
+
+	// fds and advisory locks follow the content (it changed slots in
+	// both directions — a repoint is order-dependent, this is a swap).
+	open_handle_swap(fsys, a_id, b_id)
+	path_cache_invalidate_all(fsys)
+	log.debugf("exchange: %s <-> %s ok", oldpath, newpath)
+	return 0
+}
+
+// _swapped_keep_name writes into `dst` the full content of `src` EXCEPT
+// the name-bearing state (file_name[16] holds the inline name or the LFN
+// pointer, and the .LFN flag describes it): after RENAME_EXCHANGE each
+// path still names what it named, the content behind it changed.
+@(private = "file")
+_swapped_keep_name :: proc(dst: ^fs.Directory_Entry, src, keep: fs.Directory_Entry) {
+	dst^ = src
+	dst.file_name = keep.file_name
+	if .LFN in keep.flags {
+		dst.flags += {.LFN}
+	} else {
+		dst.flags -= {.LFN}
+	}
+}
+
 // fused_rename renames or moves a file or directory (FUSE rename callback).
 fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> c.int {
 	context = runtime.default_context()
@@ -558,13 +703,13 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 
 	// Parse the ABI word once; downstream switches on set membership.
 	rflags := transmute(fuse3.Rename_Flags)(flags)
-	if .No_Replace in rflags {
-		log.debugf("rename: RENAME_NOREPLACE not supported")
-		return fuse3.nix(.ENOSYS)
-	}
 	if .Exchange in rflags {
-		log.debugf("rename: RENAME_EXCHANGE not supported")
-		return fuse3.nix(.ENOSYS)
+		return fused_exchange_locked(fsys, string(oldpath), string(newpath))
+	}
+	// Renaming / or to / is EBUSY (same convention as rmdir("/")
+	if string(oldpath) == "/" || string(newpath) == "/" {
+		log.debugf("rename: %s → %s → EBUSY (root)", oldpath, newpath)
+		return fuse3.nix(.EBUSY)
 	}
 
 	entry, old_cluster, old_offset, old_idx, rerr := resolve_path_cached(
@@ -578,6 +723,17 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	}
 
 	new_parent_path, new_name := os.split_path(string(newpath))
+	// The dst name follows the same rules prepare_parent_slot enforces
+	// for create/mkdir/symlink; rename gets them explicitly.
+	if new_name == "" || new_name == "." || new_name == ".." {
+		log.debugf("rename: %s → EINVAL (bad dst name)", newpath)
+		return fuse3.nix(.EINVAL)
+	}
+	if len(new_name) > NAME_MAX {
+		log.debugf("rename: %s → ENAMETOOLONG", newpath)
+		return fuse3.nix(.ENAMETOOLONG)
+	}
+
 	new_parent_entry, _, _, _, np_err := resolve_path_cached(
 		fsys,
 		new_parent_path,
@@ -590,27 +746,67 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 
 	new_parent_c := fs.Cluster(new_parent_entry.stored_cluster)
 	new_parent_o := fs.Sector_Offset(new_parent_entry.sector_index)
-	if old_cluster == new_parent_c && old_offset == new_parent_o {
-		dst_entry, _, _, dst_idx, dst_err := resolve_path_cached(
-			fsys,
-			string(newpath),
-			context.temp_allocator,
-		)
-		if dst_err != .None && dst_err != .Entry_Not_Found {
-			return fs_error_to_errno(dst_err)
+	same_dir := old_cluster == new_parent_c && old_offset == new_parent_o
+	// Same-name no-op: POSIX lets `rename a a` succeed without touching
+	// anything. Without this, the dst-overwrite path would clear the
+	// entry, free its chains, then write the stale copy back — pointing
+	// at freed sectors.
+	if same_dir {
+		if .LFN in entry.flags {
+			if cur, ok := fs.resolve_lfn(&fsys.vol, &entry, context.temp_allocator);
+			   ok && cur == new_name {
+				log.debugf("rename: %s → %s ok (same-name no-op)", oldpath, newpath)
+				return 0
+			}
+		} else if fs.entry_short_name(&entry) == new_name {
+			log.debugf("rename: %s → %s ok (same-name no-op)", oldpath, newpath)
+			return 0
 		}
-		if dst_err == .None {
-			if .Directory not_in dst_entry.flags {
-				if err := remove_directory_entry(
-					fsys,
-					&dst_entry,
-					fs.File_Identity{new_parent_c, new_parent_o, dst_idx},
-				); err != .None {
-					return fs_error_to_errno(err)
-				}
-			} else {
-				log.debugf("rename: %s → %s → EISDIR (destination is dir)", oldpath, newpath)
-				return fuse3.nix(.EISDIR)
+	}
+
+	// Resolve dst ONCE for both dispatches, then run the matrix BEFORE
+	// any mutation. Dir-over-dir needs the dst emptiness scan; every
+	// other combination is flags-only.
+	dst_exists := false
+	dst_entry: fs.Directory_Entry
+	dst_idx := -1
+	dst_e, _, _, dst_idx_resolved, dst_err := resolve_path_cached(
+		fsys,
+		string(newpath),
+		context.temp_allocator,
+	)
+	if dst_err == .None {
+		dst_exists = true
+		dst_entry = dst_e
+		dst_idx = dst_idx_resolved
+	} else if dst_err != .Entry_Not_Found {
+		return fs_error_to_errno(dst_err)
+	}
+
+	dst_is_empty_dir := true
+	if dst_exists && .Directory in dst_entry.flags && .Directory in entry.flags {
+		empty, eerr := dir_is_empty(fsys, dst_entry)
+		if eerr != .None {
+			log.debugf("rename: %s → %v (dst scan)", newpath, eerr)
+			return fs_error_to_errno(eerr)
+		}
+		dst_is_empty_dir = empty
+	}
+
+	dst_flags := dst_entry.flags if dst_exists else fs.Dir_Flags{}
+	verdict := rename_validate(entry.flags, dst_exists, dst_flags, dst_is_empty_dir, rflags)
+	if verdict != .Ok {
+		log.debugf("rename: %s → %s → %v (matrix)", oldpath, newpath, verdict)
+		return rename_verdict_rc(verdict)
+	}
+	if same_dir {
+		if dst_exists {
+			if err := remove_directory_entry(
+				fsys,
+				&dst_entry,
+				fs.File_Identity{new_parent_c, new_parent_o, dst_idx},
+			); err != .None {
+				return fs_error_to_errno(err)
 			}
 		}
 
@@ -661,29 +857,15 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 			check_path = parent_of_check
 		}
 	}
-
-	dst_idx := -1
-	dst_entry, _, _, dst_idx_resolved, dst_err := resolve_path_cached(
-		fsys,
-		string(newpath),
-		context.temp_allocator,
-	)
-	if dst_err != .None && dst_err != .Entry_Not_Found {
-		return fs_error_to_errno(dst_err)
-	}
-	if dst_err == .None {
-		dst_idx = dst_idx_resolved
-		if .Directory not_in dst_entry.flags {
-			if err := remove_directory_entry(
-				fsys,
-				&dst_entry,
-				fs.File_Identity{new_parent_c, new_parent_o, dst_idx},
-			); err != .None {
-				return fs_error_to_errno(err)
-			}
-		} else {
-			log.debugf("rename: %s → %s → EISDIR (destination is dir)", oldpath, newpath)
-			return fuse3.nix(.EISDIR)
+	// Cross-directory dst overwrite: matrix-gated as above. The removal
+	// precedes the slot allocation.
+	if dst_exists {
+		if err := remove_directory_entry(
+			fsys,
+			&dst_entry,
+			fs.File_Identity{new_parent_c, new_parent_o, dst_idx},
+		); err != .None {
+			return fs_error_to_errno(err)
 		}
 	}
 

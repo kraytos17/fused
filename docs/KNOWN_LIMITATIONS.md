@@ -34,10 +34,11 @@ Linked from README. Each item names the epic that fixes it. Updated
   semantics; do not rely on this for isolation.
 - **Timestamps are 1-second (E-02).** No nsec, `ctime == mtime`,
   `time_gran = 1e9` advertises the truth. Parent dir times never update.
-- **Rename is partial (E-04).** No `NOREPLACE`/`EXCHANGE`, dst-dir matrix
-  incomplete. Open fds survive cross-dir moves (table fh + re-point, step 1);
-  unlinked-but-open fds fail closed with `ENOENT` (no orphan persistence
-  until the on-disk orphan list, E-04 full).
+- **Rename is complete for flags 0/NOREPLACE/EXCHANGE** (E-04 steps
+  2–3): full errno matrix, same-name no-op, handle/lock swap on
+  EXCHANGE (dir ancestor/descendant → EINVAL, matching the kernel).
+  Still missing: orphan persistence for unlinked-but-open fds (E-04
+  full) and whiteout (EINVAL, needs overlay support).
 - **Locks never block (E-08).** `F_SETLKW` / blocking `flock` → `EAGAIN`.
 - **No sparse files (E-12).** `truncate(1T)` allocates and zeroes.
   `SEEK_DATA/HOLE` over a logically-contiguous chain is cosmetic.

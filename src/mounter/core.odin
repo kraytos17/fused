@@ -342,6 +342,57 @@ open_handle_repoint :: proc(fsys: ^FS, old, new: fs.File_Identity) {
 	}
 }
 
+// open_handle_swap exchanges the identity of every open handle and lock
+// record between two slots (RENAME_EXCHANGE): the content moved slots in
+// both directions simultaneously, so fds and advisory locks follow the
+// content, not the path. Collect-then-apply: mutating map values during
+// range is legal, but two swaps in one pass need both lists first.
+open_handle_swap :: proc(fsys: ^FS, a, b: fs.File_Identity) {
+	if a == b {
+		return
+	}
+
+	fhs_a: [dynamic]u64
+	fhs_b: [dynamic]u64
+
+	defer delete(fhs_a)
+	defer delete(fhs_b)
+	for fh, of in fsys.open_files {
+		if of.id == a {
+			append(&fhs_a, fh)
+		} else if of.id == b {
+			append(&fhs_b, fh)
+		}
+	}
+	for fh in fhs_a {
+		fsys.open_files[fh] = Open_File {
+			id = b,
+		}
+	}
+	for fh in fhs_b {
+		fsys.open_files[fh] = Open_File {
+			id = a,
+		}
+	}
+
+	// Advisory locks follow the content too (they are per-file state).
+	recs_a, has_a := fsys.locks[a]
+	recs_b, has_b := fsys.locks[b]
+	delete_key(&fsys.locks, a)
+	delete_key(&fsys.locks, b)
+
+	if has_a { fsys.locks[b] = recs_a }
+	if has_b { fsys.locks[a] = recs_b }
+
+	fls_a, fl_has_a := fsys.flock_locks[a]
+	fls_b, fl_has_b := fsys.flock_locks[b]
+	delete_key(&fsys.flock_locks, a)
+	delete_key(&fsys.flock_locks, b)
+
+	if fl_has_a { fsys.flock_locks[b] = fls_a }
+	if fl_has_b { fsys.flock_locks[a] = fls_b }
+}
+
 // open_handle_sweep drops every open handle naming a removed entry, so a
 // later reuse of the freed slot cannot resurrect a stale fd onto a
 // different file (ABA). Unlinked-but-open handles therefore fail closed

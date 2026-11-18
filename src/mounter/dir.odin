@@ -34,6 +34,29 @@ Check_Name_Ctx :: struct {
 	io_err:     fs.FS_Error,
 }
 
+// dir_is_empty reports whether a directory's content chain holds no
+// .Exists entries — the rmdir/rename-over-dir precondition. Read errors
+// propagate (never a silent "empty" that would allow destroying a
+// non-empty directory).
+dir_is_empty :: proc(fsys: ^FS, entry: fs.Directory_Entry) -> (bool, fs.FS_Error) {
+	dirs, derr := fs.read_directory_entries(
+		&fsys.vol,
+		fs.Cluster(entry.stored_cluster),
+		fs.Sector_Offset(entry.sector_index),
+	)
+
+	defer delete(dirs)
+	if derr != .None {
+		return false, derr
+	}
+	for &w in dirs {
+		if .Exists in w.entry.flags {
+			return false, .None
+		}
+	}
+	return true, .None
+}
+
 // write_entry_at writes a Directory_Entry back to its location on disk,
 // propagating the underlying error instead of collapsing it to bool.
 write_entry_at :: proc(
