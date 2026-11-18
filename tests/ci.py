@@ -2,8 +2,16 @@
 #
 # Usage:
 #   python3 tests/ci.py [--skip-fuse] [--skip-tool-tests]
+#                       [--skip-sanitize] [--skip-conformance]
 #
-# Orchestrates all phases: static analysis, unit tests, tool tests, FUSE smoke.
+# Orchestrates all phases: static analysis, unit tests, tool tests, FUSE
+# smoke, sanitizers, conformance. The heavyweight oracles (full
+# conformance suite, fsx/fsstress, bench-gate, TSan stress) run under
+# `make ci-nightly`, not here.
+#
+# Conformance/fs oracles need out-of-tree checkouts (see
+# tests/conformance/*.sh headers); when their binaries are missing the
+# phase warns and skips instead of failing.
 
 import argparse
 import os
@@ -46,9 +54,15 @@ class Suite:
         print(f"=== {self.name}: {self.passed} passed, {self.failed} failed ===")
 
 
-def make_suite(name: str, cmd: list[str], cwd: str | None = None) -> Suite:
+def make_suite(name: str, cmd: list[str], cwd: str | None = None,
+               env: dict[str, str] | None = None) -> Suite:
     s = Suite(name=name)
-    r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd or ROOT, check=False)
+    run_env = None
+    if env is not None:
+        run_env = os.environ.copy()
+        run_env.update(env)
+    r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd or ROOT, check=False,
+                       env=run_env)
     sys.stdout.write(r.stdout)
     s.add(name, r.returncode == 0,
           detail=r.stdout.strip() if r.returncode != 0 else "")
@@ -129,10 +143,43 @@ def phase_fuse(skip: bool = False) -> tuple[int, int]:
     return s.passed, s.failed
 
 
+def phase_sanitize(skip: bool = False) -> tuple[int, int]:
+    if skip:
+        print("== Phase 5: Sanitizers ==")
+        print("  (skipped)")
+        return 0, 0
+    print("== Phase 5: Sanitizers (ASan unit tests) ==")
+    s = make_suite("sanitize", ["make", "sanitize"], cwd=ROOT)
+    s.print_summary()
+    return s.passed, s.failed
+
+CI_CONFORMANCE_GROUPS = "chmod mkdir rename"
+
+
+def phase_conformance(skip: bool = False) -> tuple[int, int]:
+    if skip:
+        print("== Phase 6: Conformance (pjdfstest, scoped) ==")
+        print("  (skipped)")
+        return 0, 0
+    pjd_src = os.environ.get("PJD_SRC", "/tmp/opencode/pjdfstest")
+    if not os.path.isfile(os.path.join(pjd_src, "pjdfstest")):
+        print("== Phase 6: Conformance (pjdfstest, scoped) ==")
+        print(f"  WARN: pjdfstest binary missing under {pjd_src} — skipping")
+        print("  (see tests/conformance/pjdfstest.sh header for the build recipe)")
+        return 0, 0
+    print("== Phase 6: Conformance (pjdfstest, scoped) ==")
+    s = make_suite("conformance", ["make", "conformance"], cwd=ROOT,
+                   env={"PJD_GROUPS": CI_CONFORMANCE_GROUPS})
+    s.print_summary()
+    return s.passed, s.failed
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="fused CI")
     parser.add_argument("--skip-fuse", action="store_true")
     parser.add_argument("--skip-tool-tests", action="store_true")
+    parser.add_argument("--skip-sanitize", action="store_true")
+    parser.add_argument("--skip-conformance", action="store_true")
     args = parser.parse_args()
 
     total_p = total_f = 0
@@ -156,6 +203,16 @@ def main() -> None:
 
     print()
     p, f = phase_fuse(skip=args.skip_fuse)
+    total_p += p
+    total_f += f
+
+    print()
+    p, f = phase_sanitize(skip=args.skip_sanitize)
+    total_p += p
+    total_f += f
+
+    print()
+    p, f = phase_conformance(skip=args.skip_conformance)
     total_p += p
     total_f += f
 

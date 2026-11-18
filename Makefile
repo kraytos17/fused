@@ -11,6 +11,7 @@ LOGS_DIR      := $(or $(LOGS_DIR),logs)
 ODIN          := $(or $(ODIN),odin)
 MOUNTPOINT    := $(or $(MOUNTPOINT),mnt)
 IMAGE         := $(or $(IMAGE),fused.img)
+PJD_GROUPS    ?= chmod mkdir rename
 COLLECTIONS   := -collection:src=$(SRC_DIR)
 THREAD_COUNT  := $(or $(THREAD_COUNT),4)
 FUSE_LINK     := -extra-linker-flags:"-lfuse3 -lpthread"
@@ -31,8 +32,8 @@ PYTEST_FUSE   := uv run pytest -v --tb=short $(FUSE_FLAGS)
 
 .PHONY: all build build-tsan format imgdump check-tool \
         create-image mount unmount \
-        test pytest check check-all audit vet ci doctor \
-        gen-trace check-trace clean-logs conformance fsx fsstress golden \
+        test pytest check check-all audit vet ci ci-nightly doctor \
+        gen-trace check-trace clean-logs conformance fsx fsstress golden bench-gate \
         sanitize tsan-smoke-mt \
         smoke smoke-rw smoke-mt smoke-errors smoke-crash bench \
         clean help
@@ -123,6 +124,21 @@ check-all:
 ci: build create-image imgdump
 	@PYTHONPATH=$(TEST_DIR) python3 tests/ci.py
 
+ci-nightly: build create-image imgdump check-tool
+	PJD_GROUPS="chflags chmod chown ftruncate granular link mkdir mkfifo mknod open posix_fallocate rename rmdir symlink truncate unlink utimensat" $(MAKE) --no-print-directory conformance
+	@$(MAKE) --no-print-directory fsx
+	@$(MAKE) --no-print-directory fsstress
+	@$(MAKE) --no-print-directory bench-gate
+	@$(MAKE) --no-print-directory tsan-smoke-mt
+
+bench-gate: build
+	@rm -f bench.img bench.new.json
+	@$(BUILD_DIR)/format --force --output=bench.img --size=16M
+	@$(HARNESS) 300 python3 -m fused_test.suites.bench $(FUSE_FLAGS) --image=bench.img --size=4 --json-out=bench.new.json
+	@rm -f bench.img
+	@python3 tests/conformance/bench_gate.py bench/baseline.json bench.new.json --tolerance=0.15
+	@rm -f bench.new.json
+
 sanitize: create-image clean-logs
 	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS) -sanitize:address $(TIMING_FLAG)
 
@@ -159,7 +175,8 @@ bench: build
 	@rm -f bench.img
 
 conformance: build format
-	@$(HARNESS) 300 bash tests/conformance/pjdfstest.sh $(PJD_GROUPS)
+	@$(HARNESS) 300 bash tests/conformance/pjdfstest.sh $(PJD_GROUPS); \
+	python3 tests/conformance/pjdfstest_check.py --groups="$(PJD_GROUPS)"
 
 golden:
 	@$(ODIN) run tools/gen_golden $(COLLECTIONS) -define:ODIN_MOUNTER_TEST=true
@@ -208,6 +225,8 @@ help:
 	@echo "  bench            throughput benchmark (bench.py)"
 	@echo '  conformance      pjdfstest groups (PJD_GROUPS="chmod mkdir", isolated ns)'
 	@echo '  golden             regenerate tests/golden compat fixtures'
+	@echo '  bench-gate         bench median vs baseline.json (15% tolerance)'
+	@echo '  ci-nightly         full conformance + fsx/fsstress + bench-gate + tsan (long)'
 	@echo '  fsx                fsx-linux content oracle x3 (isolated ns)'
 	@echo '  fsstress           seeded metadata stress x3 seeds (isolated ns)'
 	@echo "  ci               full CI pipeline"
