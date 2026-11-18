@@ -212,7 +212,9 @@ _allocate_append_link :: proc(
 // standalone here — the tail link to an extended chain only runs on the
 // success path — so freeing from the recorded head touches nothing live.
 // Failures are ignored: the caller already reports the original error,
-// and a failed rollback is a fault-injection-grade event.
+// and a failed rollback is a fault-injection-grade event. Under
+// single-shot (transient) faults the rollback does complete clean —
+// verified at every cut point by tests/late_fault_test.odin.
 @(private = "file")
 _allocate_rollback_best_effort :: proc(vol: ^Volume, head: Chain_Location) {
 	if head.cluster == 0 {

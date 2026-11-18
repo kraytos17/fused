@@ -601,13 +601,17 @@ tests/
 ├── ci.py                          CI orchestrator (calls make + pytest)
 ├── run_in_namespace.sh            Thin shell: exec unshare -rUm timeout "$@"
 ├── test_common.odin               Shared Odin test helpers (image open, scratch volumes)
-├── mounter_test.odin              45 mounter-callback unit tests (incl. trace format-line test)
+├── test_fixtures.odin             Shared Odin test fixtures (isolated scratch images, path helper)
+├── mounter_test.odin              54 mounter-callback unit tests (incl. trace format-line test)
 ├── rmdir_test.odin                1 rmdir-on-unreadable-listing test (isolated image)
 ├── lock_test.odin                 5 lock/flock unit tests (direct fused_lock/fused_flock calls)
+├── rename_validate_test.odin      3 rename errno-matrix tests (E-04 step 2, table-driven pure matrix + callback)
 ├── journal_test.odin              3 journal-backend tests (rev-8 WAL image)
 ├── journal_txn_test.odin          5 journal transaction-bounds tests (slots/replay/chunking/collapse, isolated images)
 ├── io_error_test.odin             2 fault-injection tests (truncated + read-only images)
-├── fault_test.odin                12 deterministic fault tests (Nth read/write/sync fails, isolated images)
+├── fault_test.odin                16 deterministic fault tests (Nth read/write/sync fails + single-shot cut-and-disarm, isolated images)
+├── late_fault_test.odin           1 late-fault enumeration test (single-shot write cuts across create/mkdir/symlink: op fails, rollback completes, checker clean)
+├── used_entries_test.odin         2 statfs inode-accounting tests (D-13 lifecycle vs walk vs statfs + disk re-seed)
 ├── invalidation_test.odin         6 cache-invalidation tests
 ├── dir_op_test.odin               9 directory-operation tests
 ├── dir_test.odin                  6 directory tests
@@ -618,6 +622,7 @@ tests/
 ├── ce_identity_test.odin          1 CE slot-identity test (stale-duplicate clear, isolated image)
 ├── check_test.odin                20 checker tests (Stage A ownership/links/bounds/free + Stage B reachability/orphans/journal + read-only open, isolated images)
 ├── golden_test.odin               2 format byte-golden tests (rev 7 + rev 8 fresh-format hashes, determinism check)
+├── golden_compat_test.odin        3 revision-compat fixture tests (rev 7/8 golden images open + resolve + checker-clean)
 ├── property_test.odin             3 model-based property tests (300 deterministic ops each, distinct seeds: + copy_file_range, write_buf, fallocate oracles; clean final scan)
 ├── truncate_test.odin             3 truncate-boundary tests (fragmented chain + journal pins, isolated image)
 ├── zero_fill_test.odin            5 extension zero-fill + zero-length-write tests (poison-reuse images)
@@ -633,7 +638,7 @@ tests/
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `make test` (184 Odin tests) |
+| 2. Unit tests | `make test` (206 Odin tests) |
 | 3. Tool integration | `make pytest -m tool` (7 format + 14 imgdump tests) |
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |

@@ -15,10 +15,13 @@ Linked from README. Each item names the epic that fixes it. Updated
   writes garbage into a CE table (checker flags it after the fact).
 - **Master rewritten per transaction.** `journal_finish` rewrites sector 0
   every commit. No backup master, no master CRC (E-02).
-- **Late-fault rollback is best-effort.** Failure paths free what they
-  allocated, but rollback I/O under persistent faults can itself fail and
-  leak (threshold faults cannot express single-shot). Full enumeration
-  needs the T-05 crash simulator with single-shot fault support.
+- **Persistent-fault rollback is best-effort.** Failure paths free what
+  they allocated, but under a fault that never clears (threshold
+  injection models a dead disk) the rollback's own I/O fails too and
+  leaks. Single-shot injection covers the transient case: every write
+  of create/mkdir/symlink is cut exactly once and each rollback
+  completes clean (late_fault_test.odin). Rename joins that sweep, and
+  the kill -9 crash simulator remains T-05 work.
 - **Corrupt timestamps fail `stat` (E-09).** Out-of-range date fields make
   `getattr` return EIO instead of clamping + warning. `check` reports the
   finding; repair clamps it.

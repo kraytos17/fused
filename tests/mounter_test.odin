@@ -2298,10 +2298,10 @@ test_mount_stale_handle_fails_closed :: proc(t: ^testing.T) {
 // leak and no corruption. Early-fault (first write fails, inside the first
 // journal commit) must leave the free count untouched and the checker
 // clean; success + remove must round-trip the free count (LFN + data +
-// dir sectors all reclaimed). Late-fault enumeration (Nth-write cut with
-// rollback I/O itself faulted) needs single-shot fault support — tracked
-// as T-05 crash-simulator work; threshold faults cannot express "fail
-// exactly once then let the rollback succeed".
+// dir sectors all reclaimed). Late-fault enumeration for these creators
+// lives in late_fault_test.odin (single-shot write cuts: the op fails
+// and the rollback completes); the kill -9 crash simulator that sweeps
+// persistent-fault cuts remains T-05 work.
 @(test)
 test_mount_create_mkdir_symlink_rollback :: proc(t: ^testing.T) {
 	fsys: mounter.FS

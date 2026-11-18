@@ -5,10 +5,22 @@ package fs
 
 import "core:os"
 
+// Fault_Class selects an I/O class for single-shot injection.
+Fault_Class :: enum {
+	None,
+	Reads,
+	Writes,
+	Syncs,
+}
+
 // IO_Fault is a deterministic fault injector and I/O counter for tests.
 // The zero value disables injection (production behavior). Enable it to
 // fail reads/writes/syncs past a threshold (the first N succeed) or to
-// count I/O per operation. Single-threaded test volumes only.
+// count I/O per operation. Single-shot mode fails exactly one op — the
+// fail_once_at-th (1-based) call of fail_once_class — then lets all
+// later I/O of every class succeed, rollback included; threshold mode
+// cannot express that (it faults the rollback too), which is what
+// blocked late-fault enumeration. Single-threaded test volumes only.
 IO_Fault :: struct {
 	enabled:           bool,
 	fail_reads_after:  u64,
@@ -17,13 +29,59 @@ IO_Fault :: struct {
 	reads:             u64,
 	writes:            u64,
 	syncs:             u64,
+	// Single-shot injection: ops of fail_once_class are counted and
+	// when the count lands exactly on fail_once_at, that op fails and
+	// the shot disarms (fail_once_class resets to .None). fail_once_at
+	// = 0 never fires. Counting continues so tests can assert where
+	// the fault landed. The threshold fields stay independent and keep
+	// applying to their own classes.
+	fail_once_class:   Fault_Class,
+	fail_once_at:      u64,
+}
+
+// io_fails counts one op of the given class and reports whether it
+// fails. Threshold mode: every op past fail_<class>_after fails.
+// Single-shot mode: the op whose class count lands exactly on
+// fail_once_at fails and disarms the shot, so later ops — rollback I/O
+// included — succeed. A disabled fault (enabled = false) never counts
+// and never fails: production behavior.
+@(private = "file")
+_io_fails :: proc(f: ^IO_Fault, class: Fault_Class) -> bool {
+	if !f.enabled {
+		return false
+	}
+
+	count: ^u64
+	threshold: u64
+	switch class {
+	case .None:
+		return false
+	case .Reads:
+		count = &f.reads
+		threshold = f.fail_reads_after
+	case .Writes:
+		count = &f.writes
+		threshold = f.fail_writes_after
+	case .Syncs:
+		count = &f.syncs
+		threshold = f.fail_syncs_after
+	}
+
+	count^ += 1
+	if count^ > threshold {
+		return true
+	}
+	if f.fail_once_class == class && count^ == f.fail_once_at {
+		f.fail_once_class = .None
+		return true
+	}
+	return false
 }
 
 // sector_read reads one 512-byte sector from disk at the given sector number
 sector_read :: proc(vol: ^Volume, sector: Sector, buf: []u8) -> FS_Error {
-	if vol.fault.enabled {
-		vol.fault.reads += 1
-		if vol.fault.reads > vol.fault.fail_reads_after { return .Sector_Read_Error }
+	if _io_fails(&vol.fault, .Reads) {
+		return .Sector_Read_Error
 	}
 
 	n, err := os.read_at(vol.disk, buf, i64(u64(sector) * SECTOR_SIZE))
@@ -35,9 +93,8 @@ sector_read :: proc(vol: ^Volume, sector: Sector, buf: []u8) -> FS_Error {
 
 // sector_write writes one 512-byte sector to disk
 sector_write :: proc(vol: ^Volume, sector: Sector, buf: []u8) -> FS_Error {
-	if vol.fault.enabled {
-		vol.fault.writes += 1
-		if vol.fault.writes > vol.fault.fail_writes_after { return .Sector_Write_Error }
+	if _io_fails(&vol.fault, .Writes) {
+		return .Sector_Write_Error
 	}
 
 	n, err := os.write_at(vol.disk, buf, i64(u64(sector) * SECTOR_SIZE))
@@ -51,9 +108,8 @@ sector_write :: proc(vol: ^Volume, sector: Sector, buf: []u8) -> FS_Error {
 // form, a short write without an error still fails instead of
 // reporting success.
 sector_write_bulk :: proc(vol: ^Volume, start_sector: Sector, buf: []u8) -> FS_Error {
-	if vol.fault.enabled {
-		vol.fault.writes += 1
-		if vol.fault.writes > vol.fault.fail_writes_after { return .Sector_Write_Error }
+	if _io_fails(&vol.fault, .Writes) {
+		return .Sector_Write_Error
 	}
 
 	n, err := os.write_at(vol.disk, buf, i64(u64(start_sector) * SECTOR_SIZE))
@@ -67,9 +123,8 @@ sector_write_bulk :: proc(vol: ^Volume, start_sector: Sector, buf: []u8) -> FS_E
 // backs the journal's durability points (records, header, home-apply);
 // user-facing fsync callbacks keep direct os.sync (no fault tests).
 volume_sync :: proc(vol: ^Volume) -> bool {
-	if vol.fault.enabled {
-		vol.fault.syncs += 1
-		if vol.fault.syncs > vol.fault.fail_syncs_after { return false }
+	if _io_fails(&vol.fault, .Syncs) {
+		return false
 	}
 	return os.sync(vol.disk) == nil
 }

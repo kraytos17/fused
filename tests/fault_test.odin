@@ -1,9 +1,11 @@
 // fault_test.odin — deterministic fault-injection tests.
 //
-// The IO_Fault seam (Volume.fault) fails the Nth read/write/sync, proving
-// the ADR-001 ordering properties that kill -9 timing cannot target: a
-// commit failure must leave home untouched, and a failed op must persist
-// nothing uncommitted. Runs on isolated scratch images.
+// The IO_Fault seam (Volume.fault) fails the Nth read/write/sync
+// (threshold mode) or exactly one op of a class and then lets the rest
+// succeed (single-shot mode), proving the ADR-001 ordering properties
+// that kill -9 timing cannot target: a commit failure must leave home
+// untouched, and a failed op must persist nothing uncommitted. Runs on
+// isolated scratch images.
 // scope: scratch image
 #+build linux
 package tests
@@ -738,4 +740,159 @@ test_fault_recover_scan_read_error_fails :: proc(t: ^testing.T) {
 	_, rerr2 := fs.find_cluster_entry(&vol, hc, ho)
 	testing.expect_value(t, rerr2, fs.FS_Error.Entry_Not_Found)
 	testing.expect_value(t, fs.alloc_cache_count_free(&vol), f0 + cleared_size)
+}
+
+// test_fault_once_write_fires_exactly_once — single-shot write
+// injection fails exactly the fail_once_at-th write and then disarms:
+// the ops before and after it — rollback I/O included — succeed, the
+// primitive threshold mode cannot express (the T-05 prerequisite). The
+// successful writes must actually reach the disk; the faulted one must
+// not.
+@(test)
+test_fault_once_write_fires_exactly_once :: proc(t: ^testing.T) {
+	vol, ok := scratch_volume(t, FAULT_SCRATCH)
+	if !ok { return }
+	defer close_scratch_volume(&vol, FAULT_SCRATCH)
+
+	vol.fault = fs.IO_Fault {
+		enabled           = true,
+		fail_reads_after  = max(u64),
+		fail_writes_after = max(u64),
+		fail_syncs_after  = max(u64),
+		fail_once_class   = .Writes,
+		fail_once_at      = 3,
+	}
+
+	// Five writes to scratch data sectors; the 3rd (2002) fails.
+	patterns: [5][fs.SECTOR_SIZE]u8
+	for i in 0 ..< 5 {
+		for j in 0 ..< len(patterns[i]) {
+			patterns[i][j] = u8(i + 1)
+		}
+		err := fs.sector_write(&vol, fs.Sector(2000 + u64(i)), patterns[i][:])
+		if i == 2 {
+			testing.expect_value(t, err, fs.FS_Error.Sector_Write_Error)
+		} else {
+			testing.expect_value(t, err, fs.FS_Error.None)
+		}
+	}
+	testing.expect_value(t, vol.fault.writes, u64(5))
+
+	// Read back: every non-faulted write landed on disk; the faulted
+	// sector kept its pre-write content (zeros on a fresh image).
+	buf: [fs.SECTOR_SIZE]u8
+	for i in 0 ..< 5 {
+		rerr := fs.sector_read(&vol, fs.Sector(2000 + u64(i)), buf[:])
+		testing.expect_value(t, rerr, fs.FS_Error.None)
+		if rerr != .None { return }
+		same := true
+		for j in 0 ..< len(buf) {
+			if buf[j] != patterns[i][j] { same = false; break }
+		}
+		if i == 2 {
+			testing.expect(t, !same, "faulted write must not land")
+		} else {
+			testing.expect(t, same, "successful write must land")
+		}
+	}
+	testing.expect_value(t, vol.fault.reads, u64(5))
+
+	// The shot disarmed: no further write-class failure is pending.
+	testing.expect_value(t, vol.fault.fail_once_class, fs.Fault_Class.None)
+}
+
+// test_fault_once_read_fires_exactly_once — the same primitive for
+// reads: exactly the fail_once_at-th read fails, the rest succeed, and
+// the shot disarms.
+@(test)
+test_fault_once_read_fires_exactly_once :: proc(t: ^testing.T) {
+	vol, ok := scratch_volume(t, FAULT_SCRATCH)
+	if !ok { return }
+	defer close_scratch_volume(&vol, FAULT_SCRATCH)
+
+	vol.fault = fs.IO_Fault {
+		enabled           = true,
+		fail_reads_after  = max(u64),
+		fail_writes_after = max(u64),
+		fail_syncs_after  = max(u64),
+		fail_once_class   = .Reads,
+		fail_once_at      = 2,
+	}
+
+	buf: [fs.SECTOR_SIZE]u8
+	for i in 0 ..< 4 {
+		err := fs.sector_read(&vol, 0, buf[:])
+		if i == 1 {
+			testing.expect_value(t, err, fs.FS_Error.Sector_Read_Error)
+		} else {
+			testing.expect_value(t, err, fs.FS_Error.None)
+		}
+	}
+	testing.expect_value(t, vol.fault.reads, u64(4))
+	testing.expect_value(t, vol.fault.fail_once_class, fs.Fault_Class.None)
+}
+
+// test_fault_once_sync_fires_exactly_once — the same primitive for
+// syncs: the fail_once_at-th volume_sync reports failure, the rest
+// succeed, and the shot disarms.
+@(test)
+test_fault_once_sync_fires_exactly_once :: proc(t: ^testing.T) {
+	vol, ok := scratch_volume(t, FAULT_SCRATCH)
+	if !ok { return }
+	defer close_scratch_volume(&vol, FAULT_SCRATCH)
+
+	vol.fault = fs.IO_Fault {
+		enabled           = true,
+		fail_reads_after  = max(u64),
+		fail_writes_after = max(u64),
+		fail_syncs_after  = max(u64),
+		fail_once_class   = .Syncs,
+		fail_once_at      = 2,
+	}
+
+	testing.expect(t, fs.volume_sync(&vol), "1st sync succeeds")
+	testing.expect(t, !fs.volume_sync(&vol), "2nd sync fails (the shot)")
+	testing.expect(t, fs.volume_sync(&vol), "3rd sync succeeds (disarmed)")
+	testing.expect_value(t, vol.fault.syncs, u64(3))
+	testing.expect_value(t, vol.fault.fail_once_class, fs.Fault_Class.None)
+}
+
+// test_fault_once_independent_of_threshold — the two modes are
+// independent: a writes threshold keeps failing every write while the
+// reads single-shot fires exactly once and disarms, and neither mode's
+// counter field is disturbed by the other's.
+@(test)
+test_fault_once_independent_of_threshold :: proc(t: ^testing.T) {
+	vol, ok := scratch_volume(t, FAULT_SCRATCH)
+	if !ok { return }
+	defer close_scratch_volume(&vol, FAULT_SCRATCH)
+
+	vol.fault = fs.IO_Fault {
+		enabled           = true,
+		fail_reads_after  = max(u64),
+		fail_writes_after = 0,
+		fail_syncs_after  = max(u64),
+		fail_once_class   = .Reads,
+		fail_once_at      = 3,
+	}
+
+	buf: [fs.SECTOR_SIZE]u8
+	// Threshold mode on writes: every write fails.
+	for i in 0 ..< 3 {
+		werr := fs.sector_write(&vol, fs.Sector(2000 + u64(i)), buf[:])
+		testing.expect_value(t, werr, fs.FS_Error.Sector_Write_Error)
+	}
+	// Single-shot mode on reads: exactly the 3rd fails, the rest
+	// succeed — the writes threshold did not disarm it.
+	for i in 0 ..< 5 {
+		rerr := fs.sector_read(&vol, 0, buf[:])
+		if i == 2 {
+			testing.expect_value(t, rerr, fs.FS_Error.Sector_Read_Error)
+		} else {
+			testing.expect_value(t, rerr, fs.FS_Error.None)
+		}
+	}
+	testing.expect_value(t, vol.fault.writes, u64(3))
+	testing.expect_value(t, vol.fault.reads, u64(5))
+	testing.expect_value(t, vol.fault.fail_once_class, fs.Fault_Class.None)
 }
