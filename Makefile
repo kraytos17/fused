@@ -33,7 +33,7 @@ PYTEST_FUSE   := uv run pytest -v --tb=short $(FUSE_FLAGS)
 .PHONY: all build build-tsan format imgdump check-tool \
         create-image mount unmount \
         test pytest check check-all audit vet ci ci-nightly doctor \
-        gen-trace check-trace clean-logs conformance fsx fsstress golden bench-gate model \
+        gen-trace check-trace clean-logs conformance fsx fsstress golden bench-gate model fuzz fuzz-smoke \
         sanitize tsan-smoke-mt \
         smoke smoke-rw smoke-mt smoke-errors smoke-crash bench \
         clean help
@@ -124,12 +124,19 @@ check-all:
 ci: build create-image imgdump
 	@PYTHONPATH=$(TEST_DIR) python3 tests/ci.py
 
+fuzz: build format check-tool imgdump
+	@$(HARNESS) 1500 uv run python tests/fuzz/fuzz_image.py --iterations 300 --live --timeout 30
+
+fuzz-smoke: build format check-tool imgdump
+	@$(HARNESS) 600 uv run python tests/fuzz/fuzz_image.py --iterations 50 --live --timeout 20
+
 ci-nightly: build create-image imgdump check-tool
 	PJD_GROUPS="chflags chmod chown ftruncate granular link mkdir mkfifo mknod open posix_fallocate rename rmdir symlink truncate unlink utimensat" $(MAKE) --no-print-directory conformance
 	@$(MAKE) --no-print-directory fsx
 	@$(MAKE) --no-print-directory fsstress
 	@$(MAKE) --no-print-directory bench-gate
 	@$(MAKE) --no-print-directory tsan-smoke-mt
+	@$(MAKE) --no-print-directory fuzz
 
 bench-gate: build
 	@rm -f bench.img bench.new.json
@@ -229,6 +236,8 @@ help:
 	@echo '  conformance      pjdfstest groups (PJD_GROUPS="chmod mkdir", isolated ns)'
 	@echo '  golden             regenerate tests/golden compat fixtures'
 	@echo '  model              differential model test vs host reference (T-04)'
+	@echo '  fuzz               structure-aware image fuzzing (offline + live)'
+	@echo '  fuzz-smoke         50-iter fuzz subset for PR CI'
 	@echo '  bench-gate         bench median vs baseline.json (15% tolerance)'
 	@echo '  ci-nightly         full conformance + fsx/fsstress + bench-gate + tsan (long)'
 	@echo '  fsx                fsx-linux content oracle x3 (isolated ns)'

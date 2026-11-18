@@ -2,12 +2,12 @@
 #
 # Usage:
 #   python3 tests/ci.py [--skip-fuse] [--skip-tool-tests]
-#                       [--skip-sanitize] [--skip-conformance]
+#                       [--skip-sanitize] [--skip-conformance] [--skip-fuzz]
 #
 # Orchestrates all phases: static analysis, unit tests, tool tests, FUSE
-# smoke, sanitizers, conformance. The heavyweight oracles (full
-# conformance suite, fsx/fsstress, bench-gate, TSan stress) run under
-# `make ci-nightly`, not here.
+# smoke, sanitizers, conformance, fuzz-smoke. The heavyweight oracles (full
+# conformance suite, fsx/fsstress, bench-gate, TSan stress, full fuzz) run
+# under `make ci-nightly`, not here.
 #
 # Conformance/fs oracles need out-of-tree checkouts (see
 # tests/conformance/*.sh headers); when their binaries are missing the
@@ -174,12 +174,24 @@ def phase_conformance(skip: bool = False) -> tuple[int, int]:
     return s.passed, s.failed
 
 
+def phase_fuzz(skip: bool = False) -> tuple[int, int]:
+    if skip:
+        print("== Phase 7: Fuzz smoke ==")
+        print("  (skipped)")
+        return 0, 0
+    print("== Phase 7: Fuzz smoke (50 iters, offline + live) ==")
+    s = make_suite("fuzz-smoke", ["make", "fuzz-smoke"], cwd=ROOT)
+    s.print_summary()
+    return s.passed, s.failed
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="fused CI")
     parser.add_argument("--skip-fuse", action="store_true")
     parser.add_argument("--skip-tool-tests", action="store_true")
     parser.add_argument("--skip-sanitize", action="store_true")
     parser.add_argument("--skip-conformance", action="store_true")
+    parser.add_argument("--skip-fuzz", action="store_true")
     args = parser.parse_args()
 
     total_p = total_f = 0
@@ -213,6 +225,11 @@ def main() -> None:
 
     print()
     p, f = phase_conformance(skip=args.skip_conformance)
+    total_p += p
+    total_f += f
+
+    print()
+    p, f = phase_fuzz(skip=args.skip_fuzz)
     total_p += p
     total_f += f
 
