@@ -1,0 +1,34 @@
+# fsx_baseline.txt — file-op exerciser baseline (T-02).
+# Tools (build once; see tests/conformance/fsx.sh header):
+#   LTP fsx-linux + fsstress (pinned via /tmp/opencode/ltp-full).
+# Method: `make fsx` / `make fsstress` (fresh 16M image per tool/seed,
+# mount, run, unmount, `build/check` the image).
+# CI rule: any NEW failure or any checker error/warning fails the run.
+# Status: green on v0.9.0 + allocator prefix-rollback fix (below).
+
+## fsx-linux (content oracle, -N 20000 x3)
+# NOTE: LTP's rewrite seeds srandom(time(NULL)) — no -s flag. Repeat runs
+# cover the gap until we vendor a seedable fsx. Run logs:
+# logs/fsx-fsxlinux-{1,2,3}.log, post-run check logs/fsx-fsxlinux-check.log.
+fsx-linux run 1: PASS (TPASS, 0 errors; TWARN oom-score noise only)
+fsx-linux run 2: PASS (TPASS, 0 errors; TWARN oom-score noise only)
+fsx-linux run 3: PASS (TPASS, 0 errors; TWARN oom-score noise only)
+fsx-linux check: 0 errors, 0 warnings (all runs)
+
+## fsstress (metadata stress, -n 1000 -p 4, seeds 1 2 3)
+# Deterministic via -s. Run logs logs/fsx-fsstress-{1,2,3}.log
+# (check summary appended to each log).
+fsstress seed 1: PASS, check 0 errors 0 warnings
+fsstress seed 2: PASS, check 0 errors 0 warnings
+fsstress seed 3: PASS, check 0 errors 0 warnings
+
+## Finding fixed during baselining (D-06 follow-up)
+# fsstress initially left 101 orphan warnings per run (all seeds, -p 1
+# and -p 4 alike): allocate_sectors flushed journal prefix chunks as they
+# filled, then returned No_Space and abandoned the committed prefix.
+# Reproduced in-process (create + 2MB write + unlink on a 1M image).
+# Fix: _allocate_rollback_best_effort frees the partial chain from its
+# recorded head on every late failure (No_Space or I/O past flushed
+# chunks); the new chain is always standalone (tail link runs only on
+# success). Regression: tests.test_mount_oversize_write_no_leak
+# (ENOSPC honest, zero drift, checker clean).

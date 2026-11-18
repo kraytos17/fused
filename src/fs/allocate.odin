@@ -203,6 +203,26 @@ _allocate_append_link :: proc(
 	return _plan_append(vol, plan, rec)
 }
 
+// _allocate_rollback_best_effort frees a partially committed prefix chain
+// after a late allocation failure (No_Space or I/O past flushed chunks).
+// Chunks flush through the journal as they fill, so by the time the scan
+// fails, earlier chunks are durable and unreachable: without this, every
+// over-size allocation would orphan its prefix (fsstress found it via
+// write-then-unlink with 100+ orphaned entries). The new chain is always
+// standalone here — the tail link to an extended chain only runs on the
+// success path — so freeing from the recorded head touches nothing live.
+// Failures are ignored: the caller already reports the original error,
+// and a failed rollback is a fault-injection-grade event.
+@(private = "file")
+_allocate_rollback_best_effort :: proc(vol: ^Volume, head: Chain_Location) {
+	if head.cluster == 0 {
+		return
+	}
+	if derr := deallocate_sectors(vol, head); derr != .None {
+		log.debugf("allocate: rollback of partial chain: %v (best effort)", derr)
+	}
+}
+
 // allocate_sectors allocates contiguous sectors on a volume.
 //
 // Extension logic: if start.cluster != 0, existing extents are resolved and
@@ -271,6 +291,9 @@ allocate_sectors :: proc(
 		}
 		if .Allocated not_in cme.flags {
 			if ierr := _allocate_init_fresh(vol, cluster_idx, &cme); ierr != .None {
+				if !is_first {
+					_allocate_rollback_best_effort(vol, Chain_Location{first_cluster, first_offset})
+				}
 				return 0, 0, ierr
 			}
 		}
@@ -316,6 +339,9 @@ allocate_sectors :: proc(
 			&plan,
 			journal_entry_from_cluster_entry(new_entry, cluster_idx, u8(free_idx)),
 		); perr != .None {
+			if !is_first {
+				_allocate_rollback_best_effort(vol, Chain_Location{first_cluster, first_offset})
+			}
 			return 0, 0, perr
 		}
 		if is_first {
@@ -327,6 +353,9 @@ allocate_sectors :: proc(
 			prev_entry.next_sector_index = u16(free_start)
 			if lerr := _allocate_append_link(vol, &plan, prev_cluster, prev_idx, prev_entry);
 			   lerr != .None {
+				if !is_first {
+					_allocate_rollback_best_effort(vol, Chain_Location{first_cluster, first_offset})
+				}
 				return 0, 0, lerr
 			}
 		}
@@ -345,6 +374,9 @@ allocate_sectors :: proc(
 	}
 	if remaining > 0 {
 		log.errorf("allocate: No_Space — needed %d, %d remaining", sectors_needed, remaining)
+		if !is_first {
+			_allocate_rollback_best_effort(vol, Chain_Location{first_cluster, first_offset})
+		}
 		return 0, 0, .No_Space
 	}
 	if start.cluster != 0 && !is_first {
@@ -354,6 +386,7 @@ allocate_sectors :: proc(
 			start,
 			Chain_Location{first_cluster, first_offset},
 		); lerr != .None {
+			_allocate_rollback_best_effort(vol, Chain_Location{first_cluster, first_offset})
 			return 0, 0, lerr
 		}
 	}
@@ -361,6 +394,9 @@ allocate_sectors :: proc(
 	log.debugf("allocate: ok — %d sectors across %d clusters", sectors_needed, first_cluster)
 	vol.cache.hint = (u64(first_cluster) + 1) % vol.master.cluster_map_size
 	if ferr := journal_flush_chunk(vol, plan[:]); ferr != .None {
+		if !is_first {
+			_allocate_rollback_best_effort(vol, Chain_Location{first_cluster, first_offset})
+		}
 		return 0, 0, ferr
 	}
 	// The fills are durable now: publish deferred Full-marks best-effort.

@@ -2203,6 +2203,38 @@ test_mount_create_mkdir_symlink_rollback :: proc(t: ^testing.T) {
 	testing.expect_value(t, rep2.warnings, 0)
 }
 
+// test_mount_oversize_write_no_leak — allocating past end-of-device must
+// fail clean with ENOSPC and orphan nothing: the allocator's journal
+// chunks commit as they fill, so a late No_Space used to abandon its
+// committed prefix (100+ orphans on a 2MB write to a 1M image, found by
+// fsstress). The scan now rolls its prefix back on every late failure.
+@(test)
+test_mount_oversize_write_no_leak :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !scratch_fs(t, "/dev/shm/fused_oversize_test.img", &fsys) { return }
+	defer close_scratch_fs(&fsys, "/dev/shm/fused_oversize_test.img")
+	f0 := fs.alloc_cache_count_free(&fsys.vol)
+
+	fi: fuse3.File_Info
+	testing.expect_value(
+		t,
+		mounter.fused_create("/big", posix.mode_t{.IRUSR, .IWUSR}, &fi),
+		0,
+	)
+	big := make([]u8, 2 << 20)
+	defer delete(big)
+	// 2MB cannot fit a 1M image: honest ENOSPC, not a short write that
+	// pretends success.
+	expect_errno(t, mounter.fused_write("/big", raw_data(big), c.size_t(len(big)), 0, &fi), .ENOSPC)
+	testing.expect_value(t, fs.alloc_cache_count_free(&fsys.vol), f0)
+	testing.expect_value(t, mounter.fused_unlink("/big"), 0)
+	testing.expect_value(t, fs.alloc_cache_count_free(&fsys.vol), f0)
+	rep := fs.check_image(&fsys.vol)
+	defer fs.check_report_destroy(&rep)
+	testing.expect_value(t, rep.errors, 0)
+	testing.expect_value(t, rep.warnings, 0)
+}
+
 // test_mount_readdir_on_file_is_enotdir — D-07: readdir on a non-directory
 // reports ENOTDIR, not ENOENT.
 @(test)

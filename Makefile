@@ -32,7 +32,7 @@ PYTEST_FUSE   := uv run pytest -v --tb=short $(FUSE_FLAGS)
 .PHONY: all build format imgdump check-tool \
         create-image mount unmount \
         test pytest check check-all audit vet ci doctor \
-        gen-trace check-trace clean-logs conformance \
+        gen-trace check-trace clean-logs conformance fsx fsstress \
         smoke smoke-rw smoke-mt smoke-errors smoke-crash bench \
         clean help
 
@@ -150,6 +150,12 @@ bench: build
 conformance: build format
 	@$(HARNESS) 300 bash tests/conformance/pjdfstest.sh $(PJD_GROUPS)
 
+fsx: build format check-tool
+	@$(HARNESS) 300 bash tests/conformance/fsx.sh fsx
+
+fsstress: build format check-tool
+	@$(HARNESS) 300 bash tests/conformance/fsx.sh fsstress
+
 clean:
 	@rm -rf $(BUILD_DIR) $(LOGS_DIR) $(MOUNTPOINT) $(IMAGE) /dev/shm/fused_test.img
 	@fusermount3 -u $(MOUNTPOINT) 2>/dev/null || true
@@ -185,6 +191,8 @@ help:
 	@echo "  smoke-mt         multi-threaded stress (isolated ns)"
 	@echo "  bench            throughput benchmark (bench.py)"
 	@echo '  conformance      pjdfstest groups (PJD_GROUPS="chmod mkdir", isolated ns)'
+	@echo '  fsx                fsx-linux content oracle x3 (isolated ns)'
+	@echo '  fsstress           seeded metadata stress x3 seeds (isolated ns)'
 	@echo "  ci               full CI pipeline"
 	@echo "  doctor           audit + vet + image coherence check"
 	@echo ""
