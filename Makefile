@@ -20,7 +20,7 @@ COMMON_BUILD  := -debug -o:none -warnings-as-errors \
 
 BASE_DEBUG    := $(COMMON_BUILD) -use-separate-modules
 FULL_BUILD    := $(COMMON_BUILD) -use-single-module
-TEST_FLAGS    := $(BASE_DEBUG) -define:ODIN_TEST_THREADS=1 -define:ODIN_MOUNTER_TEST=true
+TEST_FLAGS    := $(BASE_DEBUG) -define:ODIN_TEST_THREADS=1 -define:ODIN_MOUNTER_TEST=true -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true
 VET_FLAGS     := -vet -vet-shadowing -strict-style -vet-tabs -disallow-do -vet-atomic-access
 SHOW_TIMINGS  := $(or $(SHOW_TIMINGS),)
 TIMING_FLAG   := $(if $(SHOW_TIMINGS),-show-timings,)
@@ -29,10 +29,11 @@ HARNESS       := PYTHONPATH=$(TEST_DIR) bash $(TEST_DIR)/run_in_namespace.sh
 FUSE_FLAGS    := --fused=$(BUILD_DIR)/$(BINARY) --mount=$(MOUNTPOINT) --logs=$(LOGS_DIR)
 PYTEST_FUSE   := uv run pytest -v --tb=short $(FUSE_FLAGS)
 
-.PHONY: all build format imgdump check-tool \
+.PHONY: all build build-tsan format imgdump check-tool \
         create-image mount unmount \
         test pytest check check-all audit vet ci doctor \
         gen-trace check-trace clean-logs conformance fsx fsstress \
+        sanitize tsan-smoke-mt \
         smoke smoke-rw smoke-mt smoke-errors smoke-crash bench \
         clean help
 
@@ -49,6 +50,10 @@ all:
 build:
 	@mkdir -p $(BUILD_DIR) $(LOGS_DIR)
 	$(ODIN) build $(MOUNTER_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/$(BINARY) $(BASE_DEBUG) $(FUSE_LINK) $(TIMING_FLAG)
+
+build-tsan:
+	@mkdir -p $(BUILD_DIR) $(LOGS_DIR)
+	$(ODIN) build $(MOUNTER_DIR) $(COLLECTIONS) -out:$(BUILD_DIR)/$(BINARY)-tsan $(BASE_DEBUG) -sanitize:thread $(FUSE_LINK) $(TIMING_FLAG)
 
 format:
 	@mkdir -p $(BUILD_DIR)
@@ -118,6 +123,12 @@ check-all:
 ci: build create-image imgdump
 	@PYTHONPATH=$(TEST_DIR) python3 tests/ci.py
 
+sanitize: create-image clean-logs
+	$(ODIN) test $(TEST_DIR) $(COLLECTIONS) $(TEST_FLAGS) -sanitize:address $(TIMING_FLAG)
+
+tsan-smoke-mt: build-tsan create-image
+	@$(HARNESS) 300 python3 -m fused_test.suites.stress --fused=$(BUILD_DIR)/$(BINARY)-tsan --mount=$(MOUNTPOINT) --logs=$(LOGS_DIR) --image=$(IMAGE) --duration=15
+
 doctor: build create-image check-tool
 	@echo "==> doctor: audit --strict + vet + trace freshness + free_sectors coherence"
 	@$(MAKE) --no-print-directory audit AUDIT_FLAGS=--strict
@@ -183,6 +194,8 @@ help:
 	@echo "  check            struct size cross-check"
 	@echo "  audit            verify begin_op + attribute audits"
 	@echo "  check-trace      verify generated wrappers are current"
+	@echo "  sanitize           Odin unit tests under AddressSanitizer"
+	@echo "  tsan-smoke-mt      TSan daemon + multi-threaded stress (isolated ns)"
 	@echo "  clean-logs       remove logs/ + shm test image"
 	@echo "  smoke            basic FUSE ops (pytest, isolated ns)"
 	@echo "  smoke-rw         read-write + persistence (pytest, isolated ns)"

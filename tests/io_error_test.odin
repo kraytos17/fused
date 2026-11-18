@@ -61,8 +61,9 @@ test_read_error_on_truncated_image :: proc(t: ^testing.T) {
 	fd, ferr := os.open(TRUNC_IMG, {.Read, .Write})
 	testing.expect_value(t, ferr, nil)
 	if ferr != nil { return }
-	defer os.close(fd)
 	defer os.remove(TRUNC_IMG)
+	// Ownership of fd moves into vol on success: close_test_volume closes
+	// it (a second os.close here would double-close the File struct).
 
 	vol, vok := open_volume_on_fd(fd)
 	testing.expect(t, vok, "volume opens (master intact)")

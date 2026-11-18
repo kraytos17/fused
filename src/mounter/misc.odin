@@ -182,6 +182,7 @@ fused_release :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	if ok {
 		locks_remove_owner(fsys, loc, fi.lock_owner)
 	}
+
 	log.debugf("release: %s → ok", path)
 	return 0
 }

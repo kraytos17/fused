@@ -250,6 +250,7 @@ fused_lock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, cmd: c.int, lock: r
 	if !iok {
 		return fuse3.nix(.ENOENT)
 	}
+
 	owner := fi.lock_owner
 	#partial switch posix.FCNTL_Cmd(cmd) {
 	case posix.FCNTL_Cmd.GETLK:
@@ -292,6 +293,7 @@ fused_flock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, op: c.int) -> c.in
 	if !iok {
 		return fuse3.nix(.ENOENT)
 	}
+
 	owner := fi.lock_owner
 	cmd, _ := flock_parse_op(op)
 	// nonblock is discarded: conflicts always return EAGAIN (see parse).

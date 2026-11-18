@@ -283,7 +283,10 @@ open_handle_insert :: proc(fsys: ^FS, id: fs.File_Identity) -> u64 {
 	if fsys.next_fh == 0 {
 		fsys.next_fh = 1
 	}
-	fsys.open_files[fsys.next_fh] = Open_File{id = id}
+
+	fsys.open_files[fsys.next_fh] = Open_File {
+		id = id,
+	}
 	return fsys.next_fh
 }
 
@@ -313,6 +316,7 @@ open_handle_repoint :: proc(fsys: ^FS, old, new: fs.File_Identity) {
 	if old == new {
 		return
 	}
+
 	moved: [dynamic]u64
 	defer delete(moved)
 	for fh, of in fsys.open_files {
@@ -321,7 +325,9 @@ open_handle_repoint :: proc(fsys: ^FS, old, new: fs.File_Identity) {
 		}
 	}
 	for fh in moved {
-		fsys.open_files[fh] = Open_File{id = new}
+		fsys.open_files[fh] = Open_File {
+			id = new,
+		}
 	}
 	// Lock state follows the file, not the slot: the overwritten
 	// destination's locks were already dropped by remove_directory_entry,
@@ -421,6 +427,7 @@ read_entry_from_fh :: proc(
 	if !ok {
 		return {}, 0, 0, .Entry_Not_Found
 	}
+
 	e, err := fs.read_entry_at_index(&fsys.vol, id)
 	if err != .None {
 		return {}, 0, 0, err
