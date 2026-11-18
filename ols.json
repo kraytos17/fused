@@ -39,7 +39,7 @@
 	"enable_unused_imports_on_change": false,
 	"enable_checker_only_saved": true,
 	"enable_checker_workspace_diagnostics": false,
-	"checker_args": "-vet -strict-style",
+	"checker_args": "-vet -vet-shadowing -strict-style -vet-tabs -disallow-do -vet-atomic-access",
 	"checker_skip_packages": [],
 	"verbose": false,
 	"file_log": false

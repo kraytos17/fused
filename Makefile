@@ -31,7 +31,7 @@ PYTEST_FUSE   := uv run pytest -v --tb=short $(FUSE_FLAGS)
 
 .PHONY: all build format imgdump check-tool \
         create-image mount unmount \
-        test pytest check audit vet ci doctor \
+        test pytest check check-all audit vet ci doctor \
         gen-trace check-trace clean-logs \
         smoke smoke-rw smoke-mt smoke-errors smoke-crash bench \
         clean help
@@ -110,6 +110,11 @@ vet:
 		$(ODIN) build $$d $(COLLECTIONS) -warnings-as-errors $(VET_FLAGS) -out:/dev/null || exit 1; \
 	done
 
+check-all:
+	@$(ODIN) check src/fs src/fuse3 src/mounter src/logflags $(COLLECTIONS) -workspace -no-entry-point
+	@$(ODIN) check cmd/mount cmd/format cmd/dump cmd/check tools/audit tools/gen_trace_wrappers $(COLLECTIONS) -workspace
+	@$(ODIN) check $(TEST_DIR) $(COLLECTIONS) -workspace -no-entry-point -define:ODIN_MOUNTER_TEST=true
+
 ci: build create-image imgdump
 	@PYTHONPATH=$(TEST_DIR) python3 tests/ci.py
 
@@ -181,6 +186,7 @@ help:
 	@echo ""
 	@echo "Vet:"
 	@echo "  vet              type-check + strict-style"
+	@echo "  check-all        fast multi-package odin check (no link)"
 	@echo ""
 	@echo "Logging (mount, smoke):"
 	@echo "  --log-file=<path>     write logs to file (append)"

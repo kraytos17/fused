@@ -71,7 +71,6 @@ main :: proc() {
 	}
 
 	run_locking_audit()
-
 	run_logger_audit()
 	run_storage_audit()
 	run_persist_order_audit()
@@ -475,7 +474,7 @@ audit_locking_file :: proc(path: string) -> (checked, failed: int) {
 // _audit_mounter_dir runs audit_file over every .odin file in src/mounter
 // and enforces zero failures. Shared by the locking and logger audits,
 // which differ only in per-file rule and label.
-_audit_mounter_dir :: proc(label: string, audit_file: proc(string) -> (int, int)) {
+_audit_mounter_dir :: proc(label: string, audit_file: proc(_: string) -> (int, int)) {
 	total_c, total_f := 0, 0
 	dh, derr := os.open("src/mounter")
 	if derr != nil {
@@ -521,11 +520,13 @@ audit_logger_lines :: proc(path: string) -> (checked, failed: int) {
 		fmt.eprintf("warning: cannot read %s: %v\n", path)
 		return
 	}
+
 	lines := strings.split(string(data), "\n", context.temp_allocator)
 	for i in 0 ..< len(lines) {
 		if lines[i] != "\tfsys := begin_op()" && lines[i] != "\tfsys := begin_read_op()" {
 			continue
 		}
+
 		checked += 1
 		j := i + 1
 		for j < len(lines) && strings.trim_space(lines[j]) == "" {
@@ -697,6 +698,7 @@ audit_tests_hygiene :: proc() -> (failed: int) {
 		fmt.eprintf("warning: cannot list tests: %v\n", ferr)
 		return 1
 	}
+
 	defer os.file_info_slice_delete(fis, context.temp_allocator)
 	for fi in fis {
 		if !strings.has_suffix(fi.name, ".odin") { continue }
@@ -709,7 +711,11 @@ audit_tests_hygiene :: proc() -> (failed: int) {
 			if strings.has_prefix(trimmed, "//") { continue }
 			if strings.contains(lines[i], "clone_to_cstring(") &&
 			   strings.contains(lines[i], "temp_allocator") {
-				fmt.printf("FAIL   %s:%d temp-arena caller buffer; use stack or heap (begin_op frees temp)\n", path, i + 1)
+				fmt.printf(
+					"FAIL   %s:%d temp-arena caller buffer; use stack or heap (begin_op frees temp)\n",
+					path,
+					i + 1,
+				)
 				failed += 1
 			}
 		}
@@ -758,22 +764,38 @@ audit_storage_rules :: proc(path: string, lines: []string) -> (checked, failed: 
 			checked += 1
 			if audited_body == "read" {
 				if !body_has_pin {
-					fmt.printf("FAIL   %s:%d read path without EOF clamp (file_size - uoff)\n", path, i + 1)
+					fmt.printf(
+						"FAIL   %s:%d read path without EOF clamp (file_size - uoff)\n",
+						path,
+						i + 1,
+					)
 					failed += 1
 				}
 			} else if audited_body == "truncate" {
 				if !body_has_pin {
-					fmt.printf("FAIL   %s:%d fused_truncate without head clear (stored_cluster = 0)\n", path, i + 1)
+					fmt.printf(
+						"FAIL   %s:%d fused_truncate without head clear (stored_cluster = 0)\n",
+						path,
+						i + 1,
+					)
 					failed += 1
 				}
 			} else if audited_body == "copy" {
 				checked += 1
 				if !copy_has_clamp {
-					fmt.printf("FAIL   %s:%d copy without src EOF clamp (file_size - src_off)\n", path, i + 1)
+					fmt.printf(
+						"FAIL   %s:%d copy without src EOF clamp (file_size - src_off)\n",
+						path,
+						i + 1,
+					)
 					failed += 1
 				}
 				if !copy_has_zero {
-					fmt.printf("FAIL   %s:%d copy without dst gap zero-fill (zero_file_range)\n", path, i + 1)
+					fmt.printf(
+						"FAIL   %s:%d copy without dst gap zero-fill (zero_file_range)\n",
+						path,
+						i + 1,
+					)
 					failed += 1
 				}
 			}
@@ -796,7 +818,6 @@ audit_storage_rules :: proc(path: string, lines: []string) -> (checked, failed: 
 				failed += 1
 			}
 		}
-
 		// s2: sector_write_bulk must validate the byte count.
 		if strings.contains(line, "sector_write_bulk :: proc") {
 			checked += 1
@@ -808,11 +829,14 @@ audit_storage_rules :: proc(path: string, lines: []string) -> (checked, failed: 
 				}
 			}
 			if !found {
-				fmt.printf("FAIL   %s:%d sector_write_bulk missing byte-count check\n", path, i + 1)
+				fmt.printf(
+					"FAIL   %s:%d sector_write_bulk missing byte-count check\n",
+					path,
+					i + 1,
+				)
 				failed += 1
 			}
 		}
-
 		// s3: JOURNAL_BACKEND.recover's result must be checked.
 		if strings.contains(line, "JOURNAL_BACKEND.recover") {
 			checked += 1
@@ -828,7 +852,6 @@ audit_storage_rules :: proc(path: string, lines: []string) -> (checked, failed: 
 				failed += 1
 			}
 		}
-
 		// s4: clone results must not be discarded. Matches any
 		// allocator-returning clone call (slice/string/cstring) used
 		// with an ignored error, or assigned to a single variable
@@ -840,14 +863,16 @@ audit_storage_rules :: proc(path: string, lines: []string) -> (checked, failed: 
 			if idx := strings.index(line, "clone("); idx >= 0 {
 				head = line[:idx]
 			}
+
 			discarded := strings.contains(line, ", _ :=") || strings.contains(line, ", _ =")
-			single := (strings.contains(head, ":=") || strings.contains(head, " = ")) && !strings.contains(head, ",")
+			single :=
+				(strings.contains(head, ":=") || strings.contains(head, " = ")) &&
+				!strings.contains(head, ",")
 			if !strings.has_prefix(trimmed, "//") && (discarded || single) {
 				fmt.printf("FAIL   %s:%d discarded clone status\n", path, i + 1)
 				failed += 1
 			}
 		}
-
 		// s6: ce_find_by_offset results must be Allocated-checked: a
 		// freed slot retains its old offset, so an unchecked match can
 		// select a stale slot for mutation.
@@ -861,11 +886,14 @@ audit_storage_rules :: proc(path: string, lines: []string) -> (checked, failed: 
 				}
 			}
 			if !found {
-				fmt.printf("FAIL   %s:%d ce_find_by_offset without .Allocated check\n", path, i + 1)
+				fmt.printf(
+					"FAIL   %s:%d ce_find_by_offset without .Allocated check\n",
+					path,
+					i + 1,
+				)
 				failed += 1
 			}
 		}
-
 		// s10: checker names must borrow from the chain-backed entry
 		// pointer (ep), never from a per-iteration stack copy (&e): a
 		// stored short name would alias stack and read back as
@@ -874,7 +902,11 @@ audit_storage_rules :: proc(path: string, lines: []string) -> (checked, failed: 
 		if strings.contains(line, "entry_short_name(&e)") ||
 		   strings.contains(line, "resolve_lfn(vol, &e") {
 			checked += 1
-			fmt.printf("FAIL   %s:%d checker name from stack copy &e (use chain-backed ep)\n", path, i + 1)
+			fmt.printf(
+				"FAIL   %s:%d checker name from stack copy &e (use chain-backed ep)\n",
+				path,
+				i + 1,
+			)
 			failed += 1
 		}
 		// s5: every #packed struct needs its own size_of(Name) assert.
@@ -883,8 +915,10 @@ audit_storage_rules :: proc(path: string, lines: []string) -> (checked, failed: 
 		   strings.contains(line, "struct") {
 			end := strings.index(line, " ::")
 			if end <= 0 { continue }
+
 			name := strings.trim_space(line[:end])
 			if name == "" || strings.contains_any(name, " \t") { continue }
+
 			checked += 1
 			want := fmt.tprintf("size_of(%s)", name)
 			found := false
@@ -913,6 +947,7 @@ run_storage_audit :: proc() {
 			total_f += 1
 			continue
 		}
+
 		fis, ferr := os.read_dir(dh, 0, context.temp_allocator)
 		os.close(dh)
 		if ferr != nil {
@@ -925,6 +960,7 @@ run_storage_audit :: proc() {
 			path, _ := filepath.join([]string{dir, fi.name})
 			data, err := os.read_entire_file(path, context.temp_allocator)
 			if err != nil { continue }
+
 			lines := strings.split(string(data), "\n", context.temp_allocator)
 			c, f := audit_storage_rules(path, lines)
 			total_c += c
@@ -949,10 +985,20 @@ run_storage_audit :: proc() {
 // xattr_store is deliberately exempt: its single deallocate targets
 // only the just-allocated, still unpublished chain on the write-failure
 // path, with the entry left untouched.
-audit_persist_order_one :: proc(path: string, lines: []string, rule_proc: string, needs_write: bool) -> (checked: int, failed: int) {
+audit_persist_order_one :: proc(
+	path: string,
+	lines: []string,
+	rule_proc: string,
+	needs_write: bool,
+) -> (
+	checked: int,
+	failed: int,
+) {
 	start := -1
 	for i in 0 ..< len(lines) {
-		if len(lines[i]) > len(rule_proc) && strings.has_prefix(lines[i], rule_proc) && strings.has_prefix(lines[i][len(rule_proc):], " :: proc") {
+		if len(lines[i]) > len(rule_proc) &&
+		   strings.has_prefix(lines[i], rule_proc) &&
+		   strings.has_prefix(lines[i][len(rule_proc):], " :: proc") {
 			start = i
 			break
 		}
@@ -961,6 +1007,7 @@ audit_persist_order_one :: proc(path: string, lines: []string, rule_proc: string
 		fmt.printf("FAIL   %s: %s not found\n", path, rule_proc)
 		return 1, 1
 	}
+
 	end := len(lines)
 	for i in start + 1 ..< len(lines) {
 		if lines[i] == "}" {
@@ -968,6 +1015,7 @@ audit_persist_order_one :: proc(path: string, lines: []string, rule_proc: string
 			break
 		}
 	}
+
 	checked = 1
 	write_at := -1
 	for i in start ..< end {
@@ -981,7 +1029,8 @@ audit_persist_order_one :: proc(path: string, lines: []string, rule_proc: string
 	for i in start ..< end {
 		trimmed := strings.trim_space(lines[i])
 		if strings.has_prefix(trimmed, "//") { continue }
-		is_free := strings.contains(lines[i], "deallocate_sectors(") ||
+		is_free :=
+			strings.contains(lines[i], "deallocate_sectors(") ||
 			strings.contains(lines[i], "xattr_free_chain(") ||
 			strings.contains(lines[i], "free_entry_lfn(")
 		if !is_free { continue }
@@ -998,7 +1047,7 @@ run_persist_order_audit :: proc() {
 	total_c, total_f := 0, 0
 	targets := []struct {
 		path:        string,
-		rule:       string,
+		rule:        string,
 		needs_write: bool,
 	} {
 		{"src/mounter/create.odin", "remove_directory_entry", true},
@@ -1014,6 +1063,7 @@ run_persist_order_audit :: proc() {
 			total_f += 1
 			continue
 		}
+
 		lines := strings.split(string(data), "\n", context.temp_allocator)
 		c, f := audit_persist_order_one(t.path, lines, t.rule, t.needs_write)
 		total_c += c
