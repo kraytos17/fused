@@ -2135,6 +2135,100 @@ test_mount_mkdir_long_names :: proc(t: ^testing.T) {
 	expect_errno(t, mounter.fused_mkdir("/.", posix.mode_t{.IRUSR}), .EEXIST)
 }
 
+// test_mount_open_survives_cross_dir_rename — E-04 step 1: an open fd keeps
+// referring to its file after a cross-directory rename moves the entry to
+// a new slot. (The old fh packed the physical slot, so the fd stranded on
+// the cleared old slot and every later op failed.)
+@(test)
+test_mount_open_survives_cross_dir_rename :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !scratch_fs(t, "/dev/shm/fused_open_rename_test.img", &fsys) { return }
+	defer close_scratch_fs(&fsys, "/dev/shm/fused_open_rename_test.img")
+
+	fi: fuse3.File_Info
+	testing.expect_value(
+		t,
+		mounter.fused_create("/orig", posix.mode_t{.IRUSR, .IWUSR}, &fi),
+		0,
+	)
+	hello: string = "hello"
+	testing.expect_value(
+		t,
+		mounter.fused_write("/orig", raw_data(hello), c.size_t(len(hello)), 0, &fi),
+		c.int(len(hello)),
+	)
+	testing.expect_value(
+		t,
+		mounter.fused_mkdir("/dstdir", posix.mode_t{.IRUSR, .IWUSR, .IXUSR}),
+		0,
+	)
+	testing.expect_value(t, mounter.fused_rename("/orig", "/dstdir/moved", 0), 0)
+
+	// The pre-rename handle still names the same file: writing through it
+	// lands in the moved entry.
+	world: string = " world"
+	testing.expect_value(
+		t,
+		mounter.fused_write("/dstdir/moved", raw_data(world), c.size_t(len(world)), 5, &fi),
+		c.int(len(world)),
+	)
+	st: fuse3.Stat
+	testing.expect_value(t, mounter.fused_getattr("/dstdir/moved", &st, nil), 0)
+	testing.expect_value(t, posix.off_t(st.st_size), posix.off_t(11))
+	expect_errno(t, mounter.fused_getattr("/orig", &st, nil), .ENOENT)
+
+	got := make([]u8, 16)
+	defer delete(got)
+	n := mounter.fused_read("/dstdir/moved", raw_data(got), 11, 0, &fi)
+	testing.expect_value(t, n, 11)
+	testing.expect_value(t, string(got[:n]), "hello world")
+}
+
+// test_mount_stale_handle_fails_closed — E-04 step 1: after unlink, an
+// already-open handle must fail honestly (ENOENT), never silently operate
+// on whatever entry reuses the freed slot.
+@(test)
+test_mount_stale_handle_fails_closed :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !scratch_fs(t, "/dev/shm/fused_stale_fh_test.img", &fsys) { return }
+	defer close_scratch_fs(&fsys, "/dev/shm/fused_stale_fh_test.img")
+
+	fi: fuse3.File_Info
+	testing.expect_value(
+		t,
+		mounter.fused_create("/stale", posix.mode_t{.IRUSR, .IWUSR}, &fi),
+		0,
+	)
+	testing.expect_value(t, mounter.fused_unlink("/stale"), 0)
+
+	data := "x"
+	expect_errno(
+		t,
+		mounter.fused_write("/stale", raw_data(data), c.size_t(len(data)), 0, &fi),
+		.ENOENT,
+	)
+	buf := make([]u8, 8)
+	defer delete(buf)
+	expect_errno(t, mounter.fused_read("/stale", raw_data(buf), 1, 0, &fi), .ENOENT)
+
+	// The freed slot is reusable, and the stale handle still must not
+	// touch the new occupant.
+	fi2: fuse3.File_Info
+	testing.expect_value(
+		t,
+		mounter.fused_create("/stale", posix.mode_t{.IRUSR, .IWUSR}, &fi2),
+		0,
+	)
+	expect_errno(
+		t,
+		mounter.fused_write("/stale", raw_data(data), c.size_t(len(data)), 0, &fi),
+		.ENOENT,
+	)
+	st: fuse3.Stat
+	testing.expect_value(t, mounter.fused_getattr("/stale", &st, nil), 0)
+	testing.expect_value(t, posix.off_t(st.st_size), posix.off_t(0))
+}
+
 // test_mount_create_mkdir_symlink_rollback — D-06: failed creates leave no
 // leak and no corruption. Early-fault (first write fails, inside the first
 // journal commit) must leave the free count untouched and the checker

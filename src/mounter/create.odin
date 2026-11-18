@@ -161,7 +161,7 @@ fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 		reinit_free_sectors(fsys)
 	}
 
-	fi.fh = fh_pack(fs.File_Identity{dcluster, dsec, didx})
+	fi.fh = open_handle_insert(fsys, fs.File_Identity{dcluster, dsec, didx})
 	path_cache_invalidate_all(fsys)
 	log.debugf("create: %s → ok", path)
 	return 0
@@ -398,6 +398,11 @@ remove_directory_entry :: proc(
 		entry^ = saved
 		return werr
 	}
+	// Handles naming this entry die with its on-disk clearing: the slot is
+	// about to be reusable, and a stale fd must never operate on its next
+	// occupant (E-04 step 1; orphan persistence is E-04 full). Placed after
+	// the persist so a failed removal (rollback above) keeps its handles.
+	open_handle_sweep(fsys, loc)
 	if has_data {
 		if derr := fs.deallocate_sectors(&fsys.vol, data_loc); derr != .None {
 			return derr
@@ -712,6 +717,14 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	   werr != .None {
 		return fs_error_to_errno(werr)
 	}
+	// The entry moved slots: re-point live handles (and lock state) at the
+	// new slot so open fds survive the move (E-04 step 1). Same-dir renames
+	// keep their slot and need no re-point.
+	open_handle_repoint(
+		fsys,
+		fs.File_Identity{old_cluster, old_offset, old_idx},
+		fs.File_Identity{dst_cluster, dst_sec, dst_slot_idx},
+	)
 
 	path_cache_invalidate_all(fsys)
 	log.debugf("rename: %s → %s ok (cross-directory)", oldpath, newpath)

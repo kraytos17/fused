@@ -24,9 +24,9 @@ Chain_Location :: struct {
 // File_Identity names a directory entry by its parent location: the
 // directory cluster, the sector offset within it, and the entry index.
 // Unlike the structs above it is NOT packed: it is in-memory only (map
-// keys, file handles), never serialized. It is the shared vocabulary for
-// every "which entry" triple (fh_parts returns it; entry_at_index and
-// write_entry_at take it).
+// keys, open-file table entries), never serialized. It is the shared
+// vocabulary for every "which entry" triple (open_loc returns it;
+// entry_at_index and write_entry_at take it).
 File_Identity :: struct {
 	dir_cluster: Cluster,
 	dir_offset:  Sector_Offset,

@@ -65,6 +65,11 @@ FS :: struct {
 	free_sectors: u64,
 	// locks holds POSIX fcntl region locks per file (in-memory, advisory).
 	locks:        map[fs.File_Identity][dynamic]Region_Lock,
+	// open_files maps table fhs (see Open_File) to entry identities.
+	// Inserted by open/create, removed by release, re-pointed by rename.
+	open_files:   map[u64]Open_File,
+	// next_fh is the monotonic counter backing open_files keys (never 0).
+	next_fh:      u64,
 	// trace, when non-nil, receives one JSONL event per FUSE callback
 	// (see trace.odin). Nil by default so untraced mounts — including
 	// all unit-test FS instances — pay a single branch per callback.
@@ -258,24 +263,96 @@ _set_time_fields_now :: proc(year: ^u16, dt: ^fs.Packed_Date_Time) {
 	}
 }
 
-// fh_parts unpacks a packed file handle into the identity of the directory
-// entry it refers to.
-@(require_results)
-fh_parts :: proc "contextless" (fh: u64) -> (id: fs.File_Identity) {
-	f := transmute(fs.File_Handle)(fh)
-	return fs.File_Identity {
-		fs.Cluster(f.dir_cluster),
-		fs.Sector_Offset(f.dir_offset),
-		int(f.entry_index),
+// Open_File names one open file description: the entry identity it was
+// opened from. The fh handed to the kernel is a monotonic id into
+// FS.open_files, never a packed slot, so a cross-directory rename can
+// re-point live handles instead of stranding them on the cleared old
+// slot (E-04 step 1). Removal sweeps handles naming the entry
+// (open_handle_sweep), so a later reuse of the freed slot cannot resurrect
+// a stale fd onto a different file: unlinked-but-open handles fail closed
+// (ENOENT). True orphan-inode persistence (keep the chain alive until last
+// close) needs the on-disk orphan list, E-04 full.
+Open_File :: struct {
+	id: fs.File_Identity,
+}
+
+// open_handle_insert registers an opened entry and returns its table fh
+// (never 0; the kernel treats 0 as "no handle" in some paths).
+open_handle_insert :: proc(fsys: ^FS, id: fs.File_Identity) -> u64 {
+	fsys.next_fh += 1
+	if fsys.next_fh == 0 {
+		fsys.next_fh = 1
+	}
+	fsys.open_files[fsys.next_fh] = Open_File{id = id}
+	return fsys.next_fh
+}
+
+// open_loc resolves a table fh to its current identity. Unknown (stale)
+// handles fail closed: the entry they named is gone.
+open_loc :: proc(fsys: ^FS, fh: u64) -> (loc: fs.File_Identity, ok: bool) {
+	if of, hit := fsys.open_files[fh]; hit {
+		return of.id, true
+	}
+	return {}, false
+}
+
+// open_handle_remove drops a table entry, returning its last identity.
+open_handle_remove :: proc(fsys: ^FS, fh: u64) -> (loc: fs.File_Identity, ok: bool) {
+	if of, hit := fsys.open_files[fh]; hit {
+		delete_key(&fsys.open_files, fh)
+		return of.id, true
+	}
+	return {}, false
+}
+
+// open_handle_repoint moves every open handle (and the lock tables, which
+// are keyed by identity) from an old slot to a new one after a
+// cross-directory rename. Same-slot renames never call this (the identity
+// does not change when only the name does).
+open_handle_repoint :: proc(fsys: ^FS, old, new: fs.File_Identity) {
+	if old == new {
+		return
+	}
+	moved: [dynamic]u64
+	defer delete(moved)
+	for fh, of in fsys.open_files {
+		if of.id == old {
+			append(&moved, fh)
+		}
+	}
+	for fh in moved {
+		fsys.open_files[fh] = Open_File{id = new}
+	}
+	// Lock state follows the file, not the slot: the overwritten
+	// destination's locks were already dropped by remove_directory_entry,
+	// so a plain move cannot collide.
+	if recs, ok := fsys.locks[old]; ok {
+		delete_key(&fsys.locks, old)
+		fsys.locks[new] = recs
+	}
+	if fls, ok := fsys.flock_locks[old]; ok {
+		delete_key(&fsys.flock_locks, old)
+		fsys.flock_locks[new] = fls
 	}
 }
 
-// fh_pack packs a file identity into the u64 FUSE handle (inverse of
-// fh_parts). Sound: File_Handle is bit_field u64, exactly 64 bits, so
-// the pack transmute has a single home beside its unpack twin.
-@(require_results)
-fh_pack :: proc "contextless" (id: fs.File_Identity) -> u64 {
-	return transmute(u64)fs.make_file_handle(id.dir_cluster, id.dir_offset, id.entry_index)
+// open_handle_sweep drops every open handle naming a removed entry, so a
+// later reuse of the freed slot cannot resurrect a stale fd onto a
+// different file (ABA). Unlinked-but-open handles therefore fail closed
+// (ENOENT) instead of operating on the new occupant; true orphan-inode
+// persistence (keep the chain alive until last close) needs the on-disk
+// orphan list, E-04 full.
+open_handle_sweep :: proc(fsys: ^FS, dead: fs.File_Identity) {
+	dropped: [dynamic]u64
+	defer delete(dropped)
+	for fh, of in fsys.open_files {
+		if of.id == dead {
+			append(&dropped, fh)
+		}
+	}
+	for fh in dropped {
+		delete_key(&fsys.open_files, fh)
+	}
 }
 
 // Mutate_Request bundles the inputs to mutate_entry_at: the target path,
@@ -326,9 +403,11 @@ mutate_entry_at :: proc(fsys: ^FS, req: Mutate_Request) -> c.int {
 	return 0
 }
 
-// read_entry_from_fh reads a Directory_Entry from a packed File_Handle,
-// returning the entry, its data cluster, and its data offset. I/O errors
-// propagate as FS_Error instead of collapsing to ENOENT at call sites.
+// read_entry_from_fh reads a Directory_Entry through the open-file table,
+// returning the entry, its data cluster, and its data offset. Unknown or
+// unlinked handles fail as Entry_Not_Found (fail closed, never a wrong
+// file); I/O errors propagate as FS_Error instead of collapsing to ENOENT
+// at call sites.
 read_entry_from_fh :: proc(
 	fsys: ^FS,
 	fh: u64,
@@ -338,7 +417,10 @@ read_entry_from_fh :: proc(
 	fs.Sector_Offset,
 	fs.FS_Error,
 ) {
-	id := fh_parts(fh)
+	id, ok := open_loc(fsys, fh)
+	if !ok {
+		return {}, 0, 0, .Entry_Not_Found
+	}
 	e, err := fs.read_entry_at_index(&fsys.vol, id)
 	if err != .None {
 		return {}, 0, 0, err
@@ -530,7 +612,8 @@ resolve_entry :: proc(
 		e, dc, ddo, rerr := read_entry_from_fh(fsys, fi.fh)
 		if rerr != .None { return {}, 0, 0, 0, 0, 0, rerr }
 
-		id := fh_parts(fi.fh)
+		id, ok := open_loc(fsys, fi.fh)
+		if !ok { return {}, 0, 0, 0, 0, 0, .Entry_Not_Found }
 		return e, id.dir_cluster, id.dir_offset, id.entry_index, dc, ddo, .None
 	}
 
@@ -582,6 +665,8 @@ init_fs_state :: proc(
 	fsys.free_sectors = fs.alloc_cache_count_free(&fsys.vol)
 	fsys.locks = make(map[fs.File_Identity][dynamic]Region_Lock, allocator)
 	fsys.flock_locks = make(map[fs.File_Identity][dynamic]Flock_State, allocator)
+	fsys.open_files = make(map[u64]Open_File, allocator)
+	fsys.next_fh = 0
 }
 
 // destroy_fs_for_test tears down an FS: drops the extent/path/LFN caches
@@ -598,6 +683,7 @@ destroy_fs_for_test :: proc(fsys: ^FS) {
 
 	delete(fsys.locks)
 	delete(fsys.flock_locks)
+	delete(fsys.open_files)
 	lru.destroy(&fsys.path_cache, true)
 	lru.destroy(&fsys.lfn_cache, true)
 	fsys^ = {}

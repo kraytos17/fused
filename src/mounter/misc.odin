@@ -175,8 +175,13 @@ fused_release :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	defer end_op(fsys)
 	// Drop this owner's locks when the fd closes (kernel releases a
 	// process's locks when its last fd to the file closes). Takes the write
-	// lock: the lock tables are shared mutable state.
-	locks_remove_owner(fsys, fh_parts(fi.fh), fi.lock_owner)
+	// lock: the lock tables are shared mutable state. The table identity is
+	// used (not a re-resolved path): the entry may have moved or been
+	// unlinked since open.
+	loc, ok := open_handle_remove(fsys, fi.fh)
+	if ok {
+		locks_remove_owner(fsys, loc, fi.lock_owner)
+	}
 	log.debugf("release: %s → ok", path)
 	return 0
 }

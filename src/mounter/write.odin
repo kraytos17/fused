@@ -133,7 +133,11 @@ fused_write :: proc "c" (
 		bytes_written,
 		time.since(write_start),
 	)
-	return write_finish(fsys, &entry, fh_parts(fi.fh), new_size, bytes_written)
+	loc, lok := open_loc(fsys, fi.fh)
+	if !lok {
+		return fs_error_to_errno(.Entry_Not_Found)
+	}
+	return write_finish(fsys, &entry, loc, new_size, bytes_written)
 }
 
 // write_finish is the shared epilogue for write operations: updates file size
@@ -267,7 +271,9 @@ fused_write_buf :: proc "c" (
 	new_size := max(u64(entry.file_size), write_off + bytes_written)
 	if bufvec_src.err {
 		log.errorf("write_buf: %s → source error after %d bytes", path, bytes_written)
-		_ = write_finish(fsys, &entry, fh_parts(fi.fh), new_size, bytes_written)
+		if loc, lok := open_loc(fsys, fi.fh); lok {
+			_ = write_finish(fsys, &entry, loc, new_size, bytes_written)
+		}
 		return fuse3.nix(.EIO)
 	}
 
@@ -278,7 +284,11 @@ fused_write_buf :: proc "c" (
 		bytes_written,
 		time.since(write_start),
 	)
-	return write_finish(fsys, &entry, fh_parts(fi.fh), new_size, bytes_written)
+	loc, lok := open_loc(fsys, fi.fh)
+	if !lok {
+		return fs_error_to_errno(.Entry_Not_Found)
+	}
+	return write_finish(fsys, &entry, loc, new_size, bytes_written)
 }
 
 // fused_truncate truncates or extends a file to the given size.
@@ -427,7 +437,7 @@ zero_file_range :: proc(
 _fallocate_punch_hole :: proc(
 	fsys: ^FS,
 	entry: ^fs.Directory_Entry,
-	fh: u64,
+	id: fs.File_Identity,
 	loc: fs.Chain_Location,
 	span: Byte_Range,
 ) -> c.int {
@@ -439,7 +449,7 @@ _fallocate_punch_hole :: proc(
 	// Punching a hole destroys data: advance the timestamps even though
 	// the size is unchanged (PUNCH_HOLE implies KEEP_SIZE).
 	set_entry_time_to_now(entry)
-	if werr := write_entry_at(fsys, fh_parts(fh), entry); werr != .None {
+	if werr := write_entry_at(fsys, id, entry); werr != .None {
 		return fs_error_to_errno(werr)
 	}
 
@@ -454,7 +464,7 @@ _fallocate_punch_hole :: proc(
 _fallocate_grow :: proc(
 	fsys: ^FS,
 	entry: ^fs.Directory_Entry,
-	fh: u64,
+	id: fs.File_Identity,
 	loc: fs.Chain_Location,
 	span: Byte_Range,
 	fmode: fuse3.Falloc_Flags,
@@ -497,7 +507,7 @@ _fallocate_grow :: proc(
 	// Any successful fallocate changes allocation: advance the timestamps
 	// even when the size itself is unchanged.
 	set_entry_time_to_now(entry)
-	if werr := write_entry_at(fsys, fh_parts(fh), entry); werr != .None {
+	if werr := write_entry_at(fsys, id, entry); werr != .None {
 		return fs_error_to_errno(werr)
 	}
 	return 0
@@ -544,10 +554,14 @@ fused_fallocate :: proc "c" (
 
 	span := Byte_Range{span_start, span_end}
 	loc := fs.Chain_Location{data_cluster, data_offset}
-	if .Punch_Hole in fmode {
-		return _fallocate_punch_hole(fsys, &entry, fi.fh, loc, span)
+	id, iok := open_loc(fsys, fi.fh)
+	if !iok {
+		return fs_error_to_errno(.Entry_Not_Found)
 	}
-	if gerr := _fallocate_grow(fsys, &entry, fi.fh, loc, span, fmode); gerr != 0 {
+	if .Punch_Hole in fmode {
+		return _fallocate_punch_hole(fsys, &entry, id, loc, span)
+	}
+	if gerr := _fallocate_grow(fsys, &entry, id, loc, span, fmode); gerr != 0 {
 		return gerr
 	}
 
@@ -705,7 +719,11 @@ fused_copy_file_range :: proc "c" (
 		touched = true
 	}
 	if touched {
-		if werr := write_entry_at(fsys, fh_parts(fi_out.fh), &dst_entry); werr != .None {
+		dloc, dok := open_loc(fsys, fi_out.fh)
+		if !dok {
+			return c.ssize_t(fs_error_to_errno(.Entry_Not_Found))
+		}
+		if werr := write_entry_at(fsys, dloc, &dst_entry); werr != .None {
 			return c.ssize_t(fs_error_to_errno(werr))
 		}
 	}

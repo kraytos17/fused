@@ -306,7 +306,7 @@ fused_open :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 		return fuse3.nix(.EACCES)
 	}
 
-	fi.fh = fh_pack(fs.File_Identity{parent_cluster, parent_offset, entry_idx})
+	fi.fh = open_handle_insert(fsys, fs.File_Identity{parent_cluster, parent_offset, entry_idx})
 	log.debugf("open: %s → ok", path)
 	return 0
 }

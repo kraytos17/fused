@@ -142,11 +142,6 @@ locks_remove_owner :: proc(fsys: ^FS, id: fs.File_Identity, owner: u64) {
 	}
 }
 
-// locks_remove_file drops all lock state for an entry (used on unlink/rmdir).
-locks_remove_file :: proc(fsys: ^FS, fh: u64) {
-	locks_remove_identity(fsys, fh_parts(fh))
-}
-
 // lock_range_overlaps reports whether two ranges [a_start, a_end) and
 // [b_start, b_end) overlap.  len == 0 means "to EOF".
 lock_range_overlaps :: proc(a_start, a_len, b_start, b_len: i64) -> bool {
@@ -251,7 +246,10 @@ fused_lock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, cmd: c.int, lock: r
 	}
 
 	fl := (^posix.flock)(lock)
-	id := fh_parts(fi.fh)
+	id, iok := open_loc(fsys, fi.fh)
+	if !iok {
+		return fuse3.nix(.ENOENT)
+	}
 	owner := fi.lock_owner
 	#partial switch posix.FCNTL_Cmd(cmd) {
 	case posix.FCNTL_Cmd.GETLK:
@@ -290,7 +288,10 @@ fused_flock :: proc "c" (path: cstring, fi: ^fuse3.File_Info, op: c.int) -> c.in
 	context.logger = fsys.logger
 	defer end_op(fsys)
 
-	id := fh_parts(fi.fh)
+	id, iok := open_loc(fsys, fi.fh)
+	if !iok {
+		return fuse3.nix(.ENOENT)
+	}
 	owner := fi.lock_owner
 	cmd, _ := flock_parse_op(op)
 	// nonblock is discarded: conflicts always return EAGAIN (see parse).

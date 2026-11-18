@@ -35,7 +35,9 @@ Linked from README. Each item names the epic that fixes it. Updated
 - **Timestamps are 1-second (E-02).** No nsec, `ctime == mtime`,
   `time_gran = 1e9` advertises the truth. Parent dir times never update.
 - **Rename is partial (E-04).** No `NOREPLACE`/`EXCHANGE`, dst-dir matrix
-  incomplete, open fds break across cross-dir moves (`fh` packs the slot).
+  incomplete. Open fds survive cross-dir moves (table fh + re-point, step 1);
+  unlinked-but-open fds fail closed with `ENOENT` (no orphan persistence
+  until the on-disk orphan list, E-04 full).
 - **Locks never block (E-08).** `F_SETLKW` / blocking `flock` → `EAGAIN`.
 - **No sparse files (E-12).** `truncate(1T)` allocates and zeroes.
   `SEEK_DATA/HOLE` over a logically-contiguous chain is cosmetic.
