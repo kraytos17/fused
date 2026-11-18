@@ -1873,6 +1873,17 @@ test_readlink_short_chain_fails :: proc(t: ^testing.T) {
 
 	out := make([]u8, 2048)
 	defer delete(out)
+	// The raw dirent went in behind the caches' backs (direct
+	// sector_write): drop them or a warm root listing (now warmed by the
+	// D-13 init walk too) answers ENOENT for a name that is on disk.
+	mounter.path_cache_invalidate_all(&fsys)
+	fs.dir_cache_invalidate(
+		&fsys.vol.dir_cache,
+		fs.Chain_Location {
+			fs.Cluster(fsys.vol.master.root_cluster),
+			fs.Sector_Offset(fsys.vol.master.root_sector_index),
+		},
+	)
 	testing.expect_value(
 		t,
 		mounter.fused_readlink("/shortlink", ([^]c.char)(raw_data(out)), c.size_t(len(out))),

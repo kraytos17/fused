@@ -42,8 +42,11 @@ Linked from README. Each item names the epic that fixes it. Updated
 - **Locks never block (E-08).** `F_SETLKW` / blocking `flock` → `EAGAIN`.
 - **No sparse files (E-12).** `truncate(1T)` allocates and zeroes.
   `SEEK_DATA/HOLE` over a logically-contiguous chain is cosmetic.
-- **Statfs inode counts are capacity (E-09).** `f_files/ffree/favail`
-  constant; `df -i` flat. `f_bsize = 4096`, `f_frsize = 512`.
+- **Statfs inode counters are in-memory (D-13 partial).** `f_ffree/
+  f_favail` now track a live `used_entries` counter (mount walk +
+  create/remove maintenance), but it is not persisted: it re-seeds from
+  a walk at every mount, and `f_fsid` stays 0 until E-02 adds a UUID.
+  `f_bsize = 4096`, `f_frsize = 512`.
 - **Xattr/blob limits (E-10).** Whole-blob rewrite per `setxattr`,
   64 KB value cap, no ACLs, `ioctl` → `ENOTTY`, `poll` always-ready.
   One live blob chain per cluster (locate keys by cluster only), so a

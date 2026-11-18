@@ -163,6 +163,7 @@ fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 
 	fi.fh = open_handle_insert(fsys, fs.File_Identity{dcluster, dsec, didx})
 	path_cache_invalidate_all(fsys)
+	fsys.used_entries += 1
 	log.debugf("create: %s → ok", path)
 	return 0
 }
@@ -259,6 +260,7 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 	}
 
 	path_cache_invalidate_all(fsys)
+	fsys.used_entries += 1
 	log.debugf("mkdir: %s → ok", path)
 	return 0
 }
@@ -373,6 +375,7 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 	}
 
 	path_cache_invalidate_all(fsys)
+	fsys.used_entries += 1
 	log.debugf("symlink: %s → %s ok", linkpath, target)
 	return 0
 }
@@ -398,11 +401,11 @@ remove_directory_entry :: proc(
 		entry^ = saved
 		return werr
 	}
-	// Handles naming this entry die with its on-disk clearing: the slot is
-	// about to be reusable, and a stale fd must never operate on its next
-	// occupant (E-04 step 1; orphan persistence is E-04 full). Placed after
-	// the persist so a failed removal (rollback above) keeps its handles.
+
 	open_handle_sweep(fsys, loc)
+	if fsys.used_entries > 0 {
+		fsys.used_entries -= 1
+	}
 	if has_data {
 		if derr := fs.deallocate_sectors(&fsys.vol, data_loc); derr != .None {
 			return derr

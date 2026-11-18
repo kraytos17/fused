@@ -307,10 +307,18 @@ fused_statfs :: proc "c" (path: cstring, stbuf: ^posix.statvfs_t) -> c.int {
 	// statvfs-facing claim, independent of the on-disk LFN capacity.
 	NAME_MAX :: 255
 	// f_bsize is the preferred I/O size (tools use it for chunking);
-	// f_frsize is the fundamental block (= sector). Inode counters are
-	// still capacity constants.
+	// f_frsize is the fundamental block (= sector).
 	cap_entries :=
 		fsys.vol.master.cluster_map_size * u64(dir_entries_per_buf(fsys.vol.master.features))
+	// f_ffree/f_favail reflect the live entry count (root
+	// excluded), seeded by the mount walk and maintained by the
+	// create/remove paths.
+	used_entries := fsys.used_entries
+	if used_entries > cap_entries {
+		used_entries = cap_entries
+	}
+
+	free_entries := cap_entries - used_entries
 	stbuf^ = {
 		f_bsize   = c.ulong(4096),
 		f_frsize  = c.ulong(fs.SECTOR_SIZE),
@@ -318,8 +326,8 @@ fused_statfs :: proc "c" (path: cstring, stbuf: ^posix.statvfs_t) -> c.int {
 		f_bfree   = posix.fsblkcnt_t(free_sectors),
 		f_bavail  = posix.fsblkcnt_t(free_sectors),
 		f_files   = posix.fsblkcnt_t(cap_entries),
-		f_ffree   = posix.fsblkcnt_t(cap_entries),
-		f_favail  = posix.fsblkcnt_t(cap_entries),
+		f_ffree   = posix.fsblkcnt_t(free_entries),
+		f_favail  = posix.fsblkcnt_t(free_entries),
 		f_flag    = posix.VFS_Flags{},
 		f_namemax = c.ulong(NAME_MAX),
 	}
@@ -412,6 +420,7 @@ fused_mknod :: proc "c" (path: cstring, mode: posix.mode_t, rdev: posix.dev_t) -
 	}
 
 	path_cache_invalidate_all(fsys)
+	fsys.used_entries += 1
 	log.debugf("mknod: %s → ok (regular)", path)
 	return 0
 }

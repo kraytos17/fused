@@ -76,6 +76,12 @@ FS :: struct {
 	trace:        ^Trace_Sink,
 	// flock_locks holds BSD flock holders per file (in-memory, advisory).
 	flock_locks:  map[fs.File_Identity][dynamic]Flock_State,
+	// used_entries is the live inode count (existing .Exists entries,
+	// root excluded): incremented on create/mkdir/symlink/mknod success,
+	// decremented by remove_directory_entry after the cleared entry
+	// persists. Seeded at mount by a tree walk (fs.count_tree_entries);
+	// statfs reports f_ffree = capacity - used,
+	used_entries: u64,
 }
 
 // Extent_Cache_Key identifies a resolved extent chain by its start cluster and
@@ -725,6 +731,13 @@ init_fs_state :: proc(
 	fsys.flock_locks = make(map[fs.File_Identity][dynamic]Flock_State, allocator)
 	fsys.open_files = make(map[u64]Open_File, allocator)
 	fsys.next_fh = 0
+	// seed the inode counter from a fresh tree walk. On a walk
+	// error (corrupt image) keep 0 and let the checker own the diagnosis;
+	// statfs then over-reports free inodes rather than blocking mount.
+	fsys.used_entries = 0
+	if n, cerr := fs.count_tree_entries(&fsys.vol); cerr == .None {
+		fsys.used_entries = n
+	}
 }
 
 // destroy_fs_for_test tears down an FS: drops the extent/path/LFN caches

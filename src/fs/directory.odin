@@ -286,3 +286,56 @@ write_entry_at_index :: proc(
 	dir_cache_invalidate(&vol.dir_cache, Chain_Location{id.dir_cluster, id.dir_offset})
 	return .None
 }
+
+// count_tree_entries counts reachable .Exists directory entries starting
+// at the root (the root itself excluded) — the initial used_entries for
+// statfs inode accounting. A visited set guards against corrupted
+// cyclic dir trees: the walk terminates fail-closed instead of spinning,
+// and any I/O error propagates (the caller keeps its previous count).
+count_tree_entries :: proc(vol: ^Volume) -> (used: u64, err: FS_Error) {
+	root := Chain_Location {
+		Cluster(vol.master.root_cluster),
+		Sector_Offset(vol.master.root_sector_index),
+	}
+
+	visited := make(map[Chain_Location]bool)
+	defer delete(visited)
+	err = _count_walk(vol, root, &visited, &used, 0)
+	return used, err
+}
+
+@(private = "file")
+_count_walk :: proc(
+	vol: ^Volume,
+	loc: Chain_Location,
+	visited: ^map[Chain_Location]bool,
+	used: ^u64,
+	depth: int,
+) -> FS_Error {
+	if depth > 64 {
+		log.errorf("count_tree_entries: dir tree deeper than 64 (corrupted)")
+		return .Entry_Not_Found
+	}
+	if loc in visited^ {
+		return .None
+	}
+
+	visited^[loc] = true
+	entries, err := read_directory_entries(vol, loc.cluster, loc.offset)
+	defer delete(entries)
+	if err != .None {
+		return err
+	}
+	for &w in entries {
+		if .Exists in w.entry.flags {
+			used^ += 1
+			if .Directory in w.entry.flags {
+				if e := _count_walk(vol, data_chain_of(w.entry), visited, used, depth + 1);
+				   e != .None {
+					return e
+				}
+			}
+		}
+	}
+	return .None
+}
