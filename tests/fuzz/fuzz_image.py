@@ -23,10 +23,14 @@
 import argparse
 import os
 import random
+import shutil
 import struct
 import subprocess
 import sys
-import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "conformance"))
+import fuse_mount as FM  # type: ignore[import-untyped]
 
 SECTOR = 512
 
@@ -248,7 +252,8 @@ MUTATORS = [m_rand_bytes, m_flip_bits, m_truncate, m_swap_sectors,
 
 def run(cmd, timeout, cwd=None):
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=timeout, cwd=cwd, check=False)
         return r.returncode, r.stdout, r.stderr
     except subprocess.TimeoutExpired as e:
         out = (e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
@@ -295,24 +300,16 @@ def build_corpus(args, tmp):
     return seeds
 
 
-def _is_mounted(mnt):
-    """Mount-table membership without touching the fs (stat-based checks
-    like mountpoint(1)/os.path.ismount issue FUSE lookups, which fail
-    closed on corrupt images and would hide a present-but-useless mount).
-    """
+def _sig_name(rc: int) -> str:
+    import signal as _sig
     try:
-        with open("/proc/self/mountinfo") as f:
-            for line in f:
-                parts = line.rstrip("\n").split(" ")
-                if len(parts) > 4 and parts[4] == mnt:
-                    return True
-    except OSError:
-        pass
-    return False
+        return _sig.Signals(-rc).name
+    except (ValueError, OverflowError):
+        return f"sig{-rc}"
 
 
 def live_trial(fused_bin, img, mount, logs, timeout, check_bin="build/check"):
-    """Mount + exercise. Returns finding string or None.
+    """Mount + exercise a mutant via FusedMount. Returns finding or None.
 
     Verdict logic (a fail-closed mount is CORRECT for a corrupt image):
       daemon signal death / mount-wait timeout / probe timeout -> bug.
@@ -322,40 +319,29 @@ def live_trial(fused_bin, img, mount, logs, timeout, check_bin="build/check"):
       mount present but probe op fails + check is clean        -> BUG
         (false rejection of a healthy image).
     """
-    import shutil
     shutil.rmtree(mount, ignore_errors=True)
     os.makedirs(mount, exist_ok=True)
     os.makedirs(logs, exist_ok=True)
     log_path = os.path.join(logs, "fused_fuzz.log")
-    with open(log_path, "w") as fout:
-        proc = subprocess.Popen([fused_bin, "--log-level=warn", img, "-f", mount],
-                                stdout=fout, stderr=subprocess.STDOUT)
+    fm = FM.FusedMount(fused_bin, img, mount_dir=mount,
+                       args=["--log-level=warn", f"--log-file={log_path}"],
+                       timeout=10.0)
     try:
-        for _ in range(100):
-            time.sleep(0.1)
-            if proc.poll() is not None:
-                break
-            if _is_mounted(mount):
-                break
-        if proc.poll() is not None:
-            rc = proc.returncode
-            if rc is not None and rc < 0:
-                import signal as _sig
-                try:
-                    sig = _sig.Signals(-rc).name
-                except ValueError:
-                    sig = f"sig{-rc}"
-                return f"CRASH daemon died on mount ({sig})"
-            return None  # clean refusal: validate_master rejects garbage
-        if not _is_mounted(mount):
-            return "HANG mount never appeared"
+        try:
+            fm.mount()
+        except FM.MountError:
+            if fm.proc is not None and fm.proc.poll() is not None \
+               and fm.proc.returncode is not None and fm.proc.returncode < 0:
+                return f"CRASH daemon died on mount ({_sig_name(fm.proc.returncode)})"
+            # Daemon exited cleanly = validate_master refused the garbage.
+            return None
         # Probe: stat the root. Timeout here is a genuine hang.
         rc, _, _ = run(["timeout", "5", "stat", mount], 10)
         if rc == "timeout":
             return "HANG root stat timed out"
         if rc != 0:
             # Mount is present but useless. Ask the checker who is right.
-            crc, cout, _ = run([check_bin, "--read-only", img, "--log-level=warn"], 30)
+            _, cout, _ = run([check_bin, "--read-only", img, "--log-level=warn"], 30)
             import re as _re
             if _re.search(r"(?<!\d)0 errors", cout or ""):
                 return f"FALSE REJECTION: mount unusable but check is clean (stat rc={rc})"
@@ -369,24 +355,21 @@ def live_trial(fused_bin, img, mount, logs, timeout, check_bin="build/check"):
             rc, _, _ = run(c, timeout)
             if rc == "timeout":
                 return f"HANG {' '.join(c[1:3])}"
-            if proc.poll() is not None:
-                drc = proc.returncode
+            if fm.proc.poll() is not None:
+                drc = fm.proc.returncode
                 if drc is not None and drc < 0:
-                    return f"CRASH daemon died mid-run (signal {-drc})"
+                    return f"CRASH daemon died mid-run ({_sig_name(drc)})"
                 return None
-        if proc.poll() is not None and proc.returncode is not None and proc.returncode < 0:
-            return f"CRASH daemon died (signal {-proc.returncode})"
+        if fm.proc.poll() is not None:
+            drc = fm.proc.returncode
+            if drc is not None and drc < 0:
+                return f"CRASH daemon died ({_sig_name(drc)})"
         return None
     finally:
-        subprocess.run(["fusermount3", "-uz", mount], capture_output=True, timeout=10)
         try:
-            proc.terminate()
-            proc.wait(timeout=2)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            fm.unmount()
+        except Exception as e:  # noqa: BLE001 — cleanup must not mask findings
+            print(f"fuzz: unmount cleanup failed: {e}", file=sys.stderr)
 
 
 def main():
@@ -422,8 +405,8 @@ def main():
         try:
             geom = parse_master(bytes(buf[:SECTOR]))
             geom["image_sectors"] = len(buf) // SECTOR
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 — corrupt master = no geom
+            descs.append(f"geom-parse-skipped:{e}")
         for _ in range(nmuts):
             mut = rng.choice(MUTATORS)
             try:
@@ -431,7 +414,7 @@ def main():
                     descs.append("skipped:no-geom")
                     continue
                 descs.append(mut(buf, rng, geom or {}))
-            except Exception as e:  # mutator bug, not a finding
+            except Exception as e:  # noqa: BLE001 — mutator bug, not a finding
                 descs.append(f"mutator-error:{e}")
         img = os.path.join(args.out, f"fuzz-{i}.img")
         with open(img, "wb") as f:

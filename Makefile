@@ -11,7 +11,6 @@ LOGS_DIR      := $(or $(LOGS_DIR),logs)
 ODIN          := $(or $(ODIN),odin)
 MOUNTPOINT    := $(or $(MOUNTPOINT),mnt)
 IMAGE         := $(or $(IMAGE),fused.img)
-PJD_GROUPS    ?= chmod mkdir rename
 COLLECTIONS   := -collection:src=$(SRC_DIR)
 THREAD_COUNT  := $(or $(THREAD_COUNT),4)
 FUSE_LINK     := -extra-linker-flags:"-lfuse3 -lpthread"
@@ -131,7 +130,7 @@ fuzz-smoke: build format check-tool imgdump
 	@$(HARNESS) 600 uv run python tests/fuzz/fuzz_image.py --iterations 50 --live --timeout 20
 
 ci-nightly: build create-image imgdump check-tool
-	PJD_GROUPS="chflags chmod chown ftruncate granular link mkdir mkfifo mknod open posix_fallocate rename rmdir symlink truncate unlink utimensat" $(MAKE) --no-print-directory conformance
+	@$(MAKE) --no-print-directory conformance
 	@$(MAKE) --no-print-directory fsx
 	@$(MAKE) --no-print-directory fsstress
 	@$(MAKE) --no-print-directory bench-gate
@@ -181,9 +180,8 @@ bench: build
 	@$(HARNESS) 120 python3 -m fused_test.suites.bench $(FUSE_FLAGS) --image=bench.img --size=4
 	@rm -f bench.img
 
-conformance: build format
-	@$(HARNESS) 300 bash tests/conformance/pjdfstest.sh $(PJD_GROUPS); \
-	python3 tests/conformance/pjdfstest_check.py --groups="$(PJD_GROUPS)"
+conformance: build format check-tool
+	@PJD_GROUPS="$(PJD_GROUPS)" $(HARNESS) $(or $(CONF_TIMEOUT),1500) python3 tests/conformance/pjdfstest_runner.py; hrc=$$?; python3 tests/conformance/pjdfstest_check.py --groups="$(PJD_GROUPS)"; crc=$$?; if [ $$hrc -eq 2 ]; then echo "conformance: HARNESS ERROR"; exit 2; fi; exit $$crc
 
 model: build create-image
 	@$(HARNESS) 300 $(PYTEST_FUSE) tests/fuse/test_model.py --image=$(IMAGE)
@@ -192,10 +190,10 @@ golden:
 	@$(ODIN) run tools/gen_golden $(COLLECTIONS) -define:ODIN_MOUNTER_TEST=true
 
 fsx: build format check-tool
-	@$(HARNESS) 300 bash tests/conformance/fsx.sh fsx
+	@$(HARNESS) $(or $(FSX_TIMEOUT),900) python3 tests/conformance/fsx_runner.py fsx
 
 fsstress: build format check-tool
-	@$(HARNESS) 300 bash tests/conformance/fsx.sh fsstress
+	@$(HARNESS) $(or $(FSX_TIMEOUT),900) python3 tests/conformance/fsx_runner.py fsstress
 
 clean:
 	@rm -rf $(BUILD_DIR) $(LOGS_DIR) $(MOUNTPOINT) $(IMAGE) /dev/shm/fused_test.img
@@ -233,7 +231,7 @@ help:
 	@echo "  smoke-crash      kill -9 crash tests (pytest, isolated ns)"
 	@echo "  smoke-mt         multi-threaded stress (isolated ns)"
 	@echo "  bench            throughput benchmark (bench.py)"
-	@echo '  conformance      pjdfstest groups (PJD_GROUPS="chmod mkdir", isolated ns)'
+	@echo '  conformance      pjdfstest groups (default: all baseline groups; PJD_GROUPS= subset, isolated ns)'
 	@echo '  golden             regenerate tests/golden compat fixtures'
 	@echo '  model              differential model test vs host reference (T-04)'
 	@echo '  fuzz               structure-aware image fuzzing (offline + live)'

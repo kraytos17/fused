@@ -393,8 +393,9 @@ def run_sequence(ops, fused_root, ref_root):
         if ok_f != ok_r:
             if not ok_f and _is_transport_dead(fused_root):
                 raise HarnessError(f"mount died at op {i} {op}")
-            return i, op, [f"success differs: fused ok={ok_f} ({err_f}) "
-                           f"ref ok={ok_r} ({err_r})"]
+            msg = (f"success differs: fused ok={ok_f} ({err_f}) "
+                   f"ref ok={ok_r} ({err_r})")
+            return i, op, [msg]
         snap_f = _snapshot(fused_root)
         snap_r = _snapshot(ref_root)
         problems = _compare(snap_f, snap_r)

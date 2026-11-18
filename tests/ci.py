@@ -161,11 +161,11 @@ def phase_conformance(skip: bool = False) -> tuple[int, int]:
         print("== Phase 6: Conformance (pjdfstest, scoped) ==")
         print("  (skipped)")
         return 0, 0
-    pjd_src = os.environ.get("PJD_SRC", "/tmp/opencode/pjdfstest")
+    pjd_src = os.environ.get("PJD_SRC", "/tmp/fused/pjdfstest")
     if not os.path.isfile(os.path.join(pjd_src, "pjdfstest")):
         print("== Phase 6: Conformance (pjdfstest, scoped) ==")
         print(f"  WARN: pjdfstest binary missing under {pjd_src} — skipping")
-        print("  (see tests/conformance/pjdfstest.sh header for the build recipe)")
+        print("  (see tests/conformance/pjdfstest_runner.py docstring for the build recipe)")
         return 0, 0
     print("== Phase 6: Conformance (pjdfstest, scoped) ==")
     s = make_suite("conformance", ["make", "conformance"], cwd=ROOT,
