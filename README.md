@@ -88,7 +88,7 @@ tests/                Odin unit tests (184) + Python pytest suite (72)
 
 ## Prerequisites
 
-- Odin dev-2026-10-nightly or later
+- Odin dev-2026-11 or later
 - libfuse3 >= 3.18 (runtime + dev headers)
 - uv (drives the Python pytest suites)
 - unshare (util-linux; mount-namespace isolation for the smoke tests)
@@ -231,7 +231,8 @@ logrotate, or pipe-based rotation:
 | `gen-trace` | Regenerate `src/mounter/trace_wrappers.odin` (Odin generator) |
 | `check-trace` | Fail unless generated wrappers are byte-identical (CI + doctor) |
 | `clean-logs` | Remove `logs/` + shm test image |
-| `vet` | Build all binaries with vet, shadowing, strict-style, tabs, disallow-do |
+| `vet` | Build all binaries with vet, shadowing, strict-style, tabs, disallow-do, atomic-access |
+| `check-all` | Fast multi-package `odin check -workspace` (no codegen/link) |
 | `smoke` | Basic FUSE smoke test in an isolated namespace (pytest) |
 | `smoke-rw` | Read-write FUSE test (pytest) |
 | `smoke-mt` | Multi-threaded stress test |

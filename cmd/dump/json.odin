@@ -227,8 +227,7 @@ print_json :: proc(vol: ^fs.Volume) {
 		},
 		clusters = cluster_list,
 		allocated = allocated,
-		free = total -
-		allocated,
+		free = total - allocated,
 		total = total,
 		root = root_entries,
 	}
