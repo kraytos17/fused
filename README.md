@@ -2,12 +2,14 @@
 
 A FUSE filesystem daemon written in Odin, backed by a cluster-based on-disk
 format (rev 8, feature flags, uid/gid support, journaling, extended
-attributes). All 43 `fuse_operations` callbacks are implemented.
-Multi-threaded by default, with a `sync.RW_Mutex` guarding shared state
-(exclusive for mutations, shared for reads).
+attributes). All 43 `fuse_operations` callbacks are wired: `mknod` serves
+regular files (`EPERM` for dirs, `ENOSYS` for special nodes), `link` →
+`EPERM` (no hard links), `ioctl` → `ENOTTY`, `statx` → `ENOSYS`,
+`poll` reports always-ready.
+Multi-threaded by default, with a coarse global `sync.RW_Mutex` (most ops
+take it exclusively today; shared read paths are being expanded).
 Zero-copy I/O via `splice(2)`.
-Long filenames (up to 255 characters) are supported through bump-allocated
-data sectors.
+Long filenames (up to 255 characters) are stored one 512 B sector per name
 
 ## Quick start
 
@@ -281,11 +283,11 @@ in `src/fs/structure.odin` carries a compile-time
   struct passed via `fuse_get_context().private_data`. `src/fs/` is fully
   stateless.
 
-- **Thread safety.** A `sync.RW_Mutex` on `FS` guards shared state:
-  mutating callbacks take it exclusively (`begin_op()`/`end_op()`),
-  read-only callbacks share it (`begin_read_op()`/`end_read_op()`,
-  non-mutating cache access only). Multi-threaded FUSE dispatch is the
-  default. Disk I/O itself needs no lock (pread/pwrite).
+- **Thread safety.** A coarse global `sync.RW_Mutex` on `FS` guards shared
+  state. Most callbacks take it exclusively (`begin_op()`/`end_op()`);
+  `statfs` and the read-data paths share it (`begin_read_op()`/
+  `end_read_op()`). Multi-threaded FUSE dispatch is the default. Disk I/O
+  itself needs no lock (pread/pwrite).
 
 - **Zero-copy I/O.** `fused_read_buf` returns a `fuse_bufvec` with
   `FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK` pointing at the backing file; the
@@ -294,7 +296,8 @@ in `src/fs/structure.odin` carries a compile-time
 
 - **Format versioning.** On-disk format rev 7–8, with `rev_min`/`rev_max` range checking
   and a `features` bitmask for runtime dispatch. The redo-log WAL journal
-  provides crash consistency; rev 8 adds extended
+  covers allocation-table updates (directory/file data are not yet
+  transactional); rev 8 adds extended
   attributes. See [`docs/REV.md`](docs/REV.md) for the full revision history.
 
 - **Extended attributes.** `setxattr`/`getxattr`/`listxattr`/`removexattr`

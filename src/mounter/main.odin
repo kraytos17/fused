@@ -42,6 +42,9 @@ Mount_Options :: struct {
 
 // build_operations assembles the FUSE callback table. Extracted from run()
 // so the 43-callback wiring reads (and reviews) in isolation; no logic.
+// mknod serves regular files (other node types → ENOSYS/EPERM); link →
+// EPERM (no hard links); ioctl → ENOTTY; poll reports always-ready;
+// statx → ENOSYS (no btime until rev 9).
 build_operations :: proc() -> fuse3.Operations {
 	return {
 		init = traced_init,

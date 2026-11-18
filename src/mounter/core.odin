@@ -156,12 +156,10 @@ checked_offset :: proc(off: posix.off_t) -> (uoff: u64, ok: bool) {
 }
 
 // fs_error_to_errno translates an FS_Error to a POSIX errno value.
-// Unknown errors fall through to EIO (the `case:` default is deliberate —
-// a new FS_Error value is a mapping decision, not a compile error; keep it
-// in sync with `FS_Error` in src/fs/structure.odin).
+// Keep in sync with `FS_Error` in src/fs/structure.odin.
 @(require_results)
 fs_error_to_errno :: proc(err: fs.FS_Error) -> c.int {
-	#partial switch err {
+	switch err {
 	case .None:
 		return 0
 	case .Entry_Not_Found:
@@ -172,13 +170,21 @@ fs_error_to_errno :: proc(err: fs.FS_Error) -> c.int {
 		return -c.int(posix.EISDIR)
 	case .Name_Too_Long:
 		return -c.int(posix.ENAMETOOLONG)
-	case .No_Space:
+	case .No_Space, .Cluster_Map_Full:
 		return -c.int(posix.ENOSPC)
-	case .Sector_Read_Error, .Sector_Write_Error:
-		return -c.int(posix.EIO)
-	case:
+	case .Sector_Read_Error,
+	     .Sector_Write_Error,
+	     .Cluster_Not_Found,
+	     .Multi_Sector_Cluster_Map_Unsupported,
+	     .Invalid_Signature,
+	     .Version_Too_Old,
+	     .Version_Too_New,
+	     .Feature_Not_Supported,
+	     .Corrupt_Master_Record,
+	     .Corrupt_XAttr_Blob:
 		return -c.int(posix.EIO)
 	}
+	unreachable()
 }
 
 UTIME_NOW :: 1073741822

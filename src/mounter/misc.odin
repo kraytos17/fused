@@ -155,14 +155,15 @@ fused_chown :: proc "c" (
 	return rc
 }
 
-// fused_flush flushes a file by syncing the underlying disk.
-// UNLOCKED: fd-level os.sync only; touches no shared state.
+// fused_flush flushes a file on close. Correctly a no-op: close() is not a
+// durability point, and syncing the whole image here made every close pay a
+// full fsync. Durability comes from fsync/fsyncdir only.
+// UNLOCKED: touches no shared state.
 fused_flush :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
-	os.sync(fsys.vol.disk)
-	log.debugf("flush: %s → ok", path)
+	log.debugf("flush: %s → ok (no-op)", path)
 	return 0
 }
 
@@ -198,13 +199,24 @@ fused_releasedir :: proc "c" (path: cstring, fi: ^fuse3.File_Info) -> c.int {
 	return 0
 }
 
-// fused_fsync fsyncs a file by syncing the underlying disk.
-// UNLOCKED: fd-level os.sync only; touches no shared state.
+// fused_fsync fsyncs a file. datasync != 0 skips metadata (fdatasync),
+// else a full fsync. Failures report EIO instead of a silent ok.
+// UNLOCKED: fd-level sync only; touches no shared state.
 fused_fsync :: proc "c" (path: cstring, datasync: c.int, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
-	os.sync(fsys.vol.disk)
+	fd := posix.FD(os.fd(fsys.vol.disk))
+	ok: posix.result
+	if datasync != 0 {
+		ok = posix.fdatasync(fd)
+	} else {
+		ok = posix.fsync(fd)
+	}
+
+	if ok != .OK {
+		return fuse3.nix(.EIO)
+	}
 	return 0
 }
 
@@ -238,7 +250,7 @@ fused_lseek :: proc "c" (
 
 	runs, rerr := resolve_extents_cached(fsys, fs.Chain_Location{data_cluster, data_offset})
 	if rerr != .None {
-		return posix.off_t(fuse3.nix(.ENOENT))
+		return posix.off_t(fs_error_to_errno(rerr))
 	}
 
 	file_size := u64(entry.file_size)
@@ -288,48 +300,119 @@ fused_statfs :: proc "c" (path: cstring, stbuf: ^posix.statvfs_t) -> c.int {
 	// NAME_MAX is the Linux VFS filename limit (<linux/limits.h>); the
 	// statvfs-facing claim, independent of the on-disk LFN capacity.
 	NAME_MAX :: 255
+	// f_bsize is the preferred I/O size (tools use it for chunking);
+	// f_frsize is the fundamental block (= sector). Inode counters are
+	// still capacity constants.
+	cap_entries :=
+		fsys.vol.master.cluster_map_size * u64(dir_entries_per_buf(fsys.vol.master.features))
 	stbuf^ = {
-		f_bsize   = c.ulong(fs.SECTOR_SIZE),
+		f_bsize   = c.ulong(4096),
 		f_frsize  = c.ulong(fs.SECTOR_SIZE),
 		f_blocks  = posix.fsblkcnt_t(total_sectors),
 		f_bfree   = posix.fsblkcnt_t(free_sectors),
 		f_bavail  = posix.fsblkcnt_t(free_sectors),
-		f_files   = posix.fsblkcnt_t(
-			fsys.vol.master.cluster_map_size * u64(dir_entries_per_buf(fsys.vol.master.features)),
-		),
-		f_ffree   = posix.fsblkcnt_t(
-			fsys.vol.master.cluster_map_size * u64(dir_entries_per_buf(fsys.vol.master.features)),
-		),
-		f_favail  = posix.fsblkcnt_t(
-			fsys.vol.master.cluster_map_size * u64(dir_entries_per_buf(fsys.vol.master.features)),
-		),
+		f_files   = posix.fsblkcnt_t(cap_entries),
+		f_ffree   = posix.fsblkcnt_t(cap_entries),
+		f_favail  = posix.fsblkcnt_t(cap_entries),
 		f_flag    = posix.VFS_Flags{},
 		f_namemax = c.ulong(NAME_MAX),
 	}
 	return 0
 }
 
-// fused_fsyncdir fsyncs a directory by syncing the underlying disk.
-// UNLOCKED: fd-level os.sync only; touches no shared state.
+// fused_fsyncdir fsyncs a directory. Same datasync/full distinction as
+// fused_fsync; failures report EIO.
+// UNLOCKED: fd-level sync only; touches no shared state.
 fused_fsyncdir :: proc "c" (path: cstring, datasync: c.int, fi: ^fuse3.File_Info) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
-	os.sync(fsys.vol.disk)
+	fd := posix.FD(os.fd(fsys.vol.disk))
+	ok: posix.result
+	if datasync != 0 {
+		ok = posix.fdatasync(fd)
+	} else {
+		ok = posix.fsync(fd)
+	}
+
+	if ok != .OK {
+		return fuse3.nix(.EIO)
+	}
 	return 0
 }
 
-// fused_mknod is a stub that returns ENOSYS.
-// UNLOCKED: stub; touches no shared state (debug log only).
+// fused_mknod creates a filesystem node. Regular files (S_IFREG) share the
+// create path; directories must use mkdir (EPERM); FIFO/socket/device nodes
+// are not supported (ENOSYS).
+// UNLOCKED: no — takes the write lock via begin_op (mutates caches).
 fused_mknod :: proc "c" (path: cstring, mode: posix.mode_t, rdev: posix.dev_t) -> c.int {
 	context = runtime.default_context()
-	fsys := get_fs()
+	fsys := begin_op()
 	context.logger = fsys.logger
-	log.debugf("mknod: %s → ENOSYS (not supported)", path)
-	return -posix.ENOSYS
+	defer end_op(fsys)
+
+	if .IFDIR in mode {
+		log.debugf("mknod: %s → EPERM (use mkdir for directories)", path)
+		return fuse3.nix(.EPERM)
+	}
+	if .IFREG not_in mode {
+		log.debugf("mknod: %s → ENOSYS (special files not supported)", path)
+		return fuse3.nix(.ENOSYS)
+	}
+
+	res, dcluster, dsec, didx, name := prepare_parent_slot(fsys, string(path))
+	switch res {
+	case .Parent_Not_Found:
+		return fuse3.nix(.ENOENT)
+	case .Name_Exists:
+		return fuse3.nix(.EEXIST)
+	case .Dir_Full:
+		return fuse3.nix(.ENOSPC)
+	case .Not_A_Directory:
+		return fuse3.nix(.ENOTDIR)
+	case .Name_Too_Long:
+		return fuse3.nix(.ENAMETOOLONG)
+	case .Invalid_Name:
+		return fuse3.nix(.EINVAL)
+	case .Io_Error:
+		return fuse3.nix(.EIO)
+	case .Ok:
+	}
+
+	new_entry: fs.Directory_Entry
+	new_entry.flags = fs.Dir_Flags{.Allocated, .Exists}
+	ctx := fuse3.fuse_get_context()
+	new_entry.uid = u32(ctx.uid)
+	new_entry.gid = u32(ctx.gid)
+	new_reclaim, werr := write_entry_with_lfn(fsys, &new_entry, name)
+	if werr != .None {
+		return fs_error_to_errno(werr)
+	}
+	if write_entry_at(fsys, fs.File_Identity{dcluster, dsec, didx}, &new_entry) != .None {
+		free_entry_lfn(fsys, &new_entry)
+		return fuse3.nix(.EIO)
+	}
+	if new_reclaim.cluster != 0 {
+		if derr := fs.deallocate_sectors(
+			&fsys.vol,
+			fs.Chain_Location {
+				fs.Cluster(new_reclaim.cluster),
+				fs.Sector_Offset(new_reclaim.sector),
+			},
+		); derr != .None {
+			return fs_error_to_errno(derr)
+		}
+		reinit_free_sectors(fsys)
+	}
+
+	path_cache_invalidate_all(fsys)
+	log.debugf("mknod: %s → ok (regular)", path)
+	return 0
 }
 
-// fused_ioctl is a stub that returns ENOSYS.
+// fused_ioctl is unsupported: report ENOTTY (correct errno for an
+// inappropriate ioctl; unregistering the op would let the kernel answer
+// ENOTTY itself — same observable without table churn).
 // UNLOCKED: stub; touches no shared state (debug log only).
 fused_ioctl :: proc "c" (
 	path: cstring,
@@ -342,18 +425,19 @@ fused_ioctl :: proc "c" (
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
-	log.debugf("ioctl: %s cmd=%d → ENOSYS (not supported)", path, cmd)
-	return -posix.ENOSYS
+	log.debugf("ioctl: %s cmd=%d → ENOTTY (not supported)", path, cmd)
+	return -posix.ENOTTY
 }
 
-// fused_link is a stub that returns ENOSYS.
+// fused_link is unsupported: hard links need inode indirection (rev 9,
+// Q-01). Return EPERM (conventional for unsupported link, not ENOSYS).
 // UNLOCKED: stub; touches no shared state (debug log only).
 fused_link :: proc "c" (oldpath: cstring, newpath: cstring) -> c.int {
 	context = runtime.default_context()
 	fsys := get_fs()
 	context.logger = fsys.logger
-	log.debugf("link: %s → %s → ENOSYS (hard links not supported)", oldpath, newpath)
-	return -posix.ENOSYS
+	log.debugf("link: %s → %s → EPERM (hard links not supported)", oldpath, newpath)
+	return -posix.EPERM
 }
 
 // fused_statx is a stub that returns ENOSYS.
@@ -416,9 +500,9 @@ fused_bmap :: proc "c" (path: cstring, blocksize: c.size_t, idx: ^c.uint64_t) ->
 	return fuse3.nix(.EINVAL)
 }
 
-// fused_poll returns POLLERR — this filesystem has no special I/O readiness
-// semantics; the kernel uses standard page-cache notification for reads and
-// writes.
+// fused_poll reports readiness: regular files and directories are always
+// readable and writable, so return the ready mask (not POLLERR — that
+// signals an error, breaking epoll/select on the mount).
 // UNLOCKED: returns a constant; touches no shared state.
 fused_poll :: proc "c" (
 	path: cstring,
@@ -430,7 +514,7 @@ fused_poll :: proc "c" (
 	fsys := get_fs()
 	context.logger = fsys.logger
 	if reventsp != nil {
-		reventsp^ = c.uint(posix.POLLERR)
+		reventsp^ = c.uint(posix.POLLIN | posix.POLLOUT | posix.POLLRDNORM)
 	}
 	return 0
 }

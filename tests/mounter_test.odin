@@ -538,7 +538,8 @@ test_mount_statfs :: proc(t: ^testing.T) {
 	st: posix.statvfs_t
 	rc := mounter.fused_statfs("/", &st)
 	testing.expect_value(t, rc, 0)
-	testing.expect_value(t, c.ulong(st.f_bsize), c.ulong(512))
+	testing.expect_value(t, c.ulong(st.f_bsize), c.ulong(4096))
+	testing.expect_value(t, c.ulong(st.f_frsize), c.ulong(512))
 	testing.expect_value(t, c.ulong(st.f_namemax), c.ulong(255))
 	testing.expect(t, st.f_blocks > 0, "blocks > 0")
 }
@@ -607,22 +608,46 @@ test_mount_xattr :: proc(t: ^testing.T) {
 	expect_errno(t, rc, .ENODATA)
 }
 
-// test_mount_stub_callbacks — unimplemented callbacks return -ENOSYS.
+// test_mount_stub_callbacks — unimplemented callbacks return their honest
+// errno: link → EPERM (no hard links), ioctl → ENOTTY, statx → ENOSYS;
+// mknod serves regular files, EPERM for dirs, ENOSYS for special nodes.
 @(test)
 test_mount_stub_callbacks :: proc(t: ^testing.T) {
 	fsys: mounter.FS
 	ok := setup_mounter(t, &fsys)
 	if !ok { return }
 	defer teardown_mounter(&fsys)
+	defer cleanup_root(&fsys, []string{"mfile"})
 
-	rc := mounter.fused_mknod("/x", posix.mode_t{}, 0)
+	// Regular file via mknod works.
+	rc := mounter.fused_mknod("/mfile", posix.mode_t{.IFREG, .IRUSR, .IWUSR}, 0)
+	testing.expect_value(t, rc, 0)
+	st: fuse3.Stat
+	testing.expect_value(t, mounter.fused_getattr("/mfile", &st, nil), 0)
+	testing.expect_value(t, mounter.fused_unlink("/mfile"), 0)
+
+	// Directory via mknod → EPERM (use mkdir).
+	rc = mounter.fused_mknod("/x", posix.mode_t{.IFDIR, .IRUSR}, 0)
+	expect_errno(t, rc, .EPERM)
+	// FIFO/special via mknod → ENOSYS.
+	rc = mounter.fused_mknod("/x", posix.mode_t{.IFIFO, .IRUSR}, 0)
 	expect_errno(t, rc, .ENOSYS)
 	rc = mounter.fused_ioctl("/x", 0, nil, nil, 0, nil)
-	expect_errno(t, rc, .ENOSYS)
+	expect_errno(t, rc, .ENOTTY)
 	rc = mounter.fused_link("/a", "/b")
-	expect_errno(t, rc, .ENOSYS)
+	expect_errno(t, rc, .EPERM)
 	rc = mounter.fused_statx("/x", 0, 0, nil, nil)
 	expect_errno(t, rc, .ENOSYS)
+
+	// Poll reports always-ready, not POLLERR.
+	revents: c.uint
+	rc = mounter.fused_poll("/Kernel", nil, nil, &revents)
+	testing.expect_value(t, rc, 0)
+	testing.expect(
+		t,
+		revents & c.uint(posix.POLLIN) != 0 && revents & c.uint(posix.POLLOUT) != 0,
+		"poll ready mask",
+	)
 }
 
 // test_mount_fs_error_to_errno — full FS_Error → errno mapping.
@@ -643,7 +668,7 @@ test_mount_fs_error_to_errno :: proc(t: ^testing.T) {
 		{fs.FS_Error.Sector_Read_Error, c.int(-int(posix.EIO))},
 		{fs.FS_Error.Sector_Write_Error, c.int(-int(posix.EIO))},
 		{fs.FS_Error.Cluster_Not_Found, c.int(-int(posix.EIO))},
-		{fs.FS_Error.Cluster_Map_Full, c.int(-int(posix.EIO))},
+		{fs.FS_Error.Cluster_Map_Full, c.int(-int(posix.ENOSPC))},
 		{fs.FS_Error.Multi_Sector_Cluster_Map_Unsupported, c.int(-int(posix.EIO))},
 		{fs.FS_Error.Invalid_Signature, c.int(-int(posix.EIO))},
 		{fs.FS_Error.Version_Too_Old, c.int(-int(posix.EIO))},
@@ -2108,4 +2133,82 @@ test_mount_mkdir_long_names :: proc(t: ^testing.T) {
 
 	// "." already exists.
 	expect_errno(t, mounter.fused_mkdir("/.", posix.mode_t{.IRUSR}), .EEXIST)
+}
+
+// test_mount_readdir_on_file_is_enotdir — D-07: readdir on a non-directory
+// reports ENOTDIR, not ENOENT.
+@(test)
+test_mount_readdir_on_file_is_enotdir :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !scratch_fs(t, "/dev/shm/fused_readdir_enotdir_test.img", &fsys) { return }
+	defer close_scratch_fs(&fsys, "/dev/shm/fused_readdir_enotdir_test.img")
+
+	fi: fuse3.File_Info
+	testing.expect_value(
+		t,
+		mounter.fused_create("/afile", posix.mode_t{.IRUSR, .IWUSR}, &fi),
+		0,
+	)
+	collector: Dir_Collector
+	expect_errno(t, mounter.fused_readdir("/afile", &collector, collect_filler, 0, nil, 0), .ENOTDIR)
+}
+
+// test_mount_getattr_blocks — D-08: st_blocks counts allocated 512-byte
+// sectors, st_blksize is 4096. Empty file → 0 blocks; file with data and
+// directories → ≥ 1 block.
+@(test)
+test_mount_getattr_blocks :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !scratch_fs(t, "/dev/shm/fused_getattr_blocks_test.img", &fsys) { return }
+	defer close_scratch_fs(&fsys, "/dev/shm/fused_getattr_blocks_test.img")
+
+	fi: fuse3.File_Info
+	testing.expect_value(
+		t,
+		mounter.fused_create("/bfile", posix.mode_t{.IRUSR, .IWUSR}, &fi),
+		0,
+	)
+	st: fuse3.Stat
+	testing.expect_value(t, mounter.fused_getattr("/bfile", &st, nil), 0)
+	testing.expect_value(t, st.st_blocks, 0)
+	testing.expect_value(t, st.st_blksize, 4096)
+
+	data := "block-count-me"
+	testing.expect_value(
+		t,
+		mounter.fused_write("/bfile", raw_data(data), c.size_t(len(data)), 0, &fi),
+		c.int(len(data)),
+	)
+	testing.expect_value(t, mounter.fused_getattr("/bfile", &st, nil), 0)
+	testing.expect(t, st.st_blocks >= 1, "data file has blocks")
+	testing.expect_value(t, st.st_blksize, 4096)
+
+	testing.expect_value(
+		t,
+		mounter.fused_mkdir("/bdir", posix.mode_t{.IRUSR, .IWUSR, .IXUSR}),
+		0,
+	)
+	testing.expect_value(t, mounter.fused_getattr("/bdir", &st, nil), 0)
+	testing.expect(t, st.st_blocks >= 1, "dir has blocks")
+}
+
+// test_mount_flush_fsync_ok — D-12: flush is a no-op success; fsync and
+// fsyncdir succeed for both datasync=0 and datasync=1.
+@(test)
+test_mount_flush_fsync_ok :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !scratch_fs(t, "/dev/shm/fused_flush_fsync_test.img", &fsys) { return }
+	defer close_scratch_fs(&fsys, "/dev/shm/fused_flush_fsync_test.img")
+
+	fi: fuse3.File_Info
+	testing.expect_value(
+		t,
+		mounter.fused_create("/ffile", posix.mode_t{.IRUSR, .IWUSR}, &fi),
+		0,
+	)
+	testing.expect_value(t, mounter.fused_flush("/ffile", &fi), 0)
+	testing.expect_value(t, mounter.fused_fsync("/ffile", 0, &fi), 0)
+	testing.expect_value(t, mounter.fused_fsync("/ffile", 1, &fi), 0)
+	testing.expect_value(t, mounter.fused_fsyncdir("/", 0, nil), 0)
+	testing.expect_value(t, mounter.fused_fsyncdir("/", 1, nil), 0)
 }

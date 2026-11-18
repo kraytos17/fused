@@ -129,6 +129,18 @@ fused_getattr :: proc "c" (path: cstring, stbuf: ^fuse3.Stat, _: ^fuse3.File_Inf
 	stbuf.st_atim.tv_sec = atim
 	stbuf.st_uid = posix.uid_t(entry.uid)
 	stbuf.st_gid = posix.gid_t(entry.gid)
+	// st_blocks counts 512-byte sectors allocated to the file/dir chain
+	// (du/ls -s need this; was 0). st_blksize is the preferred I/O size.
+	stbuf.st_blksize = posix.blksize_t(4096)
+	if entry.stored_cluster != 0 {
+		if runs, xerr := resolve_extents_cached(fsys, fs.data_chain_of(entry)); xerr == .None {
+			blocks: u64
+			for r in runs { blocks += u64(r.count) }
+			stbuf.st_blocks = posix.blkcnt_t(blocks)
+		} else {
+			return fs_error_to_errno(xerr)
+		}
+	}
 	return 0
 }
 
@@ -236,7 +248,7 @@ fused_readdir :: proc "c" (
 	if .Directory not_in entry.flags {
 		sync.rw_mutex_unlock(&fsys.mu)
 		log.debugf("readdir: %s → not-dir", path)
-		return fuse3.nix(.ENOENT)
+		return fuse3.nix(.ENOTDIR)
 	}
 
 	dir := fs.Chain_Location {
@@ -333,7 +345,7 @@ fused_read :: proc "c" (
 	clamped := c.size_t(min(u64(size), entry.file_size - uoff))
 	runs, xerr := resolve_extents_shared(fsys, fs.Chain_Location{data_cluster, data_offset})
 	if xerr != .None {
-		return fuse3.nix(.ENOENT)
+		return fs_error_to_errno(xerr)
 	}
 
 	mem_sink := Mem_Read_Sink {
@@ -394,13 +406,13 @@ fused_read_buf :: proc "c" (
 	clamped := c.size_t(min(u64(size), entry.file_size - uoff))
 	runs, xerr := resolve_extents_shared(fsys, fs.Chain_Location{data_cluster, data_offset})
 	if xerr != .None {
-		return fuse3.nix(.ENOENT)
+		return fs_error_to_errno(xerr)
 	}
 
 	slices, total_provided := collect_read_slices(runs, uoff, u64(clamped), context.temp_allocator)
 	defer delete(slices)
 	if len(slices) == 0 {
-		return fuse3.nix(.ENOENT)
+		return fuse3.nix(.EIO)
 	}
 
 	buf_count := len(slices)

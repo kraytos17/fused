@@ -82,13 +82,13 @@ fused_write :: proc "c" (
 		total_sectors,
 	)
 	if cerr != .None {
-		if cerr == .No_Space {
+		if cerr == .No_Space || cerr == .Cluster_Map_Full {
 			log.errorf("write: %s → ENOSPC", path)
 			return fuse3.nix(.ENOSPC)
 		}
 
 		log.errorf("write: %s → extents failed", path)
-		return fuse3.nix(.ENOENT)
+		return fs_error_to_errno(cerr)
 	}
 
 	// Metadata allocation is made durable by the journal's own sync
@@ -226,13 +226,13 @@ fused_write_buf :: proc "c" (
 		total_sectors,
 	)
 	if cerr != .None {
-		if cerr == .No_Space {
+		if cerr == .No_Space || cerr == .Cluster_Map_Full {
 			log.errorf("write_buf: %s → ENOSPC", path)
 			return fuse3.nix(.ENOSPC)
 		}
 
 		log.errorf("write_buf: %s → extents failed", path)
-		return fuse3.nix(.ENOENT)
+		return fs_error_to_errno(cerr)
 	}
 
 	// Zero the gap between old EOF and the write offset (same stale-data
@@ -315,10 +315,10 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 		new_sectors,
 	)
 	if cerr != .None {
-		if cerr == .No_Space {
+		if cerr == .No_Space || cerr == .Cluster_Map_Full {
 			return fuse3.nix(.ENOSPC)
 		}
-		return fuse3.nix(.ENOENT)
+		return fs_error_to_errno(cerr)
 	}
 
 	// An extending truncate exposes zeros, never stale reused bytes —
@@ -466,10 +466,10 @@ _fallocate_grow :: proc(
 
 	new_cluster, new_offset, _, _, cerr := ensure_chain_covers(fsys, entry, loc, total_sectors)
 	if cerr != .None {
-		if cerr == .No_Space {
+		if cerr == .No_Space || cerr == .Cluster_Map_Full {
 			return fuse3.nix(.ENOSPC)
 		}
-		return fuse3.nix(.ENOENT)
+		return fs_error_to_errno(cerr)
 	}
 
 	// Zero whenever the size grows over the gap, even if the chain
@@ -656,7 +656,7 @@ fused_copy_file_range :: proc "c" (
 
 	src_runs, src_xerr := resolve_extents_cached(fsys, fs.Chain_Location{src_cluster, src_offset})
 	if src_xerr != .None {
-		return c.ssize_t(fuse3.nix(.ENOENT))
+		return c.ssize_t(fs_error_to_errno(src_xerr))
 	}
 
 	dst_total_sectors, sok := _span_sectors(dst_off, clamped)
