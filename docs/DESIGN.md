@@ -611,6 +611,7 @@ tests/
 ├── io_error_test.odin             2 fault-injection tests (truncated + read-only images)
 ├── fault_test.odin                16 deterministic fault tests (Nth read/write/sync fails + single-shot cut-and-disarm, isolated images)
 ├── late_fault_test.odin           1 late-fault enumeration test (single-shot write cuts across create/mkdir/symlink: op fails, rollback completes, checker clean)
+├── crash_sweep_test.odin          1 crash-window enumeration test (every write of every mutating op cut with the shell abandoned and the image re-opened through recovery)
 ├── used_entries_test.odin         2 statfs inode-accounting tests (D-13 lifecycle vs walk vs statfs + disk re-seed)
 ├── invalidation_test.odin         6 cache-invalidation tests
 ├── dir_op_test.odin               9 directory-operation tests
@@ -638,7 +639,7 @@ tests/
 | Phase | What it runs |
 |---|---|
 | 1. Build + static analysis | `make check` (struct sizes) + `make audit` (context) + `make vet` |
-| 2. Unit tests | `make test` (206 Odin tests) |
+| 2. Unit tests | `make test` (207 Odin tests) |
 | 3. Tool integration | `make pytest -m tool` (7 format + 14 imgdump tests) |
 | 4. FUSE basic | `make smoke` inside `unshare -rUm` (pytest: basic + error tests) |
 | 5. FUSE rw | `make smoke-rw` inside `unshare -rUm` (pytest: read-write tests) |

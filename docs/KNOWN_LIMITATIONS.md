@@ -20,8 +20,17 @@ Linked from README. Each item names the epic that fixes it. Updated
   injection models a dead disk) the rollback's own I/O fails too and
   leaks. Single-shot injection covers the transient case: every write
   of create/mkdir/symlink is cut exactly once and each rollback
-  completes clean (late_fault_test.odin). Rename joins that sweep, and
-  the kill -9 crash simulator remains T-05 work.
+  completes clean (late_fault_test.odin), and the crash sweep cuts
+  every write of every mutating op with the shell abandoned and the
+  image re-opened through recovery (crash_sweep_test.odin). What
+  remains of T-05 is anchoring the model to real kill -9 process death
+  mid-op.
+- **RENAME_EXCHANGE crash window is half-applied (E-03).** Two in-place
+  slot writes are not one transaction: a cut between them leaves one
+  slot exchanged and the other not, orphaning the not-yet-moved content
+  (structurally sound, repairable, but not a legal POSIX outcome). The
+  crash sweep pins this documented shape (crash_sweep_test.odin); full
+  atomicity needs the E-03 journal transaction over entry writes.
 - **Corrupt timestamps fail `stat` (E-09).** Out-of-range date fields make
   `getattr` return EIO instead of clamping + warning. `check` reports the
   finding; repair clamps it.

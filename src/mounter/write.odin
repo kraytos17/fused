@@ -347,23 +347,25 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 	}
 
 	current_sectors := fs.chain_sector_count(runs)
-	if new_sectors < current_sectors {
-		if terr := fs.truncate_chain_at(&fsys.vol, fs.data_chain_of(entry), new_sectors);
-		   terr != .None {
-			return fs_error_to_errno(terr)
-		}
-
-		fsys.free_sectors += current_sectors - new_sectors
-		if new_sectors == 0 {
-			// Fully freed: clear the head so the entry matches a
-			// never-allocated file. A stale head would fail the next
-			// grow (ENOENT walking the freed chain) or, worse, alias
-			// sectors reallocated to another file meanwhile.
-			entry.stored_cluster = 0
-			entry.sector_index = 0
-		}
+	shrinking := new_sectors < current_sectors
+	if shrinking && new_sectors == 0 {
+		// Fully freed: clear the head so the entry matches a
+		// never-allocated file. A stale head would fail the next
+		// grow (ENOENT walking the freed chain) or, worse, alias
+		// sectors reallocated to another file meanwhile.
+		entry.stored_cluster = 0
+		entry.sector_index = 0
 	}
 
+	// Entry-first for shrinks: the size/head update must be durable
+	// before the chain frees commit (the journal makes them durable
+	// mid-call). Reversed, a crash between the committed frees and the
+	// entry write leaves the entry pointing at a freed chain — an
+	// unreadable file plus a checker DirHead error (found by the crash
+	// sweep). In this order the crash window holds the new size with
+	// the doomed tail still allocated: unreachable sectors, repairable
+	// orphans, nothing dangling.
+	head := fs.data_chain_of(entry)
 	set_entry_time_to_now(&entry)
 	entry.file_size = usize
 	if werr := write_entry_at(
@@ -372,6 +374,12 @@ fused_truncate :: proc "c" (path: cstring, size: posix.off_t, fi: ^fuse3.File_In
 		&entry,
 	); werr != .None {
 		return fs_error_to_errno(werr)
+	}
+	if shrinking {
+		if terr := fs.truncate_chain_at(&fsys.vol, head, new_sectors); terr != .None {
+			return fs_error_to_errno(terr)
+		}
+		fsys.free_sectors += current_sectors - new_sectors
 	}
 
 	path_cache_invalidate_all(fsys)

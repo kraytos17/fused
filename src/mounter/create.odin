@@ -384,34 +384,30 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 // persists the cleared entry, then frees its content, LFN, and xattr
 // chains. Shared by unlink, rmdir, and rename-overwrite so the removal
 // sequence has a single implementation.
-remove_directory_entry :: proc(
+// _release_entry_resources frees what a destroyed directory entry owned:
+// its locks, open handles, inode count, data chain, LFN storage, and
+// xattr chain. The caller has already cleared or overwritten the slot —
+// destruction-last orderings (rename overwrite) separate the slot write
+// from the resource release so no crash window leaves a live entry
+// pointing at freed chains.
+@(private = "file")
+_release_entry_resources :: proc(
 	fsys: ^FS,
-	entry: ^fs.Directory_Entry,
+	dead: ^fs.Directory_Entry,
 	loc: fs.File_Identity,
 ) -> fs.FS_Error {
-	saved := entry^
-	has_data := entry.stored_cluster != 0
-	data_loc := fs.data_chain_of(entry^)
-	lfn_entry := entry^
-	reclaim := fs.xattr_clear(entry)
-
+	reclaim := fs.xattr_clear(dead)
 	locks_remove_identity(fsys, loc)
-	entry.flags = {}
-	if werr := write_entry_at(fsys, loc, entry); werr != .None {
-		entry^ = saved
-		return werr
-	}
-
 	open_handle_sweep(fsys, loc)
 	if fsys.used_entries > 0 {
 		fsys.used_entries -= 1
 	}
-	if has_data {
-		if derr := fs.deallocate_sectors(&fsys.vol, data_loc); derr != .None {
+	if dead.stored_cluster != 0 {
+		if derr := fs.deallocate_sectors(&fsys.vol, fs.data_chain_of(dead^)); derr != .None {
 			return derr
 		}
 	}
-	if ferr := free_entry_lfn(fsys, &lfn_entry); ferr != .None {
+	if ferr := free_entry_lfn(fsys, dead); ferr != .None {
 		return ferr
 	}
 	if reclaim != 0 {
@@ -424,13 +420,30 @@ remove_directory_entry :: proc(
 	return .None
 }
 
+// remove_directory_entry clears a directory-entry slot and releases
+// everything it owned.
+remove_directory_entry :: proc(
+	fsys: ^FS,
+	entry: ^fs.Directory_Entry,
+	loc: fs.File_Identity,
+) -> fs.FS_Error {
+	saved := entry^
+	entry.flags = {}
+	_ = fs.xattr_clear(entry)
+	if werr := write_entry_at(fsys, loc, entry); werr != .None {
+		entry^ = saved
+		return werr
+	}
+	return _release_entry_resources(fsys, &saved, loc)
+}
+
 // fused_unlink removes a file (FUSE unlink callback).
 fused_unlink :: proc "c" (path: cstring) -> c.int {
 	context = runtime.default_context()
 	fsys := begin_op()
 	context.logger = fsys.logger
-	defer end_op(fsys)
 
+	defer end_op(fsys)
 	entry, cluster, offset, idx, rerr := resolve_path_cached(
 		fsys,
 		string(path),
@@ -570,7 +583,10 @@ rename_publish :: proc(
 //
 // Crash window: two slot writes are not one transaction. Nothing
 // is deallocated here, so the persist-order discipline (s7) is trivially
-// satisfied: worst case is one slot exchanged and the other not.
+// satisfied: worst case is one slot exchanged and the other not — a
+// structurally sound half-swap whose not-yet-moved content shows up as
+// repairable orphans. Pinned by the crash sweep; full atomicity is
+// E-03 work (KNOWN_LIMITATIONS, exchange entry).
 fused_exchange_locked :: proc(fsys: ^FS, oldpath, newpath: string) -> c.int {
 	if oldpath == "/" || newpath == "/" {
 		log.debugf("exchange: %s <-> %s → EBUSY (root)", oldpath, newpath)
@@ -804,28 +820,49 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	}
 	if same_dir {
 		if dst_exists {
-			if err := remove_directory_entry(
-				fsys,
-				&dst_entry,
-				fs.File_Identity{new_parent_c, new_parent_o, dst_idx},
-			); err != .None {
+			// Overwrite, destruction-last: the moved entry takes over
+			// the dst slot IN PLACE. Until the old source slot clears,
+			// both names resolve to the same chain (legal transient);
+			// the dst's chains release after the overwrite (orphans in
+			// the window, never a dangling reference); the source slot
+			// clears last. A crash in any window loses nothing — the
+			// old target's data surfaces as repairable orphans at
+			// worst, never as a vanished name.
+			dst_id := fs.File_Identity{new_parent_c, new_parent_o, dst_idx}
+			src_id := fs.File_Identity{old_cluster, old_offset, old_idx}
+			dead := dst_entry
+			saved := entry
+			reclaim, nerr := set_entry_name(fsys, &entry, new_name)
+			if nerr != .None {
+				return fs_error_to_errno(nerr)
+			}
+			if rc := rename_publish(fsys, &entry, saved, dst_id, reclaim); rc != 0 {
+				return rc
+			}
+			if err := _release_entry_resources(fsys, &dead, dst_id); err != .None {
 				return fs_error_to_errno(err)
 			}
-		}
 
-		saved := entry
-		reclaim, nerr := set_entry_name(fsys, &entry, new_name)
-		if nerr != .None {
-			return fs_error_to_errno(nerr)
-		}
-		if rc := rename_publish(
-			fsys,
-			&entry,
-			saved,
-			fs.File_Identity{old_cluster, old_offset, old_idx},
-			reclaim,
-		); rc != 0 {
-			return rc
+			entry.flags = {}
+			if werr := write_entry_at(fsys, src_id, &entry); werr != .None {
+				return fs_error_to_errno(werr)
+			}
+			open_handle_repoint(fsys, src_id, dst_id)
+		} else {
+			saved := entry
+			reclaim, nerr := set_entry_name(fsys, &entry, new_name)
+			if nerr != .None {
+				return fs_error_to_errno(nerr)
+			}
+			if rc := rename_publish(
+				fsys,
+				&entry,
+				saved,
+				fs.File_Identity{old_cluster, old_offset, old_idx},
+				reclaim,
+			); rc != 0 {
+				return rc
+			}
 		}
 
 		path_cache_invalidate_all(fsys)
@@ -860,41 +897,48 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 			check_path = parent_of_check
 		}
 	}
-	// Cross-directory dst overwrite: matrix-gated as above. The removal
-	// precedes the slot allocation.
+	// Cross-directory move. For an overwrite the moved entry takes over
+	// the dst slot IN PLACE (destruction-last, same reasoning as the
+	// same-dir note: names stay resolvable in every window, the dst's
+	// chains release after the overwrite as repairable orphans, and the
+	// source slot clears in the shared tail below). Without an
+	// overwrite a fresh slot is allocated first.
+	dst_id: fs.File_Identity
 	if dst_exists {
-		if err := remove_directory_entry(
-			fsys,
-			&dst_entry,
-			fs.File_Identity{new_parent_c, new_parent_o, dst_idx},
-		); err != .None {
+		dst_id = fs.File_Identity{new_parent_c, new_parent_o, dst_idx}
+		dead := dst_entry
+		saved := entry
+		reclaim, nerr := set_entry_name(fsys, &entry, new_name)
+		if nerr != .None {
+			return fs_error_to_errno(nerr)
+		}
+		if rc := rename_publish(fsys, &entry, saved, dst_id, reclaim); rc != 0 {
+			return rc
+		}
+		if err := _release_entry_resources(fsys, &dead, dst_id); err != .None {
 			return fs_error_to_errno(err)
 		}
-	}
+	} else {
+		dst_slot, slot_err := find_or_extend_dir(
+			fsys,
+			fs.Chain_Location{new_parent_c, new_parent_o},
+		)
+		if slot_err == .Entry_Not_Found {
+			return fuse3.nix(.ENOSPC)
+		}
+		if slot_err != .None {
+			return fs_error_to_errno(slot_err)
+		}
 
-	dst_slot, slot_err := find_or_extend_dir(fsys, fs.Chain_Location{new_parent_c, new_parent_o})
-	if slot_err == .Entry_Not_Found {
-		return fuse3.nix(.ENOSPC)
-	}
-	if slot_err != .None {
-		return fs_error_to_errno(slot_err)
-	}
-
-	dst_cluster, dst_sec, dst_slot_idx :=
-		dst_slot.dir_cluster, dst_slot.dir_offset, dst_slot.entry_index
-	saved := entry
-	reclaim, nerr := set_entry_name(fsys, &entry, new_name)
-	if nerr != .None {
-		return fs_error_to_errno(nerr)
-	}
-	if rc := rename_publish(
-		fsys,
-		&entry,
-		saved,
-		fs.File_Identity{dst_cluster, dst_sec, dst_slot_idx},
-		reclaim,
-	); rc != 0 {
-		return rc
+		dst_id = fs.File_Identity{dst_slot.dir_cluster, dst_slot.dir_offset, dst_slot.entry_index}
+		saved := entry
+		reclaim, nerr := set_entry_name(fsys, &entry, new_name)
+		if nerr != .None {
+			return fs_error_to_errno(nerr)
+		}
+		if rc := rename_publish(fsys, &entry, saved, dst_id, reclaim); rc != 0 {
+			return rc
+		}
 	}
 
 	entry.flags = {}
@@ -902,15 +946,8 @@ fused_rename :: proc "c" (oldpath: cstring, newpath: cstring, flags: c.uint) -> 
 	   werr != .None {
 		return fs_error_to_errno(werr)
 	}
-	// The entry moved slots: re-point live handles (and lock state) at the
-	// new slot so open fds survive the move (E-04 step 1). Same-dir renames
-	// keep their slot and need no re-point.
-	open_handle_repoint(
-		fsys,
-		fs.File_Identity{old_cluster, old_offset, old_idx},
-		fs.File_Identity{dst_cluster, dst_sec, dst_slot_idx},
-	)
 
+	open_handle_repoint(fsys, fs.File_Identity{old_cluster, old_offset, old_idx}, dst_id)
 	path_cache_invalidate_all(fsys)
 	log.debugf("rename: %s → %s ok (cross-directory)", oldpath, newpath)
 	return 0

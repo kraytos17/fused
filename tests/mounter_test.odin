@@ -2300,8 +2300,9 @@ test_mount_stale_handle_fails_closed :: proc(t: ^testing.T) {
 // clean; success + remove must round-trip the free count (LFN + data +
 // dir sectors all reclaimed). Late-fault enumeration for these creators
 // lives in late_fault_test.odin (single-shot write cuts: the op fails
-// and the rollback completes); the kill -9 crash simulator that sweeps
-// persistent-fault cuts remains T-05 work.
+// and the rollback completes); the crash-consistency side — every write
+// of every mutating op cut with the shell abandoned and the image
+// re-opened through recovery — lives in crash_sweep_test.odin.
 @(test)
 test_mount_create_mkdir_symlink_rollback :: proc(t: ^testing.T) {
 	fsys: mounter.FS
