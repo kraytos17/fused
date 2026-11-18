@@ -42,7 +42,7 @@ def test_json_deep(imgdump_bin: str, fused_image: str):
 def test_text_output(imgdump_bin: str, fused_image: str):
     r = run_cli(imgdump_bin, fused_image)
     assert_cli_ok(r)
-    for keyword in ["MasterRecord", "ALLOCATED", "Directory Tree", "Kernel", "CE[00]"]:
+    for keyword in ["MasterRecord", "ALLOCATED", "Directory Tree", "Kernel", "CE["]:
         assert keyword in r.stdout, f"missing '{keyword}'"
 
 

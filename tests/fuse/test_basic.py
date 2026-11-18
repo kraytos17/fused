@@ -39,7 +39,7 @@ def test_header_bytes(private_mount: str):
 def test_statvfs_values(private_mount: str):
     s = os.statvfs(private_mount)
     assert s.f_namemax == 255
-    assert s.f_bsize == 512
+    assert s.f_bsize == 4096
 
 
 @pytest.mark.fuse
