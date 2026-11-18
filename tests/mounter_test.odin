@@ -2135,6 +2135,72 @@ test_mount_mkdir_long_names :: proc(t: ^testing.T) {
 	expect_errno(t, mounter.fused_mkdir("/.", posix.mode_t{.IRUSR}), .EEXIST)
 }
 
+// test_mount_xattr_chains_isolated — T-04 found xattr blobs aliasing
+// across entries: _xattr_chain_locate keys chains by cluster only, so two
+// live blobs in one cluster made every entry naming it read the first
+// blob (a file's attrs surfaced on its parent dir). Allocation now keeps
+// one live .XAttr chain per cluster, and empty sets store no chain.
+@(test)
+test_mount_xattr_chains_isolated :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !scratch_fs(t, "/dev/shm/fused_xattr_isolated_test.img", &fsys) { return }
+	defer close_scratch_fs(&fsys, "/dev/shm/fused_xattr_isolated_test.img")
+
+	mkfile :: proc(t: ^testing.T, path: cstring) {
+		fi: fuse3.File_Info
+		testing.expect_value(t, mounter.fused_create(path, posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
+	}
+	mkfile(t, "/xa")
+	mkfile(t, "/xb")
+
+	va := "value-a"
+	vb := "value-b-longer"
+	testing.expect_value(t, mounter.fused_setxattr("/xa", "user.k", raw_data(va), len(va), 0), 0)
+	testing.expect_value(t, mounter.fused_setxattr("/xb", "user.k", raw_data(vb), len(vb), 0), 0)
+
+	// Each entry reads back exactly its own value.
+	buf: [32]u8
+	testing.expect_value(
+		t,
+		mounter.fused_getxattr("/xa", "user.k", raw_data(buf[:]), c.size_t(len(buf))),
+		7,
+	)
+	testing.expect_value(t, string(buf[:7]), "value-a")
+	testing.expect_value(
+		t,
+		mounter.fused_getxattr("/xb", "user.k", raw_data(buf[:]), c.size_t(len(buf))),
+		14,
+	)
+	testing.expect_value(t, string(buf[:14]), "value-b-longer")
+
+	// White-box: the chains live in different clusters (the locate key).
+	ra, rerr := fs.resolve_path(&fsys.vol, "/xa")
+	testing.expect_value(t, rerr, fs.FS_Error.None)
+	rb, rerr2 := fs.resolve_path(&fsys.vol, "/xb")
+	testing.expect_value(t, rerr2, fs.FS_Error.None)
+	testing.expect(t, ra.entry.xattr_cluster != 0 && rb.entry.xattr_cluster != 0, "both chained")
+	testing.expect(
+		t,
+		ra.entry.xattr_cluster != rb.entry.xattr_cluster,
+		"chains do not share a cluster",
+	)
+
+	// Removing the last attr drops the chain instead of an empty blob.
+	testing.expect_value(t, mounter.fused_removexattr("/xa", "user.k"), 0)
+	ra2, rerr3 := fs.resolve_path(&fsys.vol, "/xa")
+	testing.expect_value(t, rerr3, fs.FS_Error.None)
+	testing.expect_value(t, ra2.entry.xattr_cluster, 0)
+	expect_errno(t, mounter.fused_getxattr("/xa", "user.k", nil, 0), .ENODATA)
+
+	// And the survivor is unaffected.
+	testing.expect_value(
+		t,
+		mounter.fused_getxattr("/xb", "user.k", raw_data(buf[:]), c.size_t(len(buf))),
+		14,
+	)
+	testing.expect_value(t, string(buf[:14]), "value-b-longer")
+}
+
 // test_mount_open_survives_cross_dir_rename — E-04 step 1: an open fd keeps
 // referring to its file after a cross-directory rename moves the entry to
 // a new slot. (The old fh packed the physical slot, so the fd stranded on
@@ -2146,11 +2212,7 @@ test_mount_open_survives_cross_dir_rename :: proc(t: ^testing.T) {
 	defer close_scratch_fs(&fsys, "/dev/shm/fused_open_rename_test.img")
 
 	fi: fuse3.File_Info
-	testing.expect_value(
-		t,
-		mounter.fused_create("/orig", posix.mode_t{.IRUSR, .IWUSR}, &fi),
-		0,
-	)
+	testing.expect_value(t, mounter.fused_create("/orig", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
 	hello: string = "hello"
 	testing.expect_value(
 		t,
@@ -2194,11 +2256,7 @@ test_mount_stale_handle_fails_closed :: proc(t: ^testing.T) {
 	defer close_scratch_fs(&fsys, "/dev/shm/fused_stale_fh_test.img")
 
 	fi: fuse3.File_Info
-	testing.expect_value(
-		t,
-		mounter.fused_create("/stale", posix.mode_t{.IRUSR, .IWUSR}, &fi),
-		0,
-	)
+	testing.expect_value(t, mounter.fused_create("/stale", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
 	testing.expect_value(t, mounter.fused_unlink("/stale"), 0)
 
 	data := "x"
@@ -2214,11 +2272,7 @@ test_mount_stale_handle_fails_closed :: proc(t: ^testing.T) {
 	// The freed slot is reusable, and the stale handle still must not
 	// touch the new occupant.
 	fi2: fuse3.File_Info
-	testing.expect_value(
-		t,
-		mounter.fused_create("/stale", posix.mode_t{.IRUSR, .IWUSR}, &fi2),
-		0,
-	)
+	testing.expect_value(t, mounter.fused_create("/stale", posix.mode_t{.IRUSR, .IWUSR}, &fi2), 0)
 	expect_errno(
 		t,
 		mounter.fused_write("/stale", raw_data(data), c.size_t(len(data)), 0, &fi),
@@ -2310,16 +2364,16 @@ test_mount_oversize_write_no_leak :: proc(t: ^testing.T) {
 	f0 := fs.alloc_cache_count_free(&fsys.vol)
 
 	fi: fuse3.File_Info
-	testing.expect_value(
-		t,
-		mounter.fused_create("/big", posix.mode_t{.IRUSR, .IWUSR}, &fi),
-		0,
-	)
+	testing.expect_value(t, mounter.fused_create("/big", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
 	big := make([]u8, 2 << 20)
 	defer delete(big)
 	// 2MB cannot fit a 1M image: honest ENOSPC, not a short write that
 	// pretends success.
-	expect_errno(t, mounter.fused_write("/big", raw_data(big), c.size_t(len(big)), 0, &fi), .ENOSPC)
+	expect_errno(
+		t,
+		mounter.fused_write("/big", raw_data(big), c.size_t(len(big)), 0, &fi),
+		.ENOSPC,
+	)
 	testing.expect_value(t, fs.alloc_cache_count_free(&fsys.vol), f0)
 	testing.expect_value(t, mounter.fused_unlink("/big"), 0)
 	testing.expect_value(t, fs.alloc_cache_count_free(&fsys.vol), f0)
@@ -2338,13 +2392,13 @@ test_mount_readdir_on_file_is_enotdir :: proc(t: ^testing.T) {
 	defer close_scratch_fs(&fsys, "/dev/shm/fused_readdir_enotdir_test.img")
 
 	fi: fuse3.File_Info
-	testing.expect_value(
-		t,
-		mounter.fused_create("/afile", posix.mode_t{.IRUSR, .IWUSR}, &fi),
-		0,
-	)
+	testing.expect_value(t, mounter.fused_create("/afile", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
 	collector: Dir_Collector
-	expect_errno(t, mounter.fused_readdir("/afile", &collector, collect_filler, 0, nil, 0), .ENOTDIR)
+	expect_errno(
+		t,
+		mounter.fused_readdir("/afile", &collector, collect_filler, 0, nil, 0),
+		.ENOTDIR,
+	)
 }
 
 // test_mount_getattr_blocks — D-08: st_blocks counts allocated 512-byte
@@ -2357,11 +2411,7 @@ test_mount_getattr_blocks :: proc(t: ^testing.T) {
 	defer close_scratch_fs(&fsys, "/dev/shm/fused_getattr_blocks_test.img")
 
 	fi: fuse3.File_Info
-	testing.expect_value(
-		t,
-		mounter.fused_create("/bfile", posix.mode_t{.IRUSR, .IWUSR}, &fi),
-		0,
-	)
+	testing.expect_value(t, mounter.fused_create("/bfile", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
 	st: fuse3.Stat
 	testing.expect_value(t, mounter.fused_getattr("/bfile", &st, nil), 0)
 	testing.expect_value(t, st.st_blocks, 0)
@@ -2377,11 +2427,7 @@ test_mount_getattr_blocks :: proc(t: ^testing.T) {
 	testing.expect(t, st.st_blocks >= 1, "data file has blocks")
 	testing.expect_value(t, st.st_blksize, 4096)
 
-	testing.expect_value(
-		t,
-		mounter.fused_mkdir("/bdir", posix.mode_t{.IRUSR, .IWUSR, .IXUSR}),
-		0,
-	)
+	testing.expect_value(t, mounter.fused_mkdir("/bdir", posix.mode_t{.IRUSR, .IWUSR, .IXUSR}), 0)
 	testing.expect_value(t, mounter.fused_getattr("/bdir", &st, nil), 0)
 	testing.expect(t, st.st_blocks >= 1, "dir has blocks")
 }
@@ -2395,11 +2441,7 @@ test_mount_flush_fsync_ok :: proc(t: ^testing.T) {
 	defer close_scratch_fs(&fsys, "/dev/shm/fused_flush_fsync_test.img")
 
 	fi: fuse3.File_Info
-	testing.expect_value(
-		t,
-		mounter.fused_create("/ffile", posix.mode_t{.IRUSR, .IWUSR}, &fi),
-		0,
-	)
+	testing.expect_value(t, mounter.fused_create("/ffile", posix.mode_t{.IRUSR, .IWUSR}, &fi), 0)
 	testing.expect_value(t, mounter.fused_flush("/ffile", &fi), 0)
 	testing.expect_value(t, mounter.fused_fsync("/ffile", 0, &fi), 0)
 	testing.expect_value(t, mounter.fused_fsync("/ffile", 1, &fi), 0)

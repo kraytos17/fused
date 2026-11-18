@@ -45,6 +45,9 @@ Linked from README. Each item names the epic that fixes it. Updated
   constant; `df -i` flat. `f_bsize = 4096`, `f_frsize = 512`.
 - **Xattr/blob limits (E-10).** Whole-blob rewrite per `setxattr`,
   64 KB value cap, no ACLs, `ioctl` → `ENOTTY`, `poll` always-ready.
+  One live blob chain per cluster (locate keys by cluster only), so a
+  volume holds at most `cluster_map_size` live xattr sets before honest
+  `ENOSPC`; rev ≤ 7 images have no xattr field at all (`EOPNOTSUPP`).
 
 ## Performance profile
 

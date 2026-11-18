@@ -156,7 +156,7 @@ xattr_store :: proc(
 	defer delete(data)
 
 	old_cluster := entry.xattr_cluster
-	if len(data) == 0 {
+	if len(attrs) == 0 {
 		entry.xattr_cluster = 0
 		return old_cluster, .None
 	}

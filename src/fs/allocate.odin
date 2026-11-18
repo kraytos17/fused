@@ -292,7 +292,10 @@ allocate_sectors :: proc(
 		if .Allocated not_in cme.flags {
 			if ierr := _allocate_init_fresh(vol, cluster_idx, &cme); ierr != .None {
 				if !is_first {
-					_allocate_rollback_best_effort(vol, Chain_Location{first_cluster, first_offset})
+					_allocate_rollback_best_effort(
+						vol,
+						Chain_Location{first_cluster, first_offset},
+					)
 				}
 				return 0, 0, ierr
 			}
@@ -316,6 +319,19 @@ allocate_sectors :: proc(
 
 		table: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 		read_cluster_entry_table(vol, Cluster(cluster_idx), &table) or_continue
+		if kind == .XAttr {
+			shared := false
+			for e in table {
+				if .Allocated in e.state && .XAttr in e.state {
+					shared = true
+					break
+				}
+			}
+			if shared {
+				continue
+			}
+		}
+
 		free_idx := -1
 		#unroll for j in 0 ..< CLUSTER_ENTRIES_PER_SECTOR {
 			if free_idx < 0 && .Allocated not_in table[j].state {
@@ -354,7 +370,10 @@ allocate_sectors :: proc(
 			if lerr := _allocate_append_link(vol, &plan, prev_cluster, prev_idx, prev_entry);
 			   lerr != .None {
 				if !is_first {
-					_allocate_rollback_best_effort(vol, Chain_Location{first_cluster, first_offset})
+					_allocate_rollback_best_effort(
+						vol,
+						Chain_Location{first_cluster, first_offset},
+					)
 				}
 				return 0, 0, lerr
 			}
