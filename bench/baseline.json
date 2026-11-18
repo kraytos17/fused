@@ -1,0 +1,87 @@
+{
+  "results": [
+    {
+      "name": "write-sequential",
+      "unit": "MB/s",
+      "repeats": 5,
+      "cold": 29.7,
+      "median": 239.0,
+      "best": 269.2,
+      "worst": 233.4,
+      "wall_total": 0.081
+    },
+    {
+      "name": "read-sequential",
+      "unit": "MB/s",
+      "repeats": 5,
+      "cold": 1940.4,
+      "median": 3142.9,
+      "best": 3299.2,
+      "worst": 2929.2,
+      "wall_total": 0.006
+    },
+    {
+      "name": "read-4k",
+      "unit": "MB/s",
+      "repeats": 5,
+      "cold": 2722.3,
+      "median": 3344.1,
+      "best": 3423.8,
+      "worst": 3303.4,
+      "wall_total": 0.006
+    },
+    {
+      "name": "statfs",
+      "unit": "ops/s",
+      "repeats": 5,
+      "cold": 218315.4,
+      "median": 215877.5,
+      "best": 221802.4,
+      "worst": 205362.9,
+      "wall_total": 0.047
+    },
+    {
+      "name": "readdir",
+      "unit": "ops/s",
+      "repeats": 5,
+      "cold": 14547.8,
+      "median": 14698.3,
+      "best": 14914.7,
+      "worst": 12838.2,
+      "wall_total": 0.007
+    },
+    {
+      "name": "create-storm",
+      "unit": "ops/s",
+      "repeats": 5,
+      "cold": 696.7,
+      "median": 759.6,
+      "best": 771.6,
+      "worst": 731.3,
+      "wall_total": 0.66
+    }
+  ],
+  "errors": [],
+  "provenance": {
+    "argv": {
+      "fused": "build/fused",
+      "image": "bench.img",
+      "mount": "mnt",
+      "logs": "logs",
+      "size": 4,
+      "repeats": 5,
+      "files": 200,
+      "json_out": "bench/baseline.json"
+    },
+    "cpu_count": 8,
+    "loadavg": [
+      1.619140625,
+      1.609375,
+      1.4736328125
+    ],
+    "git_rev": "df3b4a7",
+    "git_dirty": [
+      "?? bench/"
+    ]
+  }
+}
