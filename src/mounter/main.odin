@@ -11,6 +11,7 @@ import "core:c"
 import "core:log"
 import "core:mem"
 import "core:os"
+import "core:strconv"
 import "core:strings"
 import "src:fs"
 import "src:fuse3"
@@ -214,6 +215,23 @@ run :: proc(opts: Mount_Options) -> bool {
 		log.errorf("failed to open image: %v", vol_err)
 		free(fsys)
 		return false
+	}
+
+	dv_buf: [256]u8
+	dv := os.get_env(dv_buf[:], "FUSED_DIE_AFTER_WRITES")
+	if len(dv) > 0 {
+		if n, pok := strconv.parse_u64(dv); pok && n > 0 {
+			vol.fault = fs.IO_Fault {
+				enabled           = true,
+				fail_reads_after  = max(u64),
+				fail_writes_after = max(u64),
+				fail_syncs_after  = max(u64),
+				die_after_writes  = n,
+			}
+			log.infof("crash-sim: die after write %d armed", n)
+		} else {
+			log.warnf("crash-sim: bad FUSED_DIE_AFTER_WRITES=%q ignored", dv)
+		}
 	}
 
 	defer fs.volume_close(&vol)

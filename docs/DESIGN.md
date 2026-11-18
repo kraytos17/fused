@@ -586,7 +586,7 @@ tests/
 ├── pyproject.toml                 Pytest markers (tool, fuse, static) + pythonpath
 ├── fuse/                          FUSE suites (own conftest: clean_image, private_mount; no shared mounts)
 │   ├── test_basic.py              7 smoke tests on the demo image (asserts /Kernel; private mount)
-│   ├── test_crash.py              5 kill -9 crash-consistency tests (data, truncate-extend/shrink, unlink, long-name rename)
+│   ├── test_crash.py              8 kill -9 crash-consistency tests (data, truncate-extend/shrink, unlink, long-name rename + die-after-writes mid-op knob: create, rename-overwrite, truncate-shrink)
 │   ├── test_errors.py             6 error-path tests
 │   ├── test_lock.py               6 lock/flock tests (cross-process)
 │   ├── test_rw.py                 13 read-write tests

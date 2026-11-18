@@ -4,6 +4,7 @@
 package fs
 
 import "core:os"
+import "core:sys/posix"
 
 // Fault_Class selects an I/O class for single-shot injection.
 Fault_Class :: enum {
@@ -37,14 +38,31 @@ IO_Fault :: struct {
 	// applying to their own classes.
 	fail_once_class:   Fault_Class,
 	fail_once_at:      u64,
+	// Kill-at-write debugging (T-05): when nonzero, the process
+	// SIGKILLs itself as the Nth sector write starts — real process
+	// death between write N-1 and N, anchoring the injected-fault
+	// model to actual kill -9 behavior. Requires enabled = true
+	// (counting must run); the daemon arms it from
+	// FUSED_DIE_AFTER_WRITES. Test-only, single-threaded volumes.
+	die_after_writes:  u64,
 }
 
-// io_fails counts one op of the given class and reports whether it
+// _die_immediately SIGKILLs this process: the crash simulator's real
+// death at an exact point. No handler can catch SIGKILL, so the exit
+// is unconditional — pending state dies with the process.
+@(private = "file")
+_die_immediately :: proc() {
+	posix.kill(posix.getpid(), .SIGKILL)
+}
+
+// _io_fails counts one op of the given class and reports whether it
 // fails. Threshold mode: every op past fail_<class>_after fails.
 // Single-shot mode: the op whose class count lands exactly on
 // fail_once_at fails and disarms the shot, so later ops — rollback I/O
 // included — succeed. A disabled fault (enabled = false) never counts
-// and never fails: production behavior.
+// and never fails: production behavior. When die_after_writes is armed
+// and the write count reaches it, the process dies first: that write
+// never lands, exactly like a kill -9 at that point.
 @(private = "file")
 _io_fails :: proc(f: ^IO_Fault, class: Fault_Class) -> bool {
 	if !f.enabled {
@@ -68,6 +86,9 @@ _io_fails :: proc(f: ^IO_Fault, class: Fault_Class) -> bool {
 	}
 
 	count^ += 1
+	if f.die_after_writes != 0 && class == .Writes && count^ == f.die_after_writes {
+		_die_immediately()
+	}
 	if count^ > threshold {
 		return true
 	}
