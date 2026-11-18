@@ -1,7 +1,7 @@
 # ADR-006: Permission Model (Constrained)
 
 Date: 2026-10-17
-Status: accepted
+Status: accepted (superseded for rev ≥ 9 images by ADR-016's real mode bits)
 
 ## Context
 

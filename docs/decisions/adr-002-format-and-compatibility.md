@@ -1,7 +1,7 @@
 # ADR-002: On-Disk Format and Compatibility
 
 Date: 2026-10-17
-Status: accepted
+Status: accepted (window 7–8; ADR-016 bumps SUPPORTED_REV_MAX to 9 with the required `.Inode_Table` feature — rev-8 images stay mountable, reformat to migrate)
 
 ## Context
 

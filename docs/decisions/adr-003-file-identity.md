@@ -1,7 +1,7 @@
 # ADR-003: File Identity (Directory Slots, No Stable Nodes)
 
 Date: 2026-10-17
-Status: accepted (current schema; persistent identity deferred)
+Status: accepted (current schema; persistent identity now decided — ADR-016/017, implementation pending)
 
 ## Context
 

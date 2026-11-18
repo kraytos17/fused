@@ -1,7 +1,7 @@
 # ADR-011: Timestamp Semantics (No ctime, Coarse mtime/atime)
 
 Date: 2026-10-17
-Status: accepted
+Status: accepted (superseded for rev ≥ 9 images by ADR-017's sec+nsec table timestamps)
 
 ## Context
 

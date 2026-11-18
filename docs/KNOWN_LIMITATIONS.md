@@ -39,6 +39,11 @@ Linked from README. Each item names the epic that fixes it. Updated
 
 ## POSIX gaps
 
+Rev-9 decisions ADR-016 (inode table: links, modes, stable ino) and
+ADR-017 (monotonic ino allocation, sec+nsec timestamps) close the
+entries below for rev-9 images; rev-8 keeps exactly these semantics
+until reformatted.
+
 - **No hard links (E-05).** `link` → `EPERM`. Directory `nlink` is a
   constant 2, not 2 + subdirs.
 - **No stable inode numbers (E-02).** `st_ino` is 0; `use_ino` off. Do not
