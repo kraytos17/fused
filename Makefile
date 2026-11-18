@@ -32,7 +32,7 @@ PYTEST_FUSE   := uv run pytest -v --tb=short $(FUSE_FLAGS)
 .PHONY: all build build-tsan format imgdump check-tool \
         create-image mount unmount \
         test pytest check check-all audit vet ci doctor \
-        gen-trace check-trace clean-logs conformance fsx fsstress \
+        gen-trace check-trace clean-logs conformance fsx fsstress golden \
         sanitize tsan-smoke-mt \
         smoke smoke-rw smoke-mt smoke-errors smoke-crash bench \
         clean help
@@ -161,6 +161,9 @@ bench: build
 conformance: build format
 	@$(HARNESS) 300 bash tests/conformance/pjdfstest.sh $(PJD_GROUPS)
 
+golden:
+	@$(ODIN) run tools/gen_golden $(COLLECTIONS) -define:ODIN_MOUNTER_TEST=true
+
 fsx: build format check-tool
 	@$(HARNESS) 300 bash tests/conformance/fsx.sh fsx
 
@@ -204,6 +207,7 @@ help:
 	@echo "  smoke-mt         multi-threaded stress (isolated ns)"
 	@echo "  bench            throughput benchmark (bench.py)"
 	@echo '  conformance      pjdfstest groups (PJD_GROUPS="chmod mkdir", isolated ns)'
+	@echo '  golden             regenerate tests/golden compat fixtures'
 	@echo '  fsx                fsx-linux content oracle x3 (isolated ns)'
 	@echo '  fsstress           seeded metadata stress x3 seeds (isolated ns)'
 	@echo "  ci               full CI pipeline"

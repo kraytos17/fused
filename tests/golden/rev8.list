@@ -1,0 +1,6 @@
+F 60 /Kernel
+X /Kernel user.comment=golden-rev8
+D /docs
+F 14 /docs/readme.txt
+F 18 /this_is_a_long_file_name_01.txt
+L /link -> /Kernel

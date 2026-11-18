@@ -71,6 +71,14 @@ xattr_publish :: proc(
 	return 0
 }
 
+// xattr_supported reports whether the mounted image has the xattr
+// feature (rev 8+). Older revs store narrower entries with no xattr field
+// at all; running xattr ops there would read/write phantom chain pointers
+// (T-09). Callers fail with EOPNOTSUPP before resolving anything.
+xattr_supported :: proc(fsys: ^FS) -> bool {
+	return .XAttr in fsys.vol.master.features
+}
+
 // fused_setxattr sets an extended attribute on a file or directory.
 fused_setxattr :: proc "c" (
 	path: cstring,
@@ -83,6 +91,9 @@ fused_setxattr :: proc "c" (
 	fsys := begin_op()
 	context.logger = fsys.logger
 	defer end_op(fsys)
+	if !xattr_supported(fsys) {
+		return fuse3.nix(.EOPNOTSUPP)
+	}
 
 	attr_name := string(name)
 	if len(attr_name) == 0 || len(attr_name) > fs.XATTR_NAME_MAX {
@@ -160,6 +171,9 @@ fused_getxattr :: proc "c" (
 	fsys := begin_op()
 	context.logger = fsys.logger
 	defer end_op(fsys)
+	if !xattr_supported(fsys) {
+		return fuse3.nix(.EOPNOTSUPP)
+	}
 
 	entry, _, _, _, _, _, rerr := resolve_entry(fsys, path, nil)
 	if rerr != .None {
@@ -196,6 +210,9 @@ fused_listxattr :: proc "c" (path: cstring, list: [^]c.char, size: c.size_t) -> 
 	fsys := begin_op()
 	context.logger = fsys.logger
 	defer end_op(fsys)
+	if !xattr_supported(fsys) {
+		return fuse3.nix(.EOPNOTSUPP)
+	}
 
 	entry, _, _, _, _, _, rerr := resolve_entry(fsys, path, nil)
 	if rerr != .None {
@@ -243,6 +260,9 @@ fused_removexattr :: proc "c" (path: cstring, name: cstring) -> c.int {
 	fsys := begin_op()
 	context.logger = fsys.logger
 	defer end_op(fsys)
+	if !xattr_supported(fsys) {
+		return fuse3.nix(.EOPNOTSUPP)
+	}
 
 	entry, entry_cluster, entry_offset, entry_idx, _, _, rerr := resolve_entry(fsys, path, nil)
 	if rerr != .None {

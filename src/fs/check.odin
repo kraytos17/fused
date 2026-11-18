@@ -822,8 +822,12 @@ _check_reachability :: proc(vol: ^Volume, r: ^Check_Report, allocator: mem.Alloc
 					}
 				}
 
-				// Xattr chain reference.
-				if e.xattr_cluster != 0 {
+				// Xattr chain reference. Revs without .XAttr store narrower
+				// entries whose trailing struct bytes alias the next slot
+				// (see directory.odin): the in-memory xattr_cluster is
+				// sanitized to 0 on read, so skip the check entirely there.
+				has_xattr := .XAttr in vol.master.features
+				if has_xattr && e.xattr_cluster != 0 {
 					xidx := -1
 					xtable: [CLUSTER_ENTRIES_PER_SECTOR]Cluster_Entry
 					if read_cluster_entry_table(vol, Cluster(e.xattr_cluster), &xtable) == .None {

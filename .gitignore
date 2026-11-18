@@ -4,6 +4,7 @@ tmp/
 mnt/
 logs/
 *.img
+!tests/golden/*.img
 *.bin
 __pycache__/
 .pytest_cache/

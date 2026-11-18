@@ -54,7 +54,11 @@ read_directory_entries :: proc(
 		for i in 0 ..< deps {
 			entry := (^Directory_Entry)(mem.ptr_offset(&data[0], sec_idx * SECTOR_SIZE + i * des))
 			if .Exists in entry.flags {
-				append(&entries, Indexed_Entry{entry^, sec_idx * deps + i})
+				e := entry^
+				if .XAttr not_in vol.master.features {
+					e.xattr_cluster = 0
+				}
+				append(&entries, Indexed_Entry{e, sec_idx * deps + i})
 			}
 		}
 	}
@@ -184,15 +188,15 @@ write_directory_entry_at :: proc(
 
 	features := vol.master.features
 	des := int(dir_entry_size(features))
-	dst := (^Directory_Entry)(mem.ptr_offset(&buf[0], id.entry_index * des))
-	dst^ = entry^
+	// Copy only the on-disk width: a full-struct copy at a narrower
+	// stride would clobber the next slot's head with the trailing field
+	// bytes (rev 7 xattr garbage zeroing its neighbor's flags on every
+	// entry rewrite).
+	mem.copy(mem.ptr_offset(&buf[0], id.entry_index * des), entry, des)
 	if sector_write(vol, table_sector, buf[:]) != .None {
 		return .Sector_Write_Error
 	}
-	// Every slot mutation drops the directory's cached listing (see
-	// dir_cache.odin): this proc and write_entry_at_index are the only two
-	// writers, so the drop here covers mounter writers, tests, and future
-	// fs writers alike.
+
 	dir_cache_invalidate(&vol.dir_cache, Chain_Location{id.dir_cluster, id.dir_offset})
 	return .None
 }
@@ -250,6 +254,9 @@ read_entry_at_index :: proc(
 	features := vol.master.features
 	des := int(dir_entry_size(features))
 	entry = (^Directory_Entry)(mem.ptr_offset(&buf[0], within * des))^
+	if .XAttr not_in features {
+		entry.xattr_cluster = 0
+	}
 	if .Exists not_in entry.flags {
 		return {}, .Entry_Not_Found
 	}
@@ -271,14 +278,11 @@ write_entry_at_index :: proc(
 
 	features := vol.master.features
 	des := int(dir_entry_size(features))
-	dst := (^Directory_Entry)(mem.ptr_offset(&buf[0], within * des))
-	dst^ = entry^
+	mem.copy(mem.ptr_offset(&buf[0], within * des), entry, des)
 	if sector_write(vol, sec, buf[:]) != .None {
 		return .Sector_Write_Error
 	}
-	// Drop the directory's cached listing with the write (see
-	// dir_cache.odin): this proc and write_directory_entry_at are the
-	// only two slot writers.
+
 	dir_cache_invalidate(&vol.dir_cache, Chain_Location{id.dir_cluster, id.dir_offset})
 	return .None
 }
