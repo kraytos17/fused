@@ -79,8 +79,8 @@ src/
                                      fused_bmap, fused_poll, fused_init/destroy
 tools/
   audit/              Callback locking/logger/hygiene/attribute audit
-                      (rules context/a/g/b–e, storage s1–s6/s8–s12,
-                      tests-hygiene t1; --strict gates CI)
+                      (rules context/a/g/b–e, storage s1–s13 (s7 persist
+                      order), tests-hygiene t1; --strict gates CI)
   gen_trace_wrappers/ Odin generator emitting src/mounter/trace_wrappers.odin
                       (output must be byte-identical; see docs/DESIGN.md)
 demo/
@@ -334,6 +334,12 @@ in `src/fs/structure.odin` carries a compile-time
   clear-all-fallback invalidation. `statfs` uses a cached
   free-sector count kept coherent via delta updates on
   `allocate`/`truncate`/`remove`/`xattr` (not a stale scan).
+
+## Status & limitations
+
+See [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) for the honest
+list: WAL scope, POSIX gaps (hard links, modes, nsec, rename, locks,
+sparse), coarse locking, and scale caps. Fixed by epics E-01…E-13.
 
 ## License
 

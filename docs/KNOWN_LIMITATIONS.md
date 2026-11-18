@@ -1,0 +1,64 @@
+# KNOWN_LIMITATIONS — what fused does not do yet (M-0)
+
+Linked from README. Each item names the epic that fixes it. Updated
+2026-11-18 (commits through D-17).
+
+## Correctness scope
+
+- **WAL covers allocation tables only (E-03).** The redo-log journals
+  `Cluster_Entry` writes. Directory entries, LFN/xattr/file-data sectors,
+  master seq/watermark, and `free_sectors` are not transactional. Power
+  loss between a data write and its entry write can leak or expose stale
+  bytes. `fsync` durability = backing-file sync only.
+- **No per-record CRC (E-03).** Journal record sectors carry no checksum;
+  only the header is CRC'd. Bit-rot in a record is caught only if replay
+  writes garbage into a CE table (checker flags it after the fact).
+- **Master rewritten per transaction.** `journal_finish` rewrites sector 0
+  every commit. No backup master, no master CRC (E-02).
+- **Late-fault rollback is best-effort.** Failure paths free what they
+  allocated, but rollback I/O under persistent faults can itself fail and
+  leak (threshold faults cannot express single-shot). Full enumeration
+  needs the T-05 crash simulator with single-shot fault support.
+- **Corrupt timestamps fail `stat` (E-09).** Out-of-range date fields make
+  `getattr` return EIO instead of clamping + warning. `check` reports the
+  finding; repair clamps it.
+
+## POSIX gaps
+
+- **No hard links (E-05).** `link` → `EPERM`. Directory `nlink` is a
+  constant 2, not 2 + subdirs.
+- **No stable inode numbers (E-02).** `st_ino` is 0; `use_ino` off. Do not
+  fabricate ino from the slot — it moves on cross-directory rename.
+- **Permissions are lossy (E-01).** 3 flag bits, no mode bits, no exec
+  files, `access` ignores uid/gid. Mount without `default_permissions`
+  semantics; do not rely on this for isolation.
+- **Timestamps are 1-second (E-02).** No nsec, `ctime == mtime`,
+  `time_gran = 1e9` advertises the truth. Parent dir times never update.
+- **Rename is partial (E-04).** No `NOREPLACE`/`EXCHANGE`, dst-dir matrix
+  incomplete, open fds break across cross-dir moves (`fh` packs the slot).
+- **Locks never block (E-08).** `F_SETLKW` / blocking `flock` → `EAGAIN`.
+- **No sparse files (E-12).** `truncate(1T)` allocates and zeroes.
+  `SEEK_DATA/HOLE` over a logically-contiguous chain is cosmetic.
+- **Statfs inode counts are capacity (E-09).** `f_files/ffree/favail`
+  constant; `df -i` flat. `f_bsize = 4096`, `f_frsize = 512`.
+- **Xattr/blob limits (E-10).** Whole-blob rewrite per `setxattr`,
+  64 KB value cap, no ACLs, `ioctl` → `ENOTTY`, `poll` always-ready.
+
+## Performance profile
+
+- **Coarse global lock.** Most ops take `FS.mu` exclusively; `getattr`
+  and `open` included. Expect serial metadata throughput (E-06).
+- **Linear directories (E-07).** No name index; create storms are O(n²)
+  per directory. No `readdirplus`.
+- **`flush` is a no-op; `fsync` syncs the whole image.** Per-close cost
+  is gone, per-fsync cost is a full file sync (E-03 group commit fixes).
+
+## Scale and format
+
+- **512-byte sectors only.** 4 Kn block devices unsupported (image files
+  only). `cluster_size` ≤ 65536, file-handle packs `dir_cluster` in
+  32 bits, cluster map is single-sector (E-12 documents exact caps).
+- **Rev 7–8 only.** Older/newer refused with reformat message. No
+  migrator yet (E-02 `migrate --output`).
+- **Check is read-only.** No `--repair`, no fsck exit codes, no JSON
+  machine output (E-09).

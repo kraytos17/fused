@@ -15,7 +15,6 @@
 package fs
 
 import "core:fmt"
-import "core:hash"
 import "core:mem"
 import "core:os"
 import "core:strings"
@@ -988,13 +987,7 @@ check_journal_report :: proc(
 		if hdr.rec_sectors != want_secs {
 			continue
 		}
-
-		crc_buf: [24]u8
-		copy(crc_buf[:], hdr_buf[:24])
-
-		crc_buf[22] = 0
-		crc_buf[23] = 0
-		if hash.crc32(crc_buf[:]) != hdr.header_crc {
+		if journal_header_crc(hdr_buf[:]) != hdr.header_crc {
 			continue
 		}
 

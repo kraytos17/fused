@@ -79,6 +79,22 @@ journal_add_entry :: proc(txn: ^Journal_Txn, entry: Journal_Entry) -> bool {
 	return true
 }
 
+// journal_header_crc computes the header checksum over the fixed 24-byte
+// prefix (magic through the first 2 bytes of header_crc, zeroed on both
+// sides). Layout: magic u32 (0-4), seq u64 (4-12), rec_count u16 (12-14),
+// rec_sectors u16 (14-16), committed u8 (16-17), _pad [5]u8 (17-22),
+// header_crc u32 (22-26) — only bytes 22-23 fall inside the 24-byte
+// window, so both sides zero exactly those before hashing. Kept
+// byte-identical for rev 7/8 compat
+journal_header_crc :: proc(hdr_buf: []u8) -> u32 {
+	assert(len(hdr_buf) >= 24)
+	crc_buf: [24]u8
+	copy(crc_buf[:], hdr_buf[:24])
+	crc_buf[22] = 0
+	crc_buf[23] = 0
+	return hash.crc32(crc_buf[:])
+}
+
 JOURNAL_SLOT_STRIDE ::
 	(MAX_JOURNAL_ENTRIES + JOURNAL_ENTRIES_PER_RECORD - 1) / JOURNAL_ENTRIES_PER_RECORD + 1
 
@@ -130,7 +146,7 @@ journal_commit :: proc(vol: ^Volume, txn: ^Journal_Txn) -> bool {
 	hdr_buf: [SECTOR_SIZE]u8
 	hdr_ptr := (^Journal_Header)(raw_data(hdr_buf[:]))
 	hdr_ptr^ = hdr
-	hdr.header_crc = hash.crc32(hdr_buf[:24])
+	hdr.header_crc = journal_header_crc(hdr_buf[:])
 	hdr_ptr^ = hdr
 	if sector_write(vol, pos, hdr_buf[:]) != .None {
 		return false
@@ -245,10 +261,7 @@ journal_recover :: proc(vol: ^Volume) -> FS_Error {
 	// position and the header so we can replay in seq order — the ring
 	// buffer's physical order is not guaranteed to match sequence order
 	// after wraparound.
-	valid: [dynamic]Slot_Entry
-	delete(valid)
-
-	valid = make([dynamic]Slot_Entry, 0, int(M), context.temp_allocator)
+	valid := make([dynamic]Slot_Entry, 0, int(M), context.temp_allocator)
 	for i: u64; i < M; i += 1 {
 		pos := J + Sector(i)
 		hdr_buf: [SECTOR_SIZE]u8
@@ -257,7 +270,6 @@ journal_recover :: proc(vol: ^Volume) -> FS_Error {
 		// instead of scanning past potentially committed data. (Bad
 		// magic/CRC/counts below mean "no transaction here" and skip.)
 		sector_read(vol, pos, hdr_buf[:]) or_return
-
 		hdr := (^Journal_Header)(raw_data(hdr_buf[:]))^
 		if hdr.magic != JOURNAL_WAL_MAGIC { continue }
 		if hdr.tail_magic != JOURNAL_WAL_MAGIC {
@@ -281,12 +293,8 @@ journal_recover :: proc(vol: ^Volume) -> FS_Error {
 			continue
 		}
 
-		crc_buf: [24]u8
-		copy(crc_buf[:], hdr_buf[:24])
-
-		crc_buf[22] = 0
-		crc_buf[23] = 0
-		if hash.crc32(crc_buf[:]) != hdr.header_crc {
+		crc := journal_header_crc(hdr_buf[:])
+		if crc != hdr.header_crc {
 			log.warnf("journal: bad header crc at sector %d — discarding", pos)
 			continue
 		}
