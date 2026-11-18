@@ -1,0 +1,43 @@
+# expected_failures.txt — pjdfstest baseline (T-01). Pinned: 85a8aea9e685999ef0540392fd80535f873d7ff7.
+# Format: <group>/<file> tests=<T> failed=<F> [<failed-ranges>]. Updated by re-running
+#   make conformance   (or PJD_GROUPS='<groups>' make conformance)
+# and pasting the failing list (never blindly). CI rule (T-01): no NEW failures;
+# a fixed item must be removed from this file in the same PR.
+# Status: scoped baseline (chmod mkdir rename) on v0.9.0; full suite pending.
+
+## group chmod (logs/pjdfstest-chmod.log)
+chmod/00.t tests=119 failed=76 Failed tests:  4, 7-8, 17-18, 22-24, 26-28, 31-34, 36-38
+chmod/01.t tests=17 failed=12 Failed tests:  5-16
+chmod/02.t tests=5 failed=2 Failed tests:  3, 5
+chmod/03.t tests=5 failed=4 Failed tests:  1-4
+chmod/05.t tests=14 failed=8 Failed tests:  3-6, 8, 10-12
+chmod/07.t tests=25 failed=21 Failed tests:  3-23
+chmod/11.t tests=109 failed=69 Failed tests:  4, 7, 12, 15, 18-20, 22-23, 25-28, 30-31
+chmod/12.t tests=14 failed=6 Failed tests:  3-4, 7-8, 11-12
+chmod TOTAL files=13 tests=327 result=FAIL
+
+## group mkdir (logs/pjdfstest-mkdir.log)
+mkdir/00.t tests=36 failed=17 Failed tests:  3, 6, 9, 12, 15, 17-23, 25-27, 33-34
+mkdir/01.t tests=17 failed=12 Failed tests:  5-16
+mkdir/03.t tests=3 failed=2 Failed tests:  1-2
+mkdir/05.t tests=12 failed=6 Failed tests:  3-5, 7, 9-10
+mkdir/06.t tests=12 failed=6 Failed tests:  3-5, 7, 9-10
+mkdir/10.t tests=21 failed=11 Failed tests:  7-10, 12-13, 15-16, 18-19, 21
+mkdir TOTAL files=13 tests=118 result=FAIL
+
+## group rename (logs/pjdfstest-rename.log)
+rename/00.t tests=122 failed=79 Failed tests:  8-10, 12, 14-15, 17-20, 22-27, 29-35, 37-42
+rename/01.t tests=8 failed=3 Failed tests:  6-8
+rename/02.t tests=6 failed=2 Failed tests:  2-3
+rename/04.t tests=18 failed=9 Failed tests:  3, 5-8, 10-11, 14-15
+rename/05.t tests=17 failed=8 Failed tests:  3, 5-8, 10, 12, 14
+rename/09.t tests=2353 failed=1867 Failed tests:  4, 6-7, 9-13, 17-21, 23-29, 31-37, 39-45
+rename/10.t tests=2099 failed=1558 Failed tests:  3, 6, 8, 10-14, 16-22, 24-30, 32-38, 40-46
+rename/12.t tests=32 failed=24 Failed tests:  8-31
+rename/13.t tests=32 failed=26 Failed tests:  7-32
+rename/14.t tests=32 failed=16 Failed tests:  7-8, 10-13, 15-18, 20-23, 25-26
+rename/20.t tests=25 failed=15 Failed tests:  4, 7, 9-20, 22
+rename/21.t tests=16 failed=6 Failed tests:  4-6, 12-14
+rename/23.t tests=42 failed=36 Failed tests:  4, 6-7, 9-41
+rename/24.t tests=13 failed=2 Failed tests:  4, 9
+rename TOTAL files=25 tests=4857 result=FAIL
