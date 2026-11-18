@@ -166,13 +166,21 @@ lfn_bump_write :: proc(
 	new_c, new_o := allocate_sectors(vol, {}, 1, .LFN) or_return
 	runs, rok := resolve_extents(vol, Chain_Location{new_c, new_o})
 	defer delete(runs)
-
-	if rok != .None { return {}, rok }
-	if len(runs) == 0 { return {}, .Entry_Not_Found }
+	if rok != .None {
+		_ = deallocate_sectors(vol, Chain_Location{new_c, new_o})
+		return {}, rok
+	}
+	if len(runs) == 0 {
+		_ = deallocate_sectors(vol, Chain_Location{new_c, new_o})
+		return {}, .Entry_Not_Found
+	}
 
 	buf: [SECTOR_SIZE]u8
 	copy(buf[:], transmute([]u8)name)
-	if sector_write(vol, runs[0].sector, buf[:]) != .None { return {}, .Sector_Write_Error }
+	if sector_write(vol, runs[0].sector, buf[:]) != .None {
+		_ = deallocate_sectors(vol, Chain_Location{new_c, new_o})
+		return {}, .Sector_Write_Error
+	}
 
 	ptr = {
 		cluster = u64(new_c),

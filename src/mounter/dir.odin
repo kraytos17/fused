@@ -136,6 +136,9 @@ find_or_extend_dir :: proc(
 	// data. Slot 0 is then free by construction.
 	zero: [fs.SECTOR_SIZE]u8
 	if fs.sector_write(&fsys.vol, last_sec, zero[:]) != .None {
+		_ = fs.truncate_chain_at(&fsys.vol, dir, current_count)
+		extent_cache_invalidate(fsys, dir.cluster, dir.offset)
+		fsys.free_sectors += 1
 		return {}, .Sector_Write_Error
 	}
 

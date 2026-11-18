@@ -145,6 +145,7 @@ fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 		return fs_error_to_errno(werr)
 	}
 	if write_entry_at(fsys, fs.File_Identity{dcluster, dsec, didx}, &new_entry) != .None {
+		free_entry_lfn(fsys, &new_entry)
 		return fuse3.nix(.EIO)
 	}
 	if new_reclaim.cluster != 0 {
@@ -344,9 +345,18 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 	set_entry_time_to_now(&new_entry)
 	new_reclaim, werr := write_entry_with_lfn(fsys, &new_entry, name)
 	if werr != .None {
+		if derr := fs.deallocate_sectors(&fsys.vol, fs.Chain_Location{new_c, new_o});
+		   derr == .None {
+			fsys.free_sectors += sectors_needed
+		}
 		return fs_error_to_errno(werr)
 	}
 	if write_entry_at(fsys, fs.File_Identity{dcluster, dsec, didx}, &new_entry) != .None {
+		free_entry_lfn(fsys, &new_entry)
+		if derr := fs.deallocate_sectors(&fsys.vol, fs.Chain_Location{new_c, new_o});
+		   derr == .None {
+			fsys.free_sectors += sectors_needed
+		}
 		return fuse3.nix(.EIO)
 	}
 	if new_reclaim.cluster != 0 {
@@ -507,7 +517,19 @@ rename_publish :: proc(
 	reclaim: fs.LFN_Pointer,
 ) -> c.int {
 	if werr := write_entry_at(fsys, loc, entry); werr != .None {
+		new_ptr := fs.LFN_Pointer{}
+		if .LFN in entry.flags {
+			new_ptr = (^fs.LFN_Pointer)(&entry.file_name[0])^
+		}
+
 		entry^ = saved
+		if new_ptr.cluster != 0 {
+			_ = fs.deallocate_sectors(
+				&fsys.vol,
+				fs.Chain_Location{fs.Cluster(new_ptr.cluster), fs.Sector_Offset(new_ptr.sector)},
+			)
+			reinit_free_sectors(fsys)
+		}
 		return fs_error_to_errno(werr)
 	}
 	if reclaim.cluster != 0 {

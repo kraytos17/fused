@@ -2135,6 +2135,74 @@ test_mount_mkdir_long_names :: proc(t: ^testing.T) {
 	expect_errno(t, mounter.fused_mkdir("/.", posix.mode_t{.IRUSR}), .EEXIST)
 }
 
+// test_mount_create_mkdir_symlink_rollback — D-06: failed creates leave no
+// leak and no corruption. Early-fault (first write fails, inside the first
+// journal commit) must leave the free count untouched and the checker
+// clean; success + remove must round-trip the free count (LFN + data +
+// dir sectors all reclaimed). Late-fault enumeration (Nth-write cut with
+// rollback I/O itself faulted) needs single-shot fault support — tracked
+// as T-05 crash-simulator work; threshold faults cannot express "fail
+// exactly once then let the rollback succeed".
+@(test)
+test_mount_create_mkdir_symlink_rollback :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !scratch_fs(t, "/dev/shm/fused_rollback_test.img", &fsys) { return }
+	defer close_scratch_fs(&fsys, "/dev/shm/fused_rollback_test.img")
+
+	f0 := fs.alloc_cache_count_free(&fsys.vol)
+
+	// Early fault: first sector write fails. Nothing observable may persist.
+	fsys.vol.fault = fs.IO_Fault {
+		enabled           = true,
+		fail_reads_after  = max(u64),
+		fail_writes_after = 0,
+		fail_syncs_after  = max(u64),
+	}
+	long := "rollback-long-file-name-0123456789"
+	pbuf: [128]u8
+	fi: fuse3.File_Info
+	rc := mounter.fused_create(tpath(pbuf[:], "/%s", long), posix.mode_t{.IRUSR, .IWUSR}, &fi)
+	testing.expect(t, rc != 0, "faulted create fails")
+	rc = mounter.fused_mkdir(tpath(pbuf[:], "/%s-dir", long), posix.mode_t{.IRUSR, .IWUSR, .IXUSR})
+	testing.expect(t, rc != 0, "faulted mkdir fails")
+	rc = mounter.fused_symlink("/Kernel", tpath(pbuf[:], "/%s-link", long))
+	testing.expect(t, rc != 0, "faulted symlink fails")
+	fsys.vol.fault.enabled = false
+
+	testing.expect_value(t, fs.alloc_cache_count_free(&fsys.vol), f0)
+	rep := fs.check_image(&fsys.vol)
+	defer fs.check_report_destroy(&rep)
+	testing.expect_value(t, rep.errors, 0)
+	testing.expect_value(t, rep.warnings, 0)
+	cpath := tpath(pbuf[:], "/%s", long)
+	_, rerr := fs.resolve_path(&fsys.vol, string(cpath))
+	testing.expect(t, rerr != .None, "failed create left no entry")
+
+	// Success round-trip: create + mkdir + symlink with long names, then
+	// remove all; free count must return to baseline (no success-path leak).
+	testing.expect_value(
+		t,
+		mounter.fused_create(tpath(pbuf[:], "/%s", long), posix.mode_t{.IRUSR, .IWUSR}, &fi),
+		0,
+	)
+	testing.expect_value(
+		t,
+		mounter.fused_mkdir(tpath(pbuf[:], "/%s-dir", long), posix.mode_t{.IRUSR, .IWUSR, .IXUSR}),
+		0,
+	)
+	testing.expect_value(t, mounter.fused_symlink("/Kernel", tpath(pbuf[:], "/%s-link", long)), 0)
+	fmid := fs.alloc_cache_count_free(&fsys.vol)
+	testing.expect(t, fmid < f0, "allocations consumed free sectors")
+	testing.expect_value(t, mounter.fused_unlink(tpath(pbuf[:], "/%s", long)), 0)
+	testing.expect_value(t, mounter.fused_rmdir(tpath(pbuf[:], "/%s-dir", long)), 0)
+	testing.expect_value(t, mounter.fused_unlink(tpath(pbuf[:], "/%s-link", long)), 0)
+	testing.expect_value(t, fs.alloc_cache_count_free(&fsys.vol), f0)
+	rep2 := fs.check_image(&fsys.vol)
+	defer fs.check_report_destroy(&rep2)
+	testing.expect_value(t, rep2.errors, 0)
+	testing.expect_value(t, rep2.warnings, 0)
+}
+
 // test_mount_readdir_on_file_is_enotdir — D-07: readdir on a non-directory
 // reports ENOTDIR, not ENOENT.
 @(test)
