@@ -15,6 +15,7 @@
 #+build linux
 package tests
 
+import "core:diff"
 import "core:fmt"
 import "core:hash"
 import "core:os"
@@ -127,6 +128,44 @@ golden_hash_image :: proc(
 	return true
 }
 
+// report_chunk_diffs names differing chunks via core:diff (2026-11).
+// Cold failure path only; temp-allocator buffers, no heap. Positional
+// hashes make a plain loop sufficient today, but diff also flags shifts
+// (one insert + trailing deletes) instead of N substitutions if
+// GOLDEN_SIZE ever changes.
+report_chunk_diffs :: proc(actual, want: []u64) {
+	for i in 0 ..< min(len(actual), len(want)) {
+		if actual[i] != want[i] {
+			fmt.println(
+				"  first differing chunk:",
+				i,
+				"(offset",
+				fmt.tprintf("0x%x", i * GOLDEN_CHUNK),
+				")",
+			)
+			break
+		}
+	}
+
+	n, m := len(actual), len(want)
+	bits := make([]u64, diff.changes_size(n, m), context.temp_allocator)
+	changes := diff.changes_from_buffer(n, m, bits)
+	scratch := make([]byte, diff.scratch_size(n, m), context.temp_allocator)
+	diff.diff_buffer(actual, want, changes, scratch)
+	st := diff.stats(changes)
+	fmt.println("  chunks differ:", st.deleted + st.inserted, "changes over", n, "chunks")
+	for i in 0 ..< n {
+		if diff.is_deleted(changes, i) {
+			fmt.println("   - chunk", i, "actual", fmt.tprintf("0x%016x", actual[i]))
+		}
+	}
+	for j in 0 ..< m {
+		if diff.is_inserted(changes, j) {
+			fmt.println("   + chunk", j, "want", fmt.tprintf("0x%016x", want[j]))
+		}
+	}
+}
+
 // test_golden_format_bytes — fresh formats match the stored goldens.
 @(test)
 test_golden_format_bytes :: proc(t: ^testing.T) {
@@ -158,18 +197,8 @@ test_golden_format_bytes :: proc(t: ^testing.T) {
 				"want",
 				fmt.tprintf("%016x", g.full),
 			)
-			for i in 0 ..< len(chunks) {
-				if chunks[i] != g.chunks[i] {
-					fmt.println(
-						"  first differing chunk:",
-						i,
-						"(offset",
-						fmt.tprintf("0x%x", i * GOLDEN_CHUNK),
-						")",
-					)
-					break
-				}
-			}
+
+			report_chunk_diffs(chunks[:], g.chunks[:])
 			fmt.println("  actual full: ", fmt.tprintf("0x%016x", full))
 			fmt.println("  actual chunks:")
 			for c, i in chunks {
