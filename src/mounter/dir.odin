@@ -151,7 +151,10 @@ find_or_extend_dir :: proc(
 // check_name_exists checks whether a name already exists in the directory.
 // check_name_exists reports whether a name already exists in a directory.
 // A sector-read failure returns an error (never a silent false, which
-// would let creation proceed over a possibly duplicate name).
+// would let creation proceed over a possibly duplicate name). Both the
+// inline short name and LFN-resolved long names are compared: LFN entries
+// store a pointer in file_name, so entry_short_name alone would compare
+// pointer garbage and miss duplicates.
 check_name_exists :: proc(
 	fsys: ^FS,
 	dir: fs.Chain_Location,
@@ -173,6 +176,13 @@ check_name_exists :: proc(
 				if fs.entry_short_name(e) == ctx.name {
 					ctx.found = true
 					return false
+				}
+				if .LFN in e.flags {
+					if lfn_name, ok := fs.resolve_lfn(&ctx.fsys.vol, e, context.temp_allocator);
+					   ok && lfn_name == ctx.name {
+						ctx.found = true
+						return false
+					}
 				}
 			}
 		}

@@ -2028,3 +2028,84 @@ test_trace_format_line :: proc(t: ^testing.T) {
 		"{\"op\":\"mknod\",\"path\":\"/x\\u0001y\",\"rc\":0,\"err\":false,\"dur_us\":1}\n",
 	)
 }
+
+// test_mount_mkdir_long_names — D-01: mkdir routes through the LFN path.
+// Lengths 1/15/16/17/100/255 round-trip via mkdir/getattr/readdir/rmdir;
+// 256 → ENAMETOOLONG; two names sharing a 16-byte prefix coexist;
+// duplicate long name → EEXIST (check_name_exists compares LFN, not
+// pointer garbage); "." → EEXIST.
+@(test)
+test_mount_mkdir_long_names :: proc(t: ^testing.T) {
+	fsys: mounter.FS
+	if !scratch_fs(t, "/dev/shm/fused_mkdir_lfn_test.img", &fsys) { return }
+	defer close_scratch_fs(&fsys, "/dev/shm/fused_mkdir_lfn_test.img")
+
+	make_name :: proc(buf: []u8, n: int, fill: u8 = 'a') -> string {
+		for i in 0 ..< n { buf[i] = fill }
+		return string(buf[:n])
+	}
+
+	lengths := []int{1, 15, 16, 17, 100, 255}
+	for n in lengths {
+		name_buf: [256]u8
+		name := make_name(name_buf[:], n)
+		path_buf: [300]u8
+		path := tpath(path_buf[:], "/%s", name)
+		rc := mounter.fused_mkdir(path, posix.mode_t{.IRUSR, .IWUSR, .IXUSR})
+		testing.expect_value(t, rc, 0)
+		if rc != 0 { continue }
+
+		st: fuse3.Stat
+		rc = mounter.fused_getattr(path, &st, nil)
+		testing.expect_value(t, rc, 0)
+		testing.expect(t, posix.Mode_Bits.IFDIR in st.st_mode, "long dir is dir")
+
+		// Dir_Collector holds only 256 bytes ("." + ".." + name + NULs),
+		// so a 255-char name overflows it; verify those via resolve_path.
+		if n <= 100 {
+			testing.expect(t, readdir_has(t, "/", 0, name), "readdir finds long dir")
+		} else {
+			res, rerr := fs.resolve_path(&fsys.vol, string(path))
+			testing.expect_value(t, rerr, fs.FS_Error.None)
+			if rerr == .None {
+				testing.expect(t, .Directory in res.entry.flags, "resolve finds long dir")
+			}
+		}
+
+		rc = mounter.fused_rmdir(path)
+		testing.expect_value(t, rc, 0)
+	}
+
+	// 256 → ENAMETOOLONG.
+	too_long_buf: [256]u8
+	too_long := make_name(too_long_buf[:], 256, 'b')
+	path_buf: [300]u8
+	rc := mounter.fused_mkdir(tpath(path_buf[:], "/%s", too_long), posix.mode_t{.IRUSR})
+	expect_errno(t, rc, .ENAMETOOLONG)
+
+	// Same 16-byte prefix, different tails: both must coexist.
+	a1 := "aaaaaaaaaaaaaaaa1"
+	a2 := "aaaaaaaaaaaaaaaa2"
+	p1: [32]u8
+	p2: [32]u8
+	testing.expect_value(
+		t,
+		mounter.fused_mkdir(tpath(p1[:], "/%s", a1), posix.mode_t{.IRUSR, .IWUSR, .IXUSR}),
+		0,
+	)
+	testing.expect_value(
+		t,
+		mounter.fused_mkdir(tpath(p2[:], "/%s", a2), posix.mode_t{.IRUSR, .IWUSR, .IXUSR}),
+		0,
+	)
+	st: fuse3.Stat
+	testing.expect_value(t, mounter.fused_getattr(tpath(p1[:], "/%s", a1), &st, nil), 0)
+	testing.expect_value(t, mounter.fused_getattr(tpath(p2[:], "/%s", a2), &st, nil), 0)
+	// Duplicate long name → EEXIST (not a second slot).
+	expect_errno(t, mounter.fused_mkdir(tpath(p1[:], "/%s", a1), posix.mode_t{.IRUSR}), .EEXIST)
+	testing.expect_value(t, mounter.fused_rmdir(tpath(p1[:], "/%s", a1)), 0)
+	testing.expect_value(t, mounter.fused_rmdir(tpath(p2[:], "/%s", a2)), 0)
+
+	// "." already exists.
+	expect_errno(t, mounter.fused_mkdir("/.", posix.mode_t{.IRUSR}), .EEXIST)
+}

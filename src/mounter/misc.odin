@@ -436,7 +436,7 @@ fused_poll :: proc "c" (
 }
 
 // FUSE INIT handshake tuning.
-FUSE_TIME_GRAN :: c.uint32_t(1) // timestamp granularity, nanoseconds
+FUSE_TIME_GRAN :: c.uint32_t(1000000000) // timestamp granularity, nanoseconds (1s: on-disk Packed_Date_Time is second-resolution; ctime aliased to mtime until rev 9 stores nsec)
 FUSE_MAX_BACKGROUND :: c.uint32_t(16) // max outstanding background requests
 FUSE_CONGESTION_THRESHOLD :: c.uint32_t(12) // background queue congestion mark
 

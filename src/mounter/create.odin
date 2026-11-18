@@ -6,6 +6,7 @@ import "base:runtime"
 import "core:c"
 import "core:log"
 import "core:os"
+import "core:strings"
 import "core:sys/posix"
 import "src:fs"
 import "src:fuse3"
@@ -19,11 +20,19 @@ Prepare_Slot_Result :: enum {
 	Dir_Full,
 	Not_A_Directory, // parent exists but is not a directory
 	Io_Error, // parent resolution hit I/O trouble (not a missing parent)
+	Name_Too_Long, // final component exceeds NAME_MAX (255)
+	Invalid_Name, // empty, ".", NUL, or "/" in final component
 }
+
+// NAME_MAX is the Linux VFS filename limit; the statvfs-facing claim.
+NAME_MAX :: 255
 
 // prepare_parent_slot resolves a path's parent directory and finds a free
 // entry slot in it, sharing the preamble of create/mkdir/symlink.  The
-// returned name is the final path component.
+// returned name is the final path component. It validates the final
+// component: empty, "."/"..", embedded NUL or "/" are Invalid_Name
+// (callers map to EINVAL, except "."/".." which already exist →
+// Name_Exists/EEXIST); longer than NAME_MAX (255) is Name_Too_Long.
 prepare_parent_slot :: proc(
 	fsys: ^FS,
 	path: string,
@@ -35,6 +44,24 @@ prepare_parent_slot :: proc(
 	name: string,
 ) {
 	parent, base_name := os.split_path(path)
+	// "." and ".." can never be created: the kernel's "." / ".." already
+	// exist as virtual entries in every directory listing.
+	if base_name == "." || base_name == ".." {
+		return .Name_Exists, {}, 0, 0, ""
+	}
+	if len(base_name) == 0 {
+		return .Invalid_Name, {}, 0, 0, ""
+	}
+	if len(base_name) > NAME_MAX {
+		return .Name_Too_Long, {}, 0, 0, ""
+	}
+	if strings.index_byte(base_name, 0) >= 0 {
+		return .Invalid_Name, {}, 0, 0, ""
+	}
+	if strings.index_byte(base_name, '/') >= 0 {
+		return .Invalid_Name, {}, 0, 0, ""
+	}
+
 	parent_entry, _, _, _, perr := resolve_path_cached(fsys, parent, context.temp_allocator)
 	if perr == .Entry_Not_Found {
 		return .Parent_Not_Found, {}, 0, 0, ""
@@ -91,6 +118,12 @@ fused_create :: proc "c" (path: cstring, mode: posix.mode_t, fi: ^fuse3.File_Inf
 	case .Not_A_Directory:
 		log.debugf("create: %s → parent ENOTDIR", path)
 		return fuse3.nix(.ENOTDIR)
+	case .Name_Too_Long:
+		log.debugf("create: %s → ENAMETOOLONG", path)
+		return fuse3.nix(.ENAMETOOLONG)
+	case .Invalid_Name:
+		log.debugf("create: %s → EINVAL (bad name)", path)
+		return fuse3.nix(.EINVAL)
 	case .Io_Error:
 		log.debugf("create: %s → EIO", path)
 		return fuse3.nix(.EIO)
@@ -150,6 +183,10 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 		return fuse3.nix(.ENOSPC)
 	case .Not_A_Directory:
 		return fuse3.nix(.ENOTDIR)
+	case .Name_Too_Long:
+		return fuse3.nix(.ENAMETOOLONG)
+	case .Invalid_Name:
+		return fuse3.nix(.EINVAL)
 	case .Io_Error:
 		return fuse3.nix(.EIO)
 	case .Ok:
@@ -164,11 +201,19 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 	dir_runs, dr_err := fs.resolve_extents(&fsys.vol, fs.Chain_Location{new_cluster, new_offset})
 	defer delete(dir_runs)
 	if dr_err != .None || len(dir_runs) == 0 {
+		if rerr := fs.deallocate_sectors(&fsys.vol, fs.Chain_Location{new_cluster, new_offset});
+		   rerr == .None {
+			reinit_free_sectors(fsys)
+		}
 		return fuse3.nix(.EIO)
 	}
 
 	zero: [fs.SECTOR_SIZE]u8
 	if fs.sector_write(&fsys.vol, dir_runs[0].sector, zero[:]) != .None {
+		if rerr := fs.deallocate_sectors(&fsys.vol, fs.Chain_Location{new_cluster, new_offset});
+		   rerr == .None {
+			reinit_free_sectors(fsys)
+		}
 		return fuse3.nix(.EIO)
 	}
 
@@ -180,13 +225,36 @@ fused_mkdir :: proc "c" (path: cstring, mode: posix.mode_t) -> c.int {
 	new_entry.uid = u32(ctx.uid)
 	new_entry.gid = u32(ctx.gid)
 
-	set_entry_time_to_now(&new_entry)
-	copy(new_entry.file_name[:], name)
-	if len(name) < len(new_entry.file_name) {
-		new_entry.file_name[len(name)] = 0
+	// Long names go through the LFN path like create/symlink:
+	// write_entry_with_lfn sets timestamps and allocates an LFN sector
+	// when the name exceeds the 16-byte inline field.
+	new_reclaim, werr := write_entry_with_lfn(fsys, &new_entry, name)
+	if werr != .None {
+		if rerr := fs.deallocate_sectors(&fsys.vol, fs.Chain_Location{new_cluster, new_offset});
+		   rerr == .None {
+			reinit_free_sectors(fsys)
+		}
+		return fs_error_to_errno(werr)
 	}
 	if write_entry_at(fsys, fs.File_Identity{dcluster, dsec, didx}, &new_entry) != .None {
+		free_entry_lfn(fsys, &new_entry)
+		if rerr := fs.deallocate_sectors(&fsys.vol, fs.Chain_Location{new_cluster, new_offset});
+		   rerr == .None {
+			reinit_free_sectors(fsys)
+		}
 		return fuse3.nix(.EIO)
+	}
+	if new_reclaim.cluster != 0 {
+		if reclaim_err := fs.deallocate_sectors(
+			&fsys.vol,
+			fs.Chain_Location {
+				fs.Cluster(new_reclaim.cluster),
+				fs.Sector_Offset(new_reclaim.sector),
+			},
+		); reclaim_err != .None {
+			return fs_error_to_errno(reclaim_err)
+		}
+		reinit_free_sectors(fsys)
 	}
 
 	path_cache_invalidate_all(fsys)
@@ -212,6 +280,10 @@ fused_symlink :: proc "c" (target: cstring, linkpath: cstring) -> c.int {
 		return fuse3.nix(.ENOSPC)
 	case .Not_A_Directory:
 		return fuse3.nix(.ENOTDIR)
+	case .Name_Too_Long:
+		return fuse3.nix(.ENAMETOOLONG)
+	case .Invalid_Name:
+		return fuse3.nix(.EINVAL)
 	case .Io_Error:
 		return fuse3.nix(.EIO)
 	case .Ok:

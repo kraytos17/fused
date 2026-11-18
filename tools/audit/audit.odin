@@ -37,6 +37,10 @@
 //       (a copy crossing src EOF must short-count, never copy slack).
 //   (s12) fused_copy_file_range body zero-fills the dst gap via
 //       zero_file_range (reused sectors must read zeros past old EOF).
+//   (s13) no direct file_name writes in src/mounter outside dir.odin
+//       set_entry_name (all names go through write_entry_with_lfn /
+//       set_entry_name so long names allocate an LFN sector instead of
+//       truncating; D-01).
 //   (t1) no temp-arena caller buffers in tests/ (begin_op frees temp
 //       on entry; fused_* args must be stack or heap).
 package main
@@ -725,10 +729,11 @@ audit_tests_hygiene :: proc() -> (failed: int) {
 	return failed
 }
 
-// Storage audit (rules s1..s6, s8..s12): journal-transaction and
+// Storage audit (rules s1..s6, s8..s13): journal-transaction and
 // cache-ownership guardrails from the audit §9 list, plus regression
 // pins for fixed bugs (s8: read EOF clamp, s9: truncate head-clear,
-// s10: checker stack-alias, s11: copy EOF clamp, s12: copy gap-zero).
+// s10: checker stack-alias, s11: copy EOF clamp, s12: copy gap-zero,
+// s13: mkdir LFN path).
 // Line-based deliberately, like the logger audit: every enforced
 // shape is a fixed idiom, and the matchers are narrow to avoid
 // false positives.
@@ -744,9 +749,6 @@ audit_storage_rules :: proc(path: string, lines: []string) -> (checked, failed: 
 		line := lines[i]
 		trimmed := strings.trim_space(line)
 		if strings.has_prefix(trimmed, "//") { continue }
-
-		// s8/s9/s11/s12 proc tracking (column-0 open/close only, matching
-		// the persist-order audit's end detection).
 		if audited_body == "" {
 			if strings.has_prefix(line, "fused_read :: proc") ||
 			   strings.has_prefix(line, "fused_read_buf :: proc") {
@@ -908,6 +910,49 @@ audit_storage_rules :: proc(path: string, lines: []string) -> (checked, failed: 
 				i + 1,
 			)
 			failed += 1
+		}
+		// s13: directory entry names must go through the LFN path.
+		// Direct file_name writes outside dir.odin set_entry_name silently
+		// truncate names longer than 16 bytes (D-01). Reads (LFN pointer
+		// overlays, entry_short_name) are fine; only writes are banned:
+		// copy(…file_name…) or an indexed file_name[…] store.
+		if strings.contains(path, "src/mounter") && !strings.has_suffix(path, "dir.odin") {
+			if strings.contains(line, "file_name") &&
+			   (strings.contains(line, "copy(") ||
+					   strings.contains(line, "zero_slice") ||
+					   (strings.contains(line, "file_name[") &&
+							   strings.contains(line, "=") &&
+							   !strings.contains(line, "==") &&
+							   !strings.contains(line, "!="))) {
+				is_store := strings.contains(line, "copy(") || strings.contains(line, "zero_slice")
+				if !is_store {
+					if idx := strings.index(line, "file_name["); idx >= 0 {
+						rest := line[idx:]
+						if eq := strings.index(rest, "="); eq >= 0 {
+							// Skip ==, !=, <=, >=.
+							next := eq + 1
+							prev := eq - 1
+							is_cmp := false
+							if next < len(rest) && rest[next] == '=' { is_cmp = true }
+							if prev >= 0 &&
+							   (rest[prev] == '=' ||
+									   rest[prev] == '!' ||
+									   rest[prev] == '<' ||
+									   rest[prev] == '>') { is_cmp = true }
+							is_store = !is_cmp
+						}
+					}
+				}
+				if is_store {
+					checked += 1
+					fmt.printf(
+						"FAIL   %s:%d direct file_name write (use write_entry_with_lfn/set_entry_name)\n",
+						path,
+						i + 1,
+					)
+					failed += 1
+				}
+			}
 		}
 		// s5: every #packed struct needs its own size_of(Name) assert.
 		if strings.contains(line, "#packed") &&
